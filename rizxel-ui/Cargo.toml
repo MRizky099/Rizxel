@@ -1,0 +1,31 @@
+[package]
+name = "rizxel-ui"
+description = "L4 egui/wgpu frontend for the Rizxel voxel editor."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rizxel"
+path = "src/main.rs"
+
+[dependencies]
+rizxel-math.workspace = true
+rizxel-engine.workspace = true
+rizxel-app.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-phosphor.workspace = true
+glam.workspace = true
+rfd.workspace = true
+log.workspace = true
+env_logger.workspace = true
+image.workspace = true
+
+[build-dependencies]
+winresource.workspace = true
+
+[lints]
+workspace = true

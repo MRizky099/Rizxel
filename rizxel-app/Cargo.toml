@@ -1,0 +1,18 @@
+[package]
+name = "rizxel-app"
+description = "L3 headless application state, documents and undo/redo history for Rizxel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rizxel-math.workspace = true
+rizxel-engine.workspace = true
+rizxel-io.workspace = true
+glam.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "rizxel-io"
+description = "L2 file system: .rzxl project format and OBJ export for Rizxel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rizxel-math.workspace = true
+rizxel-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zstd.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

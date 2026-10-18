@@ -1,0 +1,16 @@
+[package]
+name = "rizxel-math"
+description = "L0 foundation: math primitives, colors, palette and bounds for Rizxel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glam.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
