@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "rizxel-math",
+    "rizxel-engine",
+    "rizxel-io",
+    "rizxel-app",
+    "rizxel-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Abati Technology"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates (layered: ui -> app -> io -> engine -> math)
+rizxel-math = { path = "rizxel-math" }
+rizxel-engine = { path = "rizxel-engine" }
+rizxel-io = { path = "rizxel-io" }
+rizxel-app = { path = "rizxel-app" }
+
+# External
+glam = { version = "0.34", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zstd = "0.14"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+winresource = "0.1"
+# egui-phosphor 0.14 targets egui 0.36, so eframe/egui are pinned to 0.36.
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "x11", "wayland"] }
+egui = "0.36"
+egui-phosphor = "0.14"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev.package."*"]
+# Optimize dependencies in debug builds so wgpu/egui stay responsive.
+opt-level = 2

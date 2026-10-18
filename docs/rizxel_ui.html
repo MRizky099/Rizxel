@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rizxel - Voxel Editor</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            /* Prevent text selection to feel more like a native app */
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* Custom Scrollbar for side panels */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #424242; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555; 
+        }
+
+        /* 3D Infinity Grid */
+        .workspace-container {
+            perspective: 1200px;
+            overflow: hidden;
+            background: #4b4b4b;
+        }
+        
+        .infinity-grid {
+            position: absolute;
+            top: 0; left: -50%;
+            width: 200%; height: 200%;
+            background-image: 
+                linear-gradient(rgba(174, 174, 174, 0.4) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(174, 174, 174, 0.4) 1px, transparent 1px);
+            background-size: 40px 40px;
+            /* 3D transform to make it look like a floor */
+            transform: rotateX(65deg) translateY(-20%) translateZ(-200px);
+            /* Fade out at the edges to create the "infinity" illusion */
+            -webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,1) 10%, rgba(0,0,0,0) 60%);
+            mask-image: radial-gradient(ellipse at center, rgba(0,0,0,1) 10%, rgba(0,0,0,0) 60%);
+            pointer-events: none;
+        }
+
+        /* 3D Face View Indicator Cube */
+        .cube-scene {
+            width: 60px;
+            height: 60px;
+            perspective: 400px;
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 50;
+            cursor: pointer;
+        }
+
+        .cube {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transform: rotateX(-20deg) rotateY(-45deg);
+            transition: transform 0.4s ease-out;
+        }
+        
+        .cube:hover {
+            transform: rotateX(-25deg) rotateY(-55deg);
+        }
+
+        .cube-face {
+            position: absolute;
+            width: 60px;
+            height: 60px;
+            background: #3f3f46;
+            border: 1px solid #52525b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: #d4d4d8;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+            transition: background 0.2s, color 0.2s;
+        }
+        
+        .cube-face:hover {
+            background: #007acc;
+            color: white;
+            border-color: #38bdf8;
+        }
+
+        .cube-front  { transform: rotateY(  0deg) translateZ(30px); }
+        .cube-right  { transform: rotateY( 90deg) translateZ(30px); }
+        .cube-back   { transform: rotateY(180deg) translateZ(30px); }
+        .cube-left   { transform: rotateY(-90deg) translateZ(30px); }
+        .cube-top    { transform: rotateX( 90deg) translateZ(30px); }
+        .cube-bottom { transform: rotateX(-90deg) translateZ(30px); }
+
+        /* Custom inputs */
+        .color-swatch:hover {
+            transform: scale(1.1);
+            z-index: 10;
+            box-shadow: 0 0 0 1px #fff;
+        }
+        
+        .tool-btn.active {
+            background: #3f3f46;
+            color: #fff;
+            border-left: 2px solid #007acc;
+        }
+    </style>
+</head>
+<body class="bg-[#1e1e1e] text-[#cccccc] h-screen w-screen flex flex-col overflow-hidden">
+
+    <!-- 1. Top Menu Bar & Window Controls -->
+    <header class="flex justify-between items-center bg-[#2d2d30] h-8 text-xs select-none border-b border-[#1e1e1e]">
+        <div class="flex h-full">
+            <!-- App Icon -->
+            <div class="flex items-center justify-center w-8 text-[#007acc]">
+                <i class="fa-solid fa-cube"></i>
+            </div>
+            <!-- Menus -->
+            <div class="flex items-center">
+                <div class="px-3 py-1.5 h-full flex items-center hover:bg-[#3f3f46] cursor-default">File</div>
+                <div class="px-3 py-1.5 h-full flex items-center hover:bg-[#3f3f46] cursor-default">Edit</div>
+                <div class="px-3 py-1.5 h-full flex items-center hover:bg-[#3f3f46] cursor-default">View</div>
+                <div class="px-3 py-1.5 h-full flex items-center hover:bg-[#3f3f46] cursor-default">Help</div>
+            </div>
+        </div>
+        <!-- Center Title (Optional, subtle) -->
+        <div class="text-[#888] pointer-events-none absolute left-1/2 transform -translate-x-1/2">
+            Rizxel - Voxel Editor
+        </div>
+        <!-- Window Controls -->
+        <div class="flex h-full text-[#cccccc]">
+            <div class="flex items-center justify-center w-12 hover:bg-[#3f3f46] cursor-default transition-colors">
+                <i class="fa-solid fa-minus text-[10px]"></i>
+            </div>
+            <div class="flex items-center justify-center w-12 hover:bg-[#3f3f46] cursor-default transition-colors">
+                <i class="fa-regular fa-square text-[10px]"></i>
+            </div>
+            <div class="flex items-center justify-center w-12 hover:bg-[#e81123] hover:text-white cursor-default transition-colors">
+                <i class="fa-solid fa-xmark text-[14px]"></i>
+            </div>
+        </div>
+    </header>
+
+    <!-- 2. Option Bar -->
+    <section class="flex items-center bg-[#252526] h-10 border-b border-[#3c3c3c] px-2 gap-1 text-sm shrink-0">
+        <!-- History -->
+        <button class="w-8 h-8 flex items-center justify-center hover:bg-[#3f3f46] rounded text-gray-400 hover:text-white" title="Undo">
+            <i class="fa-solid fa-rotate-left"></i>
+        </button>
+        <button class="w-8 h-8 flex items-center justify-center hover:bg-[#3f3f46] rounded text-gray-400 hover:text-white" title="Redo">
+            <i class="fa-solid fa-rotate-right"></i>
+        </button>
+        
+        <div class="w-px h-5 bg-[#444] mx-2"></div>
+        
+        <!-- Voxel Operations -->
+        <button class="w-8 h-8 flex items-center justify-center hover:bg-[#3f3f46] rounded text-gray-300 hover:text-white bg-[#333337] border border-[#007acc]" title="Add">
+            <i class="fa-solid fa-cube text-[#007acc]"></i>
+        </button>
+        <button class="w-8 h-8 flex items-center justify-center hover:bg-[#3f3f46] rounded text-gray-300 hover:text-white" title="Subtract">
+            <i class="fa-brands fa-codepen opacity-70"></i>
+        </button>
+        <button class="w-8 h-8 flex items-center justify-center hover:bg-[#3f3f46] rounded text-gray-300 hover:text-white" title="Join">
+            <i class="fa-solid fa-object-group opacity-70"></i>
+        </button>
+        
+        <div class="w-px h-5 bg-[#444] mx-2"></div>
+        
+        <!-- Surface Operations -->
+        <button class="w-8 h-8 flex items-center justify-center hover:bg-[#3f3f46] rounded text-gray-300 hover:text-white" title="Paint">
+            <i class="fa-solid fa-fill-drip text-yellow-500"></i>
+        </button>
+
+        <div class="w-px h-5 bg-[#444] mx-2"></div>
+        
+        <!-- Plane Tool Options -->
+        <div class="flex items-center gap-3 px-2 text-[#cccccc]">
+            <label class="flex items-center gap-1 cursor-pointer hover:text-white">
+                <input type="checkbox" class="accent-[#007acc] cursor-pointer"> Slice
+            </label>
+            <select class="bg-[#1e1e1e] border border-[#3c3c3c] text-[#cccccc] rounded px-1.5 py-0.5 outline-none focus:border-[#007acc] text-xs">
+                <option value="relative">Relative</option>
+                <option value="absolute">Absolute</option>
+            </select>
+            <div class="flex items-center gap-1">
+                <span class="text-xs text-gray-400">Offset</span>
+                <input type="number" value="1" class="bg-[#1e1e1e] border border-[#3c3c3c] text-[#cccccc] rounded px-1.5 py-0.5 outline-none focus:border-[#007acc] w-12 text-xs">
+            </div>
+        </div>
+
+        <div class="flex-1"></div>
+
+        <!-- Render / Export modes -->
+        <div class="flex bg-[#1e1e1e] rounded overflow-hidden border border-[#3c3c3c] mr-2">
+            <button class="px-3 py-1 bg-[#3f3f46] text-white text-xs">Model</button>
+            <button class="px-3 py-1 hover:bg-[#333337] text-gray-400 text-xs">Render</button>
+        </div>
+    </section>
+
+    <!-- 3. Document Tabs -->
+    <section class="flex bg-[#1e1e1e] h-9 border-b border-[#252526] shrink-0">
+        <!-- Active Tab -->
+        <div class="flex items-center px-4 bg-[#252526] border-t-2 border-[#007acc] text-white text-[13px] cursor-pointer min-w-[120px]">
+            <i class="fa-solid fa-cube text-[#007acc] mr-2 text-[10px]"></i>
+            <span class="flex-1 truncate">hero_character.vox</span>
+            <i class="fa-solid fa-xmark ml-3 text-[10px] text-gray-400 hover:text-white"></i>
+        </div>
+        <!-- Inactive Tab -->
+        <div class="flex items-center px-4 bg-[#1e1e1e] hover:bg-[#2a2a2d] text-gray-400 text-[13px] cursor-pointer border-r border-[#333] min-w-[120px]">
+            <i class="fa-solid fa-cube mr-2 text-[10px]"></i>
+            <span class="flex-1 truncate">weapon_sword.vox</span>
+            <i class="fa-solid fa-xmark ml-3 text-[10px] hover:text-white"></i>
+        </div>
+        <!-- New Tab Button -->
+        <button class="w-9 h-full flex items-center justify-center hover:bg-[#2a2a2d] text-gray-400">
+            <i class="fa-solid fa-plus text-[10px]"></i>
+        </button>
+    </section>
+
+    <!-- 4. Main Content Area -->
+    <main class="flex flex-1 overflow-hidden">
+        
+        <!-- Left Column: Tools Panel -->
+        <aside class="w-12 bg-[#252526] border-r border-[#3c3c3c] flex flex-col items-center py-2 gap-2 text-[#999999] shrink-0 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.2)]">
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Cursor">
+                <i class="fa-solid fa-arrow-pointer"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Brush">
+                <i class="fa-solid fa-paintbrush"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Shape">
+                <i class="fa-solid fa-shapes"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded tool-btn active" title="Plane">
+                <i class="fa-solid fa-layer-group"></i>
+            </button>
+            <div class="w-6 h-px bg-[#444] my-1"></div>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Move">
+                <i class="fa-solid fa-up-down-left-right"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Color Picker">
+                <i class="fa-solid fa-eye-dropper"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Selection">
+                <i class="fa-solid fa-vector-square"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Fuzzy Select">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Extrude">
+                <i class="fa-solid fa-arrows-up-to-line"></i>
+            </button>
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Fill">
+                <i class="fa-solid fa-fill-drip"></i>
+            </button>
+            <div class="flex-1"></div>
+            <!-- Settings at bottom -->
+            <button class="w-10 h-10 flex items-center justify-center rounded hover:bg-[#3f3f46] hover:text-white transition-colors" title="Settings">
+                <i class="fa-solid fa-gear"></i>
+            </button>
+        </aside>
+
+        <!-- Center Column: 3D Workspace -->
+        <section class="flex-1 relative workspace-container" id="workspace">
+            
+            <!-- Infinity Grid Background -->
+            <div class="infinity-grid"></div>
+            
+            <!-- 3D Model Image Mockup -->
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                <img src="image_c973e0.png" alt="3D Model" class="mx-auto my-auto object-contain h-3/4 max-w-full relative pointer-events-none drop-shadow-2xl" />
+            </div>
+
+            <!-- Top Right: 3D Face View Indicator -->
+            <div class="cube-scene">
+                <div class="cube" id="view-cube">
+                    <div class="cube-face cube-front">Front</div>
+                    <div class="cube-face cube-back">Back</div>
+                    <div class="cube-face cube-right">Right</div>
+                    <div class="cube-face cube-left">Left</div>
+                    <div class="cube-face cube-top">Top</div>
+                    <div class="cube-face cube-bottom">Bottom</div>
+                </div>
+            </div>
+
+            <!-- Bottom Right: XYZ Axis Indicator -->
+            <div class="absolute bottom-6 right-6 w-16 h-16 pointer-events-none" style="perspective: 400px; z-index: 50;">
+                <div id="axis-indicator" class="w-full h-full relative" style="transform-style: preserve-3d; transform: rotateX(-20deg) rotateY(-45deg); transition: transform 0.4s ease-out;">
+                    <!-- X (Red) -->
+                    <div style="position: absolute; top: 50%; left: 50%; width: 30px; height: 2px; background: #ff4757; transform-origin: left center; transform: translateY(-50%);"></div>
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate3d(35px, -50%, 0); color: #ff4757; font-size: 10px; font-weight: bold;">X</div>
+                    <!-- Y (Green) -->
+                    <div style="position: absolute; top: 50%; left: 50%; width: 2px; height: 30px; background: #2ed573; transform-origin: bottom center; transform: translate(-50%, -100%);"></div>
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate3d(-50%, -45px, 0); color: #2ed573; font-size: 10px; font-weight: bold;">Y</div>
+                    <!-- Z (Blue) -->
+                    <div style="position: absolute; top: 50%; left: 50%; width: 30px; height: 2px; background: #1e90ff; transform-origin: left center; transform: translateY(-50%) rotateY(-90deg);"></div>
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate3d(0, -50%, 35px); color: #1e90ff; font-size: 10px; font-weight: bold;">Z</div>
+                    <!-- Origin -->
+                    <div style="position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; background: white; border-radius: 50%; transform: translate(-50%, -50%);"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Column: Side Panels -->
+        <aside class="w-72 bg-[#252526] border-l border-[#3c3c3c] flex flex-col h-full shrink-0 z-10 shadow-[-2px_0_5px_rgba(0,0,0,0.2)]">
+            
+            <!-- Top Half: Color Palette Panel -->
+            <div class="flex-[0.4] flex flex-col min-h-0 border-b border-[#1e1e1e]">
+                <!-- Panel Header -->
+                <div class="flex justify-between items-center px-3 py-2 bg-[#2d2d30] border-b border-[#3c3c3c]">
+                    <span class="text-xs font-semibold tracking-wider text-gray-300">COLOR PALETTE</span>
+                    <i class="fa-solid fa-caret-down text-gray-500 text-[10px] cursor-pointer hover:text-white"></i>
+                </div>
+                
+                <!-- Selected Color Preview -->
+                <div class="p-3 pb-1 flex gap-3 items-center border-b border-[#333]">
+                    <div class="w-12 h-12 rounded border-2 border-white bg-[#38bdf8] shadow-inner"></div>
+                    <div class="flex flex-col gap-1 flex-1 text-xs">
+                        <div class="flex justify-between"><span>HEX</span> <span class="text-white">#38BDF8</span></div>
+                        <div class="flex justify-between"><span>RGB</span> <span class="text-white">56, 189, 248</span></div>
+                    </div>
+                </div>
+
+                <!-- Palette Grid -->
+                <div class="flex-1 overflow-y-auto p-3" id="palette-container">
+                    <div class="grid grid-cols-8 gap-1" id="color-grid">
+                        <!-- Swatches injected by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Middle Half: Layers Panel -->
+            <div class="flex-[0.4] flex flex-col min-h-0 bg-[#252526] border-b border-[#1e1e1e]">
+                <!-- Panel Header -->
+                <div class="flex justify-between items-center px-3 py-2 bg-[#2d2d30] border-b border-[#3c3c3c]">
+                    <span class="text-xs font-semibold tracking-wider text-gray-300">LAYERS</span>
+                    <div class="flex gap-2">
+                        <i class="fa-solid fa-plus text-gray-400 hover:text-white text-[11px] cursor-pointer" title="New Layer"></i>
+                        <i class="fa-solid fa-trash text-gray-400 hover:text-red-400 text-[11px] cursor-pointer" title="Delete Layer"></i>
+                    </div>
+                </div>
+                
+                <!-- Layers List -->
+                <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1 text-xs">
+                    
+                    <!-- Selected Layer -->
+                    <div class="flex items-center px-2 py-2 bg-[#37373d] text-white rounded cursor-pointer border border-[#007acc]">
+                        <i class="fa-solid fa-eye text-gray-300 hover:text-white mr-3 w-4 text-center"></i>
+                        <span class="flex-1 font-medium">Head</span>
+                        <i class="fa-solid fa-lock-open text-gray-500 hover:text-white w-4 text-center"></i>
+                    </div>
+                    
+                    <!-- Normal Layers -->
+                    <div class="flex items-center px-2 py-2 hover:bg-[#2d2d30] text-gray-400 rounded cursor-pointer border border-transparent">
+                        <i class="fa-solid fa-eye mr-3 w-4 text-center"></i>
+                        <span class="flex-1">Torso</span>
+                        <i class="fa-solid fa-lock-open w-4 text-center"></i>
+                    </div>
+
+                    <div class="flex items-center px-2 py-2 hover:bg-[#2d2d30] text-gray-400 rounded cursor-pointer border border-transparent">
+                        <i class="fa-solid fa-eye-slash text-gray-600 mr-3 w-4 text-center"></i>
+                        <span class="flex-1 italic">Left Arm (Hidden)</span>
+                        <i class="fa-solid fa-lock w-4 text-center"></i>
+                    </div>
+
+                    <div class="flex items-center px-2 py-2 hover:bg-[#2d2d30] text-gray-400 rounded cursor-pointer border border-transparent">
+                        <i class="fa-solid fa-eye mr-3 w-4 text-center"></i>
+                        <span class="flex-1">Right Arm</span>
+                        <i class="fa-solid fa-lock-open w-4 text-center"></i>
+                    </div>
+
+                     <div class="flex items-center px-2 py-2 hover:bg-[#2d2d30] text-gray-400 rounded cursor-pointer border border-transparent">
+                        <i class="fa-solid fa-eye mr-3 w-4 text-center"></i>
+                        <span class="flex-1">Legs</span>
+                        <i class="fa-solid fa-lock-open w-4 text-center"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom Half: Bound Model Panel -->
+            <div class="flex-[0.35] flex flex-col min-h-0 bg-[#252526]">
+                <!-- Panel Header -->
+                <div class="flex justify-between items-center px-3 py-2 bg-[#2d2d30] border-b border-[#fbbf24]">
+                    <span class="text-xs font-bold tracking-wider text-[#fbbf24] flex items-center gap-2">
+                        <i class="fa-solid fa-box-open"></i> BOUND MODEL
+                    </span>
+                    <i class="fa-solid fa-caret-down text-gray-500 text-[10px] cursor-pointer hover:text-[#fbbf24]"></i>
+                </div>
+                
+                <!-- Bound Settings -->
+                <div class="flex-1 overflow-y-auto p-3 flex flex-col justify-center gap-2 text-xs">
+                    <div class="text-gray-400 mb-1">Adjust 3D bounds area size:</div>
+                    
+                    <div class="flex items-center gap-2">
+                        <span class="text-red-400 font-bold w-4 text-center">X</span>
+                        <input type="number" value="32" class="flex-1 bg-[#1e1e1e] border border-[#3c3c3c] text-white rounded px-2 py-1 outline-none focus:border-[#fbbf24]">
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-green-500 font-bold w-4 text-center">Y</span>
+                        <input type="number" value="32" class="flex-1 bg-[#1e1e1e] border border-[#3c3c3c] text-white rounded px-2 py-1 outline-none focus:border-[#fbbf24]">
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-blue-500 font-bold w-4 text-center">Z</span>
+                        <input type="number" value="32" class="flex-1 bg-[#1e1e1e] border border-[#3c3c3c] text-white rounded px-2 py-1 outline-none focus:border-[#fbbf24]">
+                    </div>
+                </div>
+            </div>
+
+        </aside>
+    </main>
+
+    <!-- 5. Bottom Information Bar -->
+    <footer class="flex justify-between items-center bg-[#1e1e1e] h-6 px-3 text-[11px] text-gray-300 shrink-0 z-20 selection:bg-transparent border-t border-[#222]">
+        <div class="flex gap-4 items-center h-full">
+            <span class="flex items-center gap-1.5"><i class="fa-solid fa-location-crosshairs opacity-70"></i> X: 12 Y: 4 Z: -8</span>
+            <div class="w-px h-3 bg-white/20"></div>
+            <span class="flex items-center gap-1.5"><i class="fa-solid fa-cube opacity-70"></i> Selected: 42 voxels</span>
+        </div>
+        <div class="flex gap-4 items-center h-full">
+            <span class="flex items-center gap-1.5 text-[#fbbf24]"><i class="fa-solid fa-circle-info opacity-80"></i> Plane Tool: Click and drag to create a flat plane of voxels.</span>
+        </div>
+    </footer>
+
+    <!-- Interactive Scripts -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // 1. Generate Color Palette Swatches
+            const colorGrid = document.getElementById('color-grid');
+            
+            // Base colors for a standard voxel palette
+            const hues = [0, 15, 30, 45, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+            const lightnessLevels = [20, 40, 50, 60, 70, 80];
+            
+            // Add greyscale row
+            for (let i = 0; i < 8; i++) {
+                const lightness = Math.floor((i / 7) * 100);
+                addSwatch(`hsl(0, 0%, ${lightness}%)`);
+            }
+
+            // Add colored rows
+            lightnessLevels.forEach(l => {
+                for (let i = 0; i < 8; i++) {
+                    // Loop through some hues to fill 8 columns
+                    const h = hues[(i + (l/10)) % hues.length];
+                    addSwatch(`hsl(${h}, 70%, ${l}%)`);
+                }
+            });
+
+            function addSwatch(colorStr) {
+                const swatch = document.createElement('div');
+                swatch.className = 'w-full aspect-square rounded-[2px] cursor-pointer color-swatch transition-transform';
+                swatch.style.backgroundColor = colorStr;
+                
+                // Add active state to a specific bright blue to match design
+                if (colorStr === 'hsl(210, 70%, 60%)') {
+                    swatch.style.backgroundColor = '#38bdf8';
+                    swatch.style.border = '1px solid white';
+                }
+
+                swatch.addEventListener('click', function() {
+                    // Reset others
+                    document.querySelectorAll('.color-swatch').forEach(el => {
+                        el.style.border = 'none';
+                    });
+                    // Set active
+                    this.style.border = '1px solid white';
+                });
+
+                colorGrid.appendChild(swatch);
+            }
+
+            // 2. Interactive View Cube Rotation
+            const cube = document.getElementById('view-cube');
+            const axisIndicator = document.getElementById('axis-indicator');
+            let isDragging = false;
+            let previousMousePosition = { x: 0, y: 0 };
+            let rotation = { x: -20, y: -45 };
+
+            const workspace = document.getElementById('workspace');
+
+            workspace.addEventListener('mousedown', (e) => {
+                // Only drag on left click and not on the cube itself to rotate scene
+                if (e.target !== cube && !cube.contains(e.target)) {
+                    isDragging = true;
+                    previousMousePosition = { x: e.offsetX, y: e.offsetY };
+                }
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (isDragging) {
+                    const deltaMove = {
+                        x: e.offsetX - previousMousePosition.x,
+                        y: e.offsetY - previousMousePosition.y
+                    };
+
+                    rotation.y += deltaMove.x * 0.5;
+                    rotation.x -= deltaMove.y * 0.5;
+
+                    // Apply rotation to cube indicator to simulate camera movement
+                    cube.style.transform = `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`;
+                    axisIndicator.style.transform = `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`;
+                    
+                    previousMousePosition = { x: e.offsetX, y: e.offsetY };
+                }
+            });
+
+            window.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+
+            // Allow clicking cube faces to snap view
+            const faces = {
+                'cube-front': {x: 0, y: 0},
+                'cube-back': {x: 0, y: -180},
+                'cube-right': {x: 0, y: -90},
+                'cube-left': {x: 0, y: 90},
+                'cube-top': {x: -90, y: 0},
+                'cube-bottom': {x: 90, y: 0}
+            };
+
+            document.querySelectorAll('.cube-face').forEach(face => {
+                face.addEventListener('click', (e) => {
+                    e.stopPropagation(); // prevent workspace drag
+                    for (const [className, rot] of Object.entries(faces)) {
+                        if (face.classList.contains(className)) {
+                            rotation.x = rot.x;
+                            rotation.y = rot.y;
+                            cube.style.transform = `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`;
+                            axisIndicator.style.transform = `rotateX(${rotation.x}deg) rotateY(${rotation.y}deg)`;
+                            break;
+                        }
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
