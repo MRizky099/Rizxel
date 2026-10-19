@@ -7,6 +7,7 @@ mod actions;
 mod app;
 mod icons;
 mod panels;
+mod render;
 mod resize;
 mod theme;
 mod viewport;

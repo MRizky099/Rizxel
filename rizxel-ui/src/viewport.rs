@@ -1,29 +1,28 @@
 //! Center 3D workspace.
 //!
-//! Phase 2 placeholder rendered entirely with the egui painter (CPU projection):
-//! infinity grid, yellow model bounds, view cube and XYZ axis gizmo. The orbit
-//! camera lives in [`AppState::camera`] so the Phase 3 wgpu renderer can take
-//! over without touching the UI state.
+//! Phase 3: the scene (infinity grid, model bounds, hovered cell) is rendered
+//! natively with wgpu through an `egui_wgpu` paint callback (see
+//! [`crate::render`]). The view cube and XYZ axis gizmo remain egui overlays.
+//! Picking runs on the CPU with the same matrices as the GPU.
+//!
+//! Controls: wheel = zoom, right drag = orbit, middle drag = pan,
+//! middle double-click = reset camera.
 
+use eframe::egui_wgpu;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
-use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
-use glam::{IVec3, Mat3, Mat4, Vec3, Vec4Swizzles};
-use rizxel_app::{AppState, OrbitCamera, ViewFace, ViewMode};
+use glam::{IVec3, Mat3, Mat4, Vec3};
+use rizxel_app::{AppState, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget};
 use rizxel_math::BoundSize;
 
+use crate::render::{FillVertex, LineInstance, SceneFrame, ViewportCallback};
 use crate::theme;
 
-/// Half-extent of the drawn ground grid, in voxels.
-const GRID_HALF_EXTENT: i32 = 96;
-/// Sub-segments per grid line (needed for the radial fade).
-const GRID_SEGMENTS: i32 = 24;
-const FOV_Y: f32 = 45.0_f32.to_radians();
-const NEAR: f32 = 0.1;
-const FAR: f32 = 4000.0;
 /// Degrees of rotation per dragged pixel.
 const ORBIT_SPEED: f32 = 0.4;
 /// Zoom exponent per scrolled point.
 const ZOOM_SPEED: f32 = 0.002;
+/// Width of the yellow bounds wireframe, in logical points.
+const BOUNDS_WIDTH: f32 = 1.5;
 
 /// Camera matrices for the current frame.
 struct Projection {
@@ -34,46 +33,12 @@ struct Projection {
 
 impl Projection {
     fn new(camera: &OrbitCamera, target: Vec3, rect: Rect) -> Self {
-        let eye = target + orbit_offset(camera) * camera.distance;
-        let view = look_at_mat4(eye, target, Vec3::Y);
-        let aspect = (rect.width() / rect.height().max(1.0)).max(0.01);
-        // DirectX/wgpu convention: right-handed, depth in [0, 1].
-        let proj = perspective(FOV_Y, aspect, NEAR, FAR);
+        let aspect = rect.width() / rect.height().max(1.0);
         Self {
-            view_proj: proj * view,
+            view_proj: camera.view_proj(target, aspect),
             rect,
-            eye,
+            eye: camera.eye(target),
         }
-    }
-
-    /// Projects a world point to screen space; `None` if behind the camera.
-    fn project(&self, p: Vec3) -> Option<Pos2> {
-        let clip = self.view_proj * p.extend(1.0);
-        (clip.w > NEAR).then(|| self.ndc_to_screen(clip.xy() / clip.w))
-    }
-
-    fn ndc_to_screen(&self, ndc: glam::Vec2) -> Pos2 {
-        Pos2::new(
-            self.rect.center().x + ndc.x * self.rect.width() * 0.5,
-            self.rect.center().y - ndc.y * self.rect.height() * 0.5,
-        )
-    }
-
-    /// Projects a segment, clipping it against the near plane.
-    fn project_segment(&self, a: Vec3, b: Vec3) -> Option<[Pos2; 2]> {
-        let ca = self.view_proj * a.extend(1.0);
-        let cb = self.view_proj * b.extend(1.0);
-        let (ca, cb) = match (ca.w > NEAR, cb.w > NEAR) {
-            (true, true) => (ca, cb),
-            (false, false) => return None,
-            // Interpolate to the point where w == NEAR.
-            (true, false) => (ca, ca + (cb - ca) * ((ca.w - NEAR) / (ca.w - cb.w))),
-            (false, true) => (cb + (ca - cb) * ((cb.w - NEAR) / (cb.w - ca.w)), cb),
-        };
-        Some([
-            self.ndc_to_screen(ca.xy() / ca.w),
-            self.ndc_to_screen(cb.xy() / cb.w),
-        ])
     }
 
     /// Intersects the mouse ray with the ground plane `y = 0`.
@@ -93,14 +58,13 @@ impl Projection {
     }
 }
 
-/// Unit vector from target to eye for the given yaw/pitch.
-fn orbit_offset(camera: &OrbitCamera) -> Vec3 {
-    camera.eye_direction()
-}
-
 /// Camera rotation only (world -> view), used by the gizmos.
 fn view_rotation(camera: &OrbitCamera) -> Mat3 {
-    Mat3::from_mat4(look_at_mat4(orbit_offset(camera), Vec3::ZERO, Vec3::Y))
+    let unit = OrbitCamera {
+        distance: 1.0,
+        ..*camera
+    };
+    Mat3::from_mat4(unit.view_matrix(Vec3::ZERO))
 }
 
 /// World-space min/max of the model bounds, centered on the origin in XZ.
@@ -110,14 +74,18 @@ fn bounds_box(bounds: BoundSize) -> (Vec3, Vec3) {
     (-half, Vec3::new(half.x, size.y, half.z))
 }
 
-pub fn show(ui: &mut Ui, state: &mut AppState) {
+pub fn show(
+    ui: &mut Ui,
+    state: &mut AppState,
+    target_format: Option<egui_wgpu::wgpu::TextureFormat>,
+) {
     let rect = ui.max_rect();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, theme::WORKSPACE);
 
     let bounds = state.doc().map(|d| d.data.bounds).unwrap_or_default();
     let (bmin, bmax) = bounds_box(bounds);
+
     // --- Camera input ------------------------------------------------------
     // Right drag: orbit. Middle drag: pan. Wheel: zoom. Left is reserved for tools.
     if response.dragged_by(egui::PointerButton::Secondary) {
@@ -126,7 +94,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
     }
     if response.dragged_by(egui::PointerButton::Middle) {
         let d = response.drag_delta() / rect.height().max(1.0);
-        state.camera.pan_screen(d.x, d.y, FOV_Y);
+        state.camera.pan_screen(d.x, d.y, OrbitCamera::FOV_Y);
     }
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta().y);
@@ -138,7 +106,6 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         state.camera.reset();
     }
     let target = Vec3::new(0.0, bmax.y * 0.4, 0.0) + state.camera.pan;
-
     let proj = Projection::new(&state.camera, target, rect);
 
     // --- Cursor voxel (ground plane pick) -----------------------------------
@@ -155,25 +122,46 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             inside.then_some(v)
         });
 
-    // --- Scene --------------------------------------------------------------
-    paint_grid(&painter, &proj);
-    paint_bounds(&painter, &proj, bmin, bmax);
-    if let Some(v) = state.cursor_voxel {
-        paint_hover_cell(
-            &painter,
-            &proj,
-            bmin + Vec3::new(v.x as f32, 0.0, v.z as f32),
-        );
-    }
-
-    if state.view_mode == ViewMode::Render {
-        painter.text(
-            rect.center_top() + Vec2::new(0.0, 16.0),
-            Align2::CENTER_TOP,
-            "Render preview is available from Phase 3",
-            theme::regular(12.0),
-            theme::TEXT_STRONG.gamma_multiply(0.7),
-        );
+    // --- Scene (wgpu) -------------------------------------------------------
+    let hover = state
+        .cursor_voxel
+        .map(|v| bmin + Vec3::new(v.x as f32, 0.0, v.z as f32));
+    let ppp = ui.ctx().pixels_per_point();
+    let frame = scene_frame(
+        &state.camera,
+        &proj,
+        state.view_mode,
+        bmin,
+        bmax,
+        hover,
+        ppp,
+    );
+    match target_format {
+        Some(format) => {
+            let size_px = [
+                (rect.width() * ppp).round().max(1.0) as u32,
+                (rect.height() * ppp).round().max(1.0) as u32,
+            ];
+            painter.add(egui_wgpu::Callback::new_paint_callback(
+                rect,
+                ViewportCallback {
+                    frame,
+                    target_format: format,
+                    size_px,
+                },
+            ));
+        }
+        // No wgpu device (should not happen with the wgpu renderer).
+        None => {
+            painter.rect_filled(rect, 0.0, theme::WORKSPACE);
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "wgpu renderer unavailable",
+                theme::regular(13.0),
+                theme::TEXT,
+            );
+        }
     }
 
     // --- Overlays -----------------------------------------------------------
@@ -181,52 +169,65 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         Pos2::new(rect.right() - 100.0, rect.top() + 16.0),
         Vec2::splat(84.0),
     );
-    if let Some(face) = view_cube(ui, &state.camera, cube_rect) {
-        state.camera.snap(face);
+    if let Some(target) = view_cube(ui, &state.camera, cube_rect) {
+        state.camera.snap(target);
     }
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
 }
 
-/// Ground grid at `y = 0`, fading radially to create the "infinity" look.
-fn paint_grid(painter: &egui::Painter, proj: &Projection) {
-    let ext = GRID_HALF_EXTENT as f32;
-    let step = (2.0 * ext) / GRID_SEGMENTS as f32;
+/// Builds the GPU scene description for this frame.
+fn scene_frame(
+    camera: &OrbitCamera,
+    proj: &Projection,
+    view_mode: ViewMode,
+    bmin: Vec3,
+    bmax: Vec3,
+    hover: Option<Vec3>,
+    pixels_per_point: f32,
+) -> SceneFrame {
+    let width = BOUNDS_WIDTH * pixels_per_point;
+    let bound_color = theme::BOUND.gamma_multiply(0.9);
+    let mut lines: Vec<LineInstance> = bounds_edges(bmin, bmax)
+        .into_iter()
+        .map(|(a, b)| LineInstance::new(a, b, bound_color, width))
+        .collect();
 
-    for i in -GRID_HALF_EXTENT..=GRID_HALF_EXTENT {
-        let c = i as f32;
-        // Every 8th line is slightly stronger, like a major grid.
-        let base_alpha = if i % 8 == 0 { 1.0 } else { 0.55 };
-
-        for s in 0..GRID_SEGMENTS {
-            let t0 = -ext + s as f32 * step;
-            let t1 = t0 + step;
-            let mid = (t0 + t1) * 0.5;
-            // Radial fade measured at the segment midpoint.
-            let fade = |x: f32, z: f32| {
-                let r = (x * x + z * z).sqrt() / ext;
-                (1.0 - r).clamp(0.0, 1.0).powf(1.5)
-            };
-
-            for (a, b, f) in [
-                (Vec3::new(c, 0.0, t0), Vec3::new(c, 0.0, t1), fade(c, mid)),
-                (Vec3::new(t0, 0.0, c), Vec3::new(t1, 0.0, c), fade(mid, c)),
-            ] {
-                if f <= 0.01 {
-                    continue;
-                }
-                if let Some(seg) = proj.project_segment(a, b) {
-                    let color = theme::GRID_LINE.gamma_multiply(f * base_alpha);
-                    painter.line_segment(seg, Stroke::new(1.0, color));
-                }
-            }
+    // Hovered ground cell: translucent fill plus a thin outline.
+    let mut fills = Vec::new();
+    if let Some(origin) = hover {
+        let quad = [Vec3::ZERO, Vec3::X, Vec3::X + Vec3::Z, Vec3::Z].map(|o| origin + o);
+        let fill = theme::ACCENT_LIGHT.gamma_multiply(0.35);
+        fills.extend([0, 1, 2, 0, 2, 3].map(|i| FillVertex::new(quad[i], fill)));
+        for i in 0..4 {
+            lines.push(LineInstance::new(
+                quad[i],
+                quad[(i + 1) % 4],
+                theme::ACCENT_LIGHT,
+                pixels_per_point,
+            ));
         }
+    }
+
+    SceneFrame {
+        view_proj: proj.view_proj,
+        eye: proj.eye,
+        distance: camera.distance,
+        // Align grid lines with the voxel cells of the (possibly odd-sized) bounds.
+        grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
+        render_mode: view_mode == ViewMode::Render,
+        background: theme::WORKSPACE,
+        grid_color: theme::GRID_LINE,
+        axis_x: theme::AXIS_X,
+        axis_z: theme::AXIS_Z,
+        lines,
+        fills,
     }
 }
 
-/// Yellow wireframe of the editable model volume.
-fn paint_bounds(painter: &egui::Painter, proj: &Projection, min: Vec3, max: Vec3) {
+/// The 12 edges of the model bounds box.
+fn bounds_edges(min: Vec3, max: Vec3) -> [(Vec3, Vec3); 12] {
     let corner = |i: u8| {
         Vec3::new(
             if i & 1 == 0 { min.x } else { max.x },
@@ -248,114 +249,109 @@ fn paint_bounds(painter: &egui::Painter, proj: &Projection, min: Vec3, max: Vec3
         (2, 6),
         (3, 7), // Z
     ];
-    let stroke = Stroke::new(1.5, theme::BOUND.gamma_multiply(0.9));
-    for (a, b) in EDGES {
-        if let Some(seg) = proj.project_segment(corner(a), corner(b)) {
-            painter.line_segment(seg, stroke);
-        }
-    }
+    EDGES.map(|(a, b)| (corner(a), corner(b)))
 }
 
-/// Highlights the ground cell under the cursor.
-fn paint_hover_cell(painter: &egui::Painter, proj: &Projection, origin: Vec3) {
-    let pts: Option<Vec<Pos2>> = [Vec3::ZERO, Vec3::X, Vec3::X + Vec3::Z, Vec3::Z]
+/// Corner of the view cube, indexed by bits: 1 = X, 2 = Y, 4 = Z (positive).
+const CUBE_CORNERS: [Vec3; 8] = [
+    Vec3::new(-1.0, -1.0, -1.0),
+    Vec3::new(1.0, -1.0, -1.0),
+    Vec3::new(-1.0, 1.0, -1.0),
+    Vec3::new(1.0, 1.0, -1.0),
+    Vec3::new(-1.0, -1.0, 1.0),
+    Vec3::new(1.0, -1.0, 1.0),
+    Vec3::new(-1.0, 1.0, 1.0),
+    Vec3::new(1.0, 1.0, 1.0),
+];
+
+/// `(face, outward normal, corner indices in CCW order, corner-neighbouring faces)`.
+const CUBE_FACES: [(ViewFace, Vec3, [u8; 4]); 6] = [
+    (ViewFace::Front, Vec3::Z, [4, 5, 7, 6]),
+    (ViewFace::Back, Vec3::NEG_Z, [1, 0, 2, 3]),
+    (ViewFace::Right, Vec3::X, [5, 1, 3, 7]),
+    (ViewFace::Left, Vec3::NEG_X, [0, 4, 6, 2]),
+    (ViewFace::Top, Vec3::Y, [6, 7, 3, 2]),
+    (ViewFace::Bottom, Vec3::NEG_Y, [0, 1, 5, 4]),
+];
+
+/// `(edge, corner indices)`.
+const CUBE_EDGES: [(ViewEdge, [u8; 2]); 12] = [
+    (ViewEdge::FrontTop, [6, 7]),
+    (ViewEdge::FrontBottom, [4, 5]),
+    (ViewEdge::FrontRight, [5, 7]),
+    (ViewEdge::FrontLeft, [4, 6]),
+    (ViewEdge::BackTop, [2, 3]),
+    (ViewEdge::BackBottom, [0, 1]),
+    (ViewEdge::BackRight, [1, 3]),
+    (ViewEdge::BackLeft, [0, 2]),
+    (ViewEdge::TopRight, [3, 7]),
+    (ViewEdge::TopLeft, [2, 6]),
+    (ViewEdge::BottomRight, [1, 5]),
+    (ViewEdge::BottomLeft, [0, 4]),
+];
+
+/// `(corner, index into [`CUBE_CORNERS`])`.
+const CUBE_CORNER_IDS: [(ViewCorner, usize); 8] = [
+    (ViewCorner::BackBottomLeft, 0),
+    (ViewCorner::BackBottomRight, 1),
+    (ViewCorner::BackTopLeft, 2),
+    (ViewCorner::BackTopRight, 3),
+    (ViewCorner::FrontBottomLeft, 4),
+    (ViewCorner::FrontBottomRight, 5),
+    (ViewCorner::FrontTopLeft, 6),
+    (ViewCorner::FrontTopRight, 7),
+];
+
+/// Radius of the hover dot painted on a corner, in logical points.
+const CORNER_DOT_RADIUS: f32 = 5.0;
+
+/// Looks up the cube edge joining two corners (order-independent).
+fn edge_between(a: u8, b: u8) -> ViewEdge {
+    CUBE_EDGES
         .iter()
-        .map(|o| proj.project(origin + *o))
-        .collect();
-    if let Some(pts) = pts {
-        painter.add(Shape::convex_polygon(
-            pts,
-            theme::ACCENT_LIGHT.gamma_multiply(0.35),
-            Stroke::new(1.0, theme::ACCENT_LIGHT),
-        ));
-    }
+        .find(|&&(_, idx)| idx == [a, b] || idx == [b, a])
+        .map(|&(e, _)| e)
+        .expect("corner pair is a cube edge")
 }
 
-/// Clickable view cube. Returns the face that was clicked, if any.
-fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewFace> {
-    let rot = view_rotation(camera);
-    let center = rect.center();
-    let scale = rect.width() * 0.3;
-
-    // Orthographic projection of a unit-cube vertex (view space y is up).
-    let to_screen = |v: Vec3| {
-        let p = rot * v;
-        (
-            Pos2::new(center.x + p.x * scale, center.y - p.y * scale),
-            p.z,
-        )
-    };
-
-    // (face, normal, tangent u, tangent v)
-    let faces = [
-        (ViewFace::Front, Vec3::Z, Vec3::X, Vec3::Y),
-        (ViewFace::Back, Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
-        (ViewFace::Right, Vec3::X, Vec3::NEG_Z, Vec3::Y),
-        (ViewFace::Left, Vec3::NEG_X, Vec3::Z, Vec3::Y),
-        (ViewFace::Top, Vec3::Y, Vec3::X, Vec3::NEG_Z),
-        (ViewFace::Bottom, Vec3::NEG_Y, Vec3::X, Vec3::Z),
-    ];
-
-    // Keep only camera-facing faces, sorted back to front.
-    let mut visible: Vec<_> = faces
+/// Looks up the view corner id for a cube corner index.
+fn corner_id(i: u8) -> ViewCorner {
+    CUBE_CORNER_IDS
         .iter()
-        .filter_map(|&(face, n, u, v)| {
-            let depth = (rot * n).z;
-            (depth > 1e-3).then(|| {
-                let quad = [n - u - v, n + u - v, n + u + v, n - u + v].map(|c| to_screen(c).0);
-                (face, quad, depth, to_screen(n).0)
-            })
-        })
-        .collect();
-    visible.sort_by(|a, b| a.2.total_cmp(&b.2));
-
-    let response = ui.interact(rect, ui.id().with("view_cube"), Sense::click());
-    let pointer = response.hover_pos();
-    // Topmost face under the pointer (last in back-to-front order).
-    let hovered = pointer.and_then(|p| {
-        visible
-            .iter()
-            .rev()
-            .find(|(_, quad, _, _)| point_in_convex(p, quad))
-            .map(|(face, ..)| *face)
-    });
-    if hovered.is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    let painter = ui.painter();
-    for (face, quad, depth, label_pos) in &visible {
-        let is_hovered = hovered == Some(*face);
-        let (fill, stroke, text) = if is_hovered {
-            (theme::ACCENT, theme::ACCENT_LIGHT, theme::TEXT_STRONG)
-        } else {
-            // Faces turned away from the camera are shaded darker.
-            let shade = 0.75 + 0.25 * depth;
-            (
-                Color32::from_rgb(0x3f, 0x3f, 0x46).gamma_multiply(shade),
-                Color32::from_rgb(0x52, 0x52, 0x5b),
-                Color32::from_rgb(0xd4, 0xd4, 0xd8),
-            )
-        };
-        painter.add(Shape::convex_polygon(
-            quad.to_vec(),
-            fill,
-            Stroke::new(1.0, stroke),
-        ));
-        if *depth > 0.35 {
-            painter.text(
-                *label_pos,
-                Align2::CENTER_CENTER,
-                face.label(),
-                theme::semibold(11.0),
-                text.gamma_multiply(depth.clamp(0.5, 1.0)),
-            );
-        }
-    }
-
-    response.clicked().then_some(hovered).flatten()
+        .find(|&&(_, j)| j == i as usize)
+        .map(|&(c, _)| c)
+        .expect("valid corner index")
 }
 
+/// Bilinear interpolation inside a quad ordered `[q0, q1, q2, q3]`.
+fn quad_at(quad: [Pos2; 4], u: f32, v: f32) -> Pos2 {
+    let w = [(1.0 - u) * (1.0 - v), u * (1.0 - v), u * v, (1.0 - u) * v];
+    let mut p = Pos2::ZERO;
+    for (i, wi) in w.iter().enumerate() {
+        p.x += quad[i].x * wi;
+        p.y += quad[i].y * wi;
+    }
+    p
+}
+
+/// Inverse bilinear mapping of `p` into quad parameter space. The
+/// orthographic projection of a square face is a parallelogram, so the
+/// affine solve is exact.
+fn quad_uv(p: Pos2, quad: [Pos2; 4]) -> (f32, f32) {
+    let [p00, p10, _, p01] = quad;
+    let ex = p10 - p00;
+    let ey = p01 - p00;
+    let det = ex.x * ey.y - ex.y * ey.x;
+    if det.abs() < 1e-6 {
+        return (0.5, 0.5);
+    }
+    let d = p - p00;
+    let u = (d.x * ey.y - d.y * ey.x) / det;
+    let v = (ex.x * d.y - ex.y * d.x) / det;
+    (u, v)
+}
+
+/// True when `p` is inside the convex quad.
 fn point_in_convex(p: Pos2, quad: &[Pos2; 4]) -> bool {
     let mut sign = 0.0f32;
     for i in 0..4 {
@@ -372,6 +368,176 @@ fn point_in_convex(p: Pos2, quad: &[Pos2; 4]) -> bool {
         }
     }
     true
+}
+
+/// Splits one visible face into a 3x3 grid of clickable cells (Goxel style):
+/// the center is the face, side strips are its 4 edges and corner cells are
+/// its 4 corners.
+fn face_cells(face: ViewFace, idx: [u8; 4], quad: [Pos2; 4]) -> [(ViewTarget, [Pos2; 4]); 9] {
+    let mut cells = std::array::from_fn(|_| (ViewTarget::Face(face), [Pos2::ZERO; 4]));
+    for j in 0..3usize {
+        for i in 0..3usize {
+            let (u0, u1) = (i as f32 / 3.0, (i + 1) as f32 / 3.0);
+            let (v0, v1) = (j as f32 / 3.0, (j + 1) as f32 / 3.0);
+            let cell = [
+                quad_at(quad, u0, v0),
+                quad_at(quad, u1, v0),
+                quad_at(quad, u1, v1),
+                quad_at(quad, u0, v1),
+            ];
+            let target = match (i, j) {
+                (1, 1) => ViewTarget::Face(face),
+                // Corner cells map to the quad corner they wrap.
+                (0, 0) => ViewTarget::Corner(corner_id(idx[0])),
+                (2, 0) => ViewTarget::Corner(corner_id(idx[1])),
+                (2, 2) => ViewTarget::Corner(corner_id(idx[2])),
+                (0, 2) => ViewTarget::Corner(corner_id(idx[3])),
+                // Side strips map to the two quad corners along that side.
+                (_, 0) => ViewTarget::Edge(edge_between(idx[0], idx[1])),
+                (2, _) => ViewTarget::Edge(edge_between(idx[1], idx[2])),
+                (_, 2) => ViewTarget::Edge(edge_between(idx[2], idx[3])),
+                _ => ViewTarget::Edge(edge_between(idx[3], idx[0])),
+            };
+            cells[j * 3 + i] = (target, cell);
+        }
+    }
+    cells
+}
+
+/// True when `target` lies on the face with quad corner indices `face_idx`
+/// (it is the face itself, or one of its edges or corners).
+fn target_touches_face(target: Option<ViewTarget>, face: ViewFace, face_idx: [u8; 4]) -> bool {
+    match target {
+        Some(ViewTarget::Face(f)) => f == face,
+        Some(ViewTarget::Edge(e)) => CUBE_EDGES
+            .iter()
+            .any(|&(ve, idx)| ve == e && idx.iter().all(|&c| face_idx.contains(&c))),
+        Some(ViewTarget::Corner(c)) => CUBE_CORNER_IDS
+            .iter()
+            .any(|&(vc, i)| vc == c && face_idx.iter().any(|&f| f as usize == i)),
+        None => false,
+    }
+}
+
+/// Solid, clickable view cube in the style of Goxel's. Each visible face is
+/// divided into a 3x3 grid of hit regions: the center picks the face, a side
+/// strip picks one of its edges and a corner cell picks one of its corners,
+/// so edge and corner targets have large, reliable hit zones. Hovering
+/// highlights every face that meets the target in yellow. Clicking snaps the
+/// camera to the target's preset view.
+fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget> {
+    let rot = view_rotation(camera);
+    let center = rect.center();
+    let scale = rect.width() * 0.3;
+
+    // Orthographic projection of a unit-cube vertex (view space y is up).
+    let to_screen = |v: Vec3| {
+        let p = rot * v;
+        (
+            Pos2::new(center.x + p.x * scale, center.y - p.y * scale),
+            p.z,
+        )
+    };
+    let verts: [Pos2; 8] = CUBE_CORNERS.map(|c| to_screen(c).0);
+
+    // Visible faces, sorted back to front so painter order matches depth.
+    let mut visible: Vec<(ViewFace, Vec3, [u8; 4], f32)> = CUBE_FACES
+        .iter()
+        .filter_map(|&(face, n, idx)| {
+            let depth = (rot * n).z;
+            (depth > 1e-3).then_some((face, n, idx, depth))
+        })
+        .collect();
+    visible.sort_by(|a, b| a.3.total_cmp(&b.3));
+
+    let response = ui.interact(rect, ui.id().with("view_cube"), Sense::click());
+
+    // Hit-test from the topmost face down. Inside a face the 3x3 cells do
+    // not overlap, so the first matching cell wins.
+    let hovered: Option<ViewTarget> = response.hover_pos().and_then(|p| {
+        visible.iter().rev().find_map(|&(face, _, idx, _)| {
+            let quad = idx.map(|i| verts[i as usize]);
+            if !point_in_convex(p, &quad) {
+                return None;
+            }
+            let (u, v) = quad_uv(p, quad);
+            let i = (u * 3.0).clamp(0.0, 2.999) as usize;
+            let j = (v * 3.0).clamp(0.0, 2.999) as usize;
+            Some(face_cells(face, idx, quad)[j * 3 + i].0)
+        })
+    });
+    if hovered.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let painter = ui.painter();
+    for &(face, n, idx, depth) in &visible {
+        let quad = idx.map(|i| verts[i as usize]);
+        let highlighted = target_touches_face(hovered, face, idx);
+        // Solid, opaque fill; camera-facing faces are brighter.
+        let shade = 0.7 + 0.3 * depth;
+        let base = Color32::from_rgb(0x52, 0x52, 0x5b);
+        let lit = Color32::from_rgb(0x8a, 0x8a, 0x94);
+        let fill = if highlighted {
+            blend(base, theme::BOUND, 0.85)
+        } else {
+            blend(base, lit, shade)
+        };
+        let stroke = if highlighted {
+            theme::BOUND
+        } else {
+            theme::BORDER
+        };
+        painter.add(Shape::convex_polygon(
+            quad.to_vec(),
+            fill,
+            Stroke::new(1.0, stroke),
+        ));
+        if depth > 0.35 {
+            let label_pos = to_screen(n).0;
+            let text = if highlighted {
+                theme::TEXT_STRONG
+            } else {
+                Color32::from_rgb(0xd4, 0xd4, 0xd8)
+            };
+            painter.text(
+                label_pos,
+                Align2::CENTER_CENTER,
+                face.label(),
+                theme::semibold(11.0),
+                text.gamma_multiply(depth.clamp(0.5, 1.0)),
+            );
+        }
+    }
+    // Hover indicator painted on top of the faces.
+    match hovered {
+        Some(ViewTarget::Edge(e)) => {
+            if let Some(&(_, idx)) = CUBE_EDGES.iter().find(|&&(ve, _)| ve == e) {
+                painter.add(Shape::line_segment(
+                    [verts[idx[0] as usize], verts[idx[1] as usize]],
+                    Stroke::new(4.0, theme::TEXT_STRONG),
+                ));
+            }
+        }
+        Some(ViewTarget::Corner(c)) => {
+            if let Some(&(_, i)) = CUBE_CORNER_IDS.iter().find(|&&(vc, _)| vc == c) {
+                painter.add(Shape::circle_filled(
+                    verts[i],
+                    CORNER_DOT_RADIUS,
+                    theme::TEXT_STRONG,
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    response.clicked().then_some(hovered).flatten()
+}
+
+/// Linear blend from `a` toward `b` by `t` in 0..=1.
+fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
 /// XYZ axis indicator in the bottom-right corner.
@@ -417,7 +583,7 @@ mod tests {
     #[test]
     fn front_view_looks_down_negative_z() {
         let mut cam = OrbitCamera::default();
-        cam.snap(ViewFace::Front);
+        cam.snap(ViewTarget::Face(ViewFace::Front));
         let rot = view_rotation(&cam);
         // The +Z face normal points straight at the camera.
         assert!(((rot * Vec3::Z).z - 1.0).abs() < 1e-4);
@@ -427,7 +593,7 @@ mod tests {
     fn ground_pick_hits_center() {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
         let mut cam = OrbitCamera::default();
-        cam.snap(ViewFace::Top);
+        cam.snap(ViewTarget::Face(ViewFace::Top));
         let proj = Projection::new(&cam, Vec3::ZERO, rect);
         let hit = proj.ground_hit(rect.center()).unwrap();
         assert!(hit.length() < 0.5, "hit = {hit:?}");

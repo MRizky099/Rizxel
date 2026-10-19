@@ -3,7 +3,51 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — UI optimization (2026-10-19)
+## [Unreleased] — UI Optimization: View Cube, Zen Mode, Resizable Panels
+
+### Added
+- Enhanced view cube with 26 clickable view targets in the Goxel style: the
+  6 faces, the 12 edges (45° diagonal views) and the 8 corners
+  (three-quarter views). Edges render as thick accent lines and corners as
+  accent dots; corners and edges take hit-test priority over faces.
+- `ViewTarget` (`Face`/`Edge`/`Corner`) with `ViewEdge` (12) and
+  `ViewCorner` (8) enums and camera snap angles in `rizxel-app`.
+- View menu lists all 26 targets grouped into Faces / Edges / Corners.
+- Zen mode (`Ctrl+Shift+F` or View menu) hides the option bar, tools panel
+  and sidebar, leaving the title bar, tabs, viewport (with view cube and
+  axis gizmo) and status bar.
+
+### Changed
+- Tools panel and sidebar are resizable: the tools panel can grow from 48 to
+  200 pt and the sidebar from 200 to 400 pt via their separator lines; the
+  sidebar no longer paints a duplicate border.
+
+## [Unreleased] — Phase 3: WGPU Viewport (2026-10-19)
+
+### Added
+- Native wgpu viewport renderer (`rizxel-ui/src/render/`) embedded in the
+  central panel through `egui_wgpu::Callback`:
+  - Offscreen 4× MSAA color + `Depth32Float` targets, resolved and blitted
+    into egui's render pass; recreated on resize.
+  - `scene.wgsl`: procedural infinity grid (`#aeaeae` minor/major lines,
+    `fwidth` anti-aliasing, red X / blue Z axes, distance and grazing-angle
+    fade, depth output), instanced thick screen-space lines (yellow model
+    bounds, hover outline) and translucent fills (hovered ground cell).
+  - Render mode toggle switches to a gradient background with a dimmer grid.
+- `OrbitCamera` matrix helpers (`eye`, `view_matrix`, `projection_matrix`,
+  `view_proj`, `FOV_Y`/`NEAR`/`FAR`) shared by the GPU and CPU picking.
+- Tests: WGSL validation with naga, GPU struct layout sizes, grid fade
+  clamping, color conversion.
+- Dependencies: `bytemuck` (rizxel-ui), `naga` 30 (dev, WGSL validation).
+
+### Changed
+- `viewport.rs` no longer paints the grid/bounds/hover cell with the egui
+  painter; it builds a `SceneFrame` for the GPU. The view cube and axis gizmo
+  remain egui overlays.
+- `docs/rizxel_phase1-2_implementation_plan.md` renamed to
+  `docs/rizxel_phase1-3_implementation_plan.md` and extended with Phase 3.
+
+## UI optimization (2026-10-19)
 
 ### Added
 - Per-tool option bar parameters after the Paint button, modeled on Goxel's

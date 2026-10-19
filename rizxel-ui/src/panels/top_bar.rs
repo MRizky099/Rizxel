@@ -115,13 +115,54 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         });
 
         ui.menu_button("View", |ui| {
-            ui.set_min_width(200.0);
+            ui.set_min_width(220.0);
+
+            if menu_item(ui, icon::CUBE_FOCUS, "Zen Mode", "Ctrl+Shift+F", true) {
+                ui_state.zen_mode = !ui_state.zen_mode;
+            }
+            ui.separator();
+
+            // Faces, then edges, then corners — the same 26 targets as the
+            // view cube itself.
+            let faces_label = egui::RichText::new("Faces").strong();
+            ui.add(egui::Label::new(faces_label).sense(Sense::hover()));
             for face in rizxel_app::ViewFace::ALL {
                 if menu_item(ui, icon::CUBE_FOCUS, face.label(), "", true) {
-                    state.camera.snap(face);
+                    state.camera.snap(rizxel_app::ViewTarget::Face(face));
                 }
             }
             ui.separator();
+
+            let edges_label = egui::RichText::new("Edges").strong();
+            ui.add(egui::Label::new(edges_label).sense(Sense::hover()));
+            for edge in rizxel_app::ViewEdge::ALL {
+                if menu_item(
+                    ui,
+                    icon::ARROW_BEND_DOWN_RIGHT,
+                    &format!("Edge {}", edge.label()),
+                    "",
+                    true,
+                ) {
+                    state.camera.snap(rizxel_app::ViewTarget::Edge(edge));
+                }
+            }
+            ui.separator();
+
+            let corners_label = egui::RichText::new("Corners").strong();
+            ui.add(egui::Label::new(corners_label).sense(Sense::hover()));
+            for corner in rizxel_app::ViewCorner::ALL {
+                if menu_item(
+                    ui,
+                    icon::CUBE,
+                    &format!("Corner {}", corner.label()),
+                    "",
+                    true,
+                ) {
+                    state.camera.snap(rizxel_app::ViewTarget::Corner(corner));
+                }
+            }
+            ui.separator();
+
             if menu_item(ui, icon::ARROWS_COUNTER_CLOCKWISE, "Reset Camera", "", true) {
                 state.camera = rizxel_app::OrbitCamera::default();
             }

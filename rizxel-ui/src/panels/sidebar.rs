@@ -1,6 +1,6 @@
 //! Right inspector: Color Palette, Layers and Bound Model sections.
 
-use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{Color32, Id, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use egui_phosphor::regular as icon;
 use rizxel_app::{AppState, Document};
 use rizxel_math::BoundSize;
@@ -13,37 +13,53 @@ const PALETTE_COLUMNS: usize = 8;
 const SWATCH_GAP: f32 = 4.0;
 
 pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
-    let panel = ui.max_rect();
-    ui.painter().vline(
-        panel.left() + 0.5,
-        panel.y_range(),
-        Stroke::new(1.0, theme::BORDER),
-    );
-
     let Some(doc) = state.doc_mut() else {
         return;
     };
 
     ui.spacing_mut().item_spacing.y = 0.0;
     let total = ui.available_height();
-    // Section heights follow the prototype's flex ratios (0.4 / 0.4 / 0.35).
-    let bounds_h = if ui_state.bounds_collapsed {
-        32.0
-    } else {
-        (total * 0.30).clamp(150.0, 190.0)
-    };
-    let palette_h = if ui_state.palette_collapsed {
-        32.0
-    } else {
-        ((total - bounds_h) * 0.5).max(160.0)
-    };
+    let collapsed = [ui_state.palette_collapsed, false, ui_state.bounds_collapsed];
 
-    section(ui, palette_h, |ui| palette_section(ui, doc, ui_state));
-    let layers_h = (ui.available_height() - bounds_h).max(120.0);
-    section(ui, layers_h, |ui| layers_section(ui, doc, ui_state));
-    section(ui, ui.available_height(), |ui| {
-        bounds_section(ui, doc, ui_state)
-    });
+    // Collapsed sections keep a header-only height; the rest share the rest
+    // of the space evenly (matching the prototype's flex ratios).
+    let order = ui_state.sidebar_order;
+    let n_open = order.iter().filter(|&&s| !collapsed[s]).count().max(1) as f32;
+    let used = order.iter().filter(|&&s| collapsed[s]).count() as f32 * 32.0;
+    let flex = ((total - used) / n_open).max(120.0);
+
+    // Draw each section; register its header rect for drag-to-reorder.
+    for (slot, &s) in order.iter().enumerate() {
+        let h = if collapsed[s] { 32.0 } else { flex };
+        let header_rect =
+            Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 32.0));
+        register_header(ui, ui_state, s, slot, header_rect);
+        match s {
+            0 => section(ui, h, |ui| palette_section(ui, doc, ui_state)),
+            1 => section(ui, h, |ui| layers_section(ui, doc, ui_state)),
+            _ => section(ui, h, |ui| bounds_section(ui, doc, ui_state)),
+        }
+    }
+}
+
+/// Tracks header drags so sections can be reordered. A drag that moves
+/// beyond the midpoint of an adjacent slot swaps the two sections.
+fn register_header(ui: &mut Ui, ui_state: &mut UiState, section: usize, slot: usize, rect: Rect) {
+    let resp = ui.interact(rect, Id::new(("sidebar_header", section)), Sense::drag());
+    let drag = resp.drag_delta().y;
+    if drag == 0.0 || ui_state.sidebar_order[slot] != section {
+        return;
+    }
+    let target = if drag < 0.0 {
+        slot.checked_sub(1)
+    } else {
+        (slot + 1 < 3).then_some(slot + 1)
+    };
+    let Some(target) = target else {
+        return;
+    };
+    let order = &mut ui_state.sidebar_order;
+    order.swap(slot, target);
 }
 
 /// Allocates a fixed-height vertical region with a dark bottom separator.
