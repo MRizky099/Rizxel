@@ -54,6 +54,13 @@ pub enum Edit {
         old: bool,
         new: bool,
     },
+    /// Reorders a layer: removes it at `from` and re-inserts it at `to`.
+    MoveLayer {
+        from: usize,
+        to: usize,
+    },
+    /// Several edits recorded as one undo step (applied in order).
+    Batch(Vec<Edit>),
     /// Resizes the bounds and every layer volume. `clipped` holds the voxels
     /// the shrink removed (restored on revert).
     SetBounds {
@@ -83,6 +90,8 @@ impl Edit {
             Edit::RenameLayer { index, new, .. } => data.layers[*index].name = new.clone(),
             Edit::SetLayerVisible { index, new, .. } => data.layers[*index].visible = *new,
             Edit::SetLayerLocked { index, new, .. } => data.layers[*index].locked = *new,
+            Edit::MoveLayer { from, to } => move_layer(data, *from, *to),
+            Edit::Batch(edits) => edits.iter().for_each(|e| e.apply(data)),
             Edit::SetBounds { new, clipped, .. } => {
                 set_bounds(data, *new);
                 // A merged drag may have clipped voxels that the final size
@@ -116,6 +125,8 @@ impl Edit {
             Edit::RenameLayer { index, old, .. } => data.layers[*index].name = old.clone(),
             Edit::SetLayerVisible { index, old, .. } => data.layers[*index].visible = *old,
             Edit::SetLayerLocked { index, old, .. } => data.layers[*index].locked = *old,
+            Edit::MoveLayer { from, to } => move_layer(data, *to, *from),
+            Edit::Batch(edits) => edits.iter().rev().for_each(|e| e.revert(data)),
             Edit::SetBounds { old, clipped, .. } => {
                 set_bounds(data, *old);
                 for c in clipped {
@@ -173,6 +184,11 @@ impl Edit {
             _ => false,
         }
     }
+}
+
+fn move_layer(data: &mut DocData, from: usize, to: usize) {
+    let layer = data.layers.remove(from);
+    data.layers.insert(to, layer);
 }
 
 /// Sets the document bounds and resizes every layer volume to match.

@@ -132,15 +132,23 @@ impl eframe::App for RizxelApp {
             }
             let error = dock.show(ui, |ui, panel| match panel {
                 dock::Panel::Viewport => viewport_panel(ui, state, target_format, meshes),
-                dock::Panel::Tools => panels::tools::show(ui, state, icons),
-                dock::Panel::Options => {
+                dock::Panel::Tools => {
+                    scroll_panel(ui, panel, |ui| panels::tools::show(ui, state, icons))
+                }
+                dock::Panel::Options => scroll_panel(ui, panel, |ui| {
                     egui::Frame::NONE
                         .inner_margin(egui::Margin::symmetric(8, 0))
                         .show(ui, |ui| panels::options::show(ui, state, icons));
+                }),
+                dock::Panel::Palette => {
+                    scroll_panel(ui, panel, |ui| panels::sidebar::palette(ui, state))
                 }
-                dock::Panel::Palette => panels::sidebar::palette(ui, state),
-                dock::Panel::Layers => panels::sidebar::layers(ui, state, ui_state),
-                dock::Panel::Bounds => panels::sidebar::bounds(ui, state),
+                dock::Panel::Layers => {
+                    scroll_panel(ui, panel, |ui| panels::sidebar::layers(ui, state, ui_state))
+                }
+                dock::Panel::Bounds => {
+                    scroll_panel(ui, panel, |ui| panels::sidebar::bounds(ui, state))
+                }
             });
             if let Some(error) = error {
                 log::warn!("{error}");
@@ -153,6 +161,15 @@ impl eframe::App for RizxelApp {
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }
+}
+
+/// Panel body that scrolls (both ways) when its content outgrows its dock
+/// group or floating window.
+fn scroll_panel(ui: &mut egui::Ui, panel: &dock::Panel, add: impl FnOnce(&mut egui::Ui)) {
+    egui::ScrollArea::both()
+        .id_salt(("dock_scroll", panel))
+        .auto_shrink([false, false])
+        .show(ui, add);
 }
 
 /// Viewport panel: document tabs above the 3D view, so they move with it.

@@ -317,6 +317,189 @@ impl Document {
         }
     }
 
+    /// Moves a layer to a new index; the active layer follows it. Higher
+    /// indices draw on top.
+    pub fn move_layer(&mut self, from: usize, to: usize) -> bool {
+        let len = self.data.layers.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let active = self.active_layer;
+        self.apply(Edit::MoveLayer { from, to }, false);
+        self.active_layer = if active == from {
+            to
+        } else if from < active && active <= to {
+            active - 1
+        } else if to <= active && active < from {
+            active + 1
+        } else {
+            active
+        };
+        true
+    }
+
+    /// Moves the active layer one step up (`true`, drawn above) or down.
+    pub fn move_active_layer(&mut self, up: bool) -> bool {
+        let from = self.active_layer;
+        let to = if up {
+            from + 1
+        } else {
+            match from.checked_sub(1) {
+                Some(to) => to,
+                None => return false,
+            }
+        };
+        self.move_layer(from, to)
+    }
+
+    /// Copies the active layer (voxels and flags) just above itself.
+    pub fn duplicate_active_layer(&mut self) -> bool {
+        let Some(source) = self.data.layers.get(self.active_layer) else {
+            return false;
+        };
+        let mut layer = source.clone();
+        layer.name = self.unique_name_from(&format!("{} copy", source.name));
+        let index = self.active_layer + 1;
+        self.apply(Edit::InsertLayer { index, layer }, false);
+        self.active_layer = index;
+        true
+    }
+
+    /// Merges the active layer into the one below it (upper voxels win).
+    pub fn merge_active_layer_down(&mut self) -> bool {
+        let upper = self.active_layer;
+        let Some(lower) = upper.checked_sub(1) else {
+            return false;
+        };
+        if upper >= self.data.layers.len() {
+            return false;
+        }
+        let edit = self.merge_into(lower, &[upper]);
+        self.apply(edit, false);
+        self.active_layer = lower;
+        true
+    }
+
+    /// Merges every visible layer into the lowest visible one.
+    pub fn merge_visible_layers(&mut self) -> bool {
+        let visible: Vec<usize> = (0..self.data.layers.len())
+            .filter(|&i| self.data.layers[i].visible)
+            .collect();
+        let [target, rest @ ..] = visible.as_slice() else {
+            return false;
+        };
+        if rest.is_empty() {
+            return false;
+        }
+        let edit = self.merge_into(*target, rest);
+        self.apply(edit, false);
+        self.active_layer = *target;
+        true
+    }
+
+    /// Builds one undo step that paints `sources` (ascending, all above
+    /// `target`) onto `target` in draw order, then removes them.
+    fn merge_into(&self, target: usize, sources: &[usize]) -> Edit {
+        let mut working = self.data.layers[target].volume.clone();
+        let mut changes = Vec::new();
+        for &i in sources {
+            for (pos, new) in self.data.layers[i].volume.iter() {
+                let old = working.get(pos);
+                if old != new {
+                    working.set(pos, new);
+                    changes.push(VoxelChange { pos, old, new });
+                }
+            }
+        }
+        // Folds repeated positions into one change each.
+        let mut merged = Vec::new();
+        crate::history::merge_voxel_changes(&mut merged, &changes);
+
+        let mut edits = vec![Edit::Voxels {
+            layer: target,
+            changes: merged,
+        }];
+        edits.extend(sources.iter().rev().map(|&index| Edit::RemoveLayer {
+            index,
+            layer: self.data.layers[index].clone(),
+        }));
+        Edit::Batch(edits)
+    }
+
+    /// Deletes every hidden layer. Refused when all layers are hidden, since
+    /// a document keeps at least one layer.
+    pub fn delete_hidden_layers(&mut self) -> bool {
+        let hidden: Vec<usize> = (0..self.data.layers.len())
+            .filter(|&i| !self.data.layers[i].visible)
+            .collect();
+        if hidden.is_empty() || hidden.len() == self.data.layers.len() {
+            return false;
+        }
+        let active = self.active_layer;
+        let removed_below = hidden.iter().filter(|&&i| i < active).count();
+        let edits = hidden
+            .iter()
+            .rev()
+            .map(|&index| Edit::RemoveLayer {
+                index,
+                layer: self.data.layers[index].clone(),
+            })
+            .collect();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = active.saturating_sub(removed_below);
+        true
+    }
+
+    /// Shows only layer `index`; when it already is the only visible one,
+    /// shows every layer again (Goxel's solo toggle).
+    pub fn solo_layer(&mut self, index: usize) {
+        if index >= self.data.layers.len() {
+            return;
+        }
+        let others_hidden = self
+            .data
+            .layers
+            .iter()
+            .enumerate()
+            .all(|(i, l)| i == index || !l.visible);
+        let edits: Vec<Edit> = self
+            .data
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let new = i == index || others_hidden;
+                (l.visible != new).then_some(Edit::SetLayerVisible {
+                    index: i,
+                    old: l.visible,
+                    new,
+                })
+            })
+            .collect();
+        if !edits.is_empty() {
+            self.apply(Edit::Batch(edits), false);
+        }
+    }
+
+    /// Locks (or unlocks) every layer as one undo step.
+    pub fn set_all_locked(&mut self, locked: bool) {
+        let edits: Vec<Edit> = self
+            .data
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.locked != locked)
+            .map(|(index, l)| Edit::SetLayerLocked {
+                index,
+                old: l.locked,
+                new: locked,
+            })
+            .collect();
+        if !edits.is_empty() {
+            self.apply(Edit::Batch(edits), false);
+        }
+    }
+
     pub fn set_bounds(&mut self, new: BoundSize, merge: bool) {
         let old = self.data.bounds;
         if old == new {
@@ -352,6 +535,18 @@ impl Document {
         (1..)
             .map(|n| format!("Layer {n}"))
             .find(|name| !self.data.layers.iter().any(|l| &l.name == name))
+            .expect("infinite iterator")
+    }
+
+    /// `base`, or `base 2`, `base 3`... when that name is taken.
+    fn unique_name_from(&self, base: &str) -> String {
+        let taken = |name: &str| self.data.layers.iter().any(|l| l.name == name);
+        if !taken(base) {
+            return base.to_owned();
+        }
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|name| !taken(name))
             .expect("infinite iterator")
     }
 
@@ -425,6 +620,108 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Document with layers named `names`, each holding one voxel at x = index.
+    fn doc_with(names: &[&str]) -> Document {
+        let layers = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let mut l = Layer::new(*n, BoundSize::default());
+                l.volume.set(IVec3::new(i as i32, 0, 0), 2 + i as Voxel);
+                l
+            })
+            .collect();
+        Document::with_layers("t", layers)
+    }
+
+    fn names(doc: &Document) -> Vec<&str> {
+        doc.data.layers.iter().map(|l| l.name.as_str()).collect()
+    }
+
+    #[test]
+    fn move_layer_reorders_and_undoes() {
+        let mut d = doc_with(&["A", "B", "C"]);
+        d.active_layer = 0;
+        assert!(d.move_active_layer(true));
+        assert_eq!(names(&d), ["B", "A", "C"]);
+        assert_eq!(d.active_layer, 1);
+        assert!(d.move_layer(2, 0));
+        assert_eq!(names(&d), ["C", "B", "A"]);
+        assert_eq!(d.active_layer, 2, "active follows its layer");
+        d.undo();
+        d.undo();
+        assert_eq!(names(&d), ["A", "B", "C"]);
+        d.active_layer = 0;
+        assert!(!d.move_active_layer(false));
+    }
+
+    #[test]
+    fn duplicate_copies_voxels_with_unique_name() {
+        let mut d = doc_with(&["A"]);
+        assert!(d.duplicate_active_layer());
+        assert!(d.duplicate_active_layer());
+        assert_eq!(names(&d), ["A", "A copy", "A copy copy"]);
+        assert_eq!(d.data.layers[2].volume.get(IVec3::ZERO), 2);
+        d.active_layer = 0;
+        d.duplicate_active_layer();
+        assert_eq!(d.data.layers[1].name, "A copy 2");
+    }
+
+    #[test]
+    fn merge_down_combines_and_undoes_in_one_step() {
+        let mut d = doc_with(&["A", "B"]);
+        // B also covers A's voxel with its own color: the upper layer wins.
+        d.data.layers[1].volume.set(IVec3::ZERO, 9);
+        d.active_layer = 1;
+        assert!(d.merge_active_layer_down());
+        assert_eq!(names(&d), ["A"]);
+        assert_eq!(d.data.layers[0].volume.get(IVec3::ZERO), 9);
+        assert_eq!(d.data.layers[0].volume.get(IVec3::X), 3);
+        assert!(d.undo());
+        assert_eq!(names(&d), ["A", "B"]);
+        assert_eq!(d.data.layers[0].volume.voxel_count(), 1);
+        assert_eq!(d.data.layers[0].volume.get(IVec3::ZERO), 2);
+        d.active_layer = 0;
+        assert!(!d.merge_active_layer_down());
+    }
+
+    #[test]
+    fn merge_visible_skips_hidden_layers() {
+        let mut d = doc_with(&["A", "B", "C"]);
+        d.toggle_layer_visible(1);
+        assert!(d.merge_visible_layers());
+        assert_eq!(names(&d), ["A", "B"]);
+        assert_eq!(d.data.layers[0].volume.voxel_count(), 2);
+        d.undo();
+        assert_eq!(names(&d), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn delete_hidden_keeps_one_layer() {
+        let mut d = doc_with(&["A", "B", "C"]);
+        d.active_layer = 2;
+        d.toggle_layer_visible(0);
+        assert!(d.delete_hidden_layers());
+        assert_eq!(names(&d), ["B", "C"]);
+        assert_eq!(d.data.layers[d.active_layer].name, "C");
+        d.toggle_layer_visible(0);
+        d.toggle_layer_visible(1);
+        assert!(!d.delete_hidden_layers(), "all hidden: refused");
+    }
+
+    #[test]
+    fn solo_toggles_between_one_and_all() {
+        let mut d = doc_with(&["A", "B", "C"]);
+        d.solo_layer(1);
+        let vis = |d: &Document| d.data.layers.iter().map(|l| l.visible).collect::<Vec<_>>();
+        assert_eq!(vis(&d), [false, true, false]);
+        d.solo_layer(1);
+        assert_eq!(vis(&d), [true, true, true]);
+        d.solo_layer(1);
+        d.undo();
+        assert_eq!(vis(&d), [true, true, true]);
+    }
 
     #[test]
     fn layer_ops_are_undoable() {
