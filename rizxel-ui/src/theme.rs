@@ -53,9 +53,11 @@ pub fn regular(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
-/// Phosphor icon font at `size`.
+/// Phosphor icon font at `size`. Icons use the Phosphor family directly:
+/// Inter defines glyphs in the same Private Use Area and would otherwise
+/// shadow some icons in the proportional fallback chain.
 pub fn icon(size: f32) -> FontId {
-    FontId::proportional(size)
+    FontId::new(size, FontFamily::Name("phosphor".into()))
 }
 
 /// Registers Inter (Regular + SemiBold) and Phosphor icons.
@@ -98,6 +100,12 @@ pub fn install_fonts(ctx: &egui::Context) {
     // Phosphor is inserted as a proportional fallback (after Inter) and also
     // appended to the semibold chain so icons render in headers too.
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // The "phosphor" family [`icon`] draws with holds Phosphor alone: Inter has
+    // its own glyphs at many of the same Private Use Area codepoints, and
+    // would shadow icons like the eye or arrows if it came first.
+    fonts
+        .families
+        .insert(FontFamily::Name("phosphor".into()), vec!["phosphor".into()]);
     if let Some(chain) = fonts
         .families
         .get_mut(&FontFamily::Name("inter-semibold".into()))

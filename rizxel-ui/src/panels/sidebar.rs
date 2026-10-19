@@ -7,7 +7,7 @@ use rizxel_math::BoundSize;
 
 use super::UiState;
 use crate::theme;
-use crate::widgets::{icon_button, panel_header, IconStyle};
+use crate::widgets::{icon_button, icon_label, IconStyle};
 
 const PALETTE_COLUMNS: usize = 8;
 const SWATCH_GAP: f32 = 4.0;
@@ -96,14 +96,9 @@ fn palette_section(ui: &mut Ui, doc: &mut Document) {
     );
 
     // Swatch grid.
-    egui::ScrollArea::vertical()
-        .id_salt("palette_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            egui::Frame::NONE
-                .inner_margin(12)
-                .show(ui, |ui| swatch_grid(ui, doc));
-        });
+    egui::Frame::NONE
+        .inner_margin(12)
+        .show(ui, |ui| swatch_grid(ui, doc));
 }
 
 fn kv_row(ui: &mut Ui, key: &str, value: &str) {
@@ -190,59 +185,195 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document) {
 
 // ------------------------------------------------------------------- layers
 
+/// Height of one layer row.
+const LAYER_ROW_HEIGHT: f32 = 32.0;
+
+/// Drag payload for reordering layer rows.
+#[derive(Clone, Copy)]
+struct LayerDrag(usize);
+
 enum LayerAction {
     Select(usize),
     ToggleVisible(usize),
+    Solo(usize),
     ToggleLocked(usize),
     StartRename(usize),
+    Duplicate(usize),
+    MergeDown(usize),
+    Move { from: usize, to: usize },
+    Delete(usize),
 }
 
+/// Goxel-style layer panel: toolbar, reorderable list (top layer first),
+/// then whole-document layer operations.
 fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    let can_delete = doc.data.layers.len() > 1;
-    let mut add = false;
-    let mut delete = false;
-    panel_header(ui, "", None, theme::TEXT, theme::BORDER, |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let del_style = IconStyle::small().hover_color(theme::DANGER);
-        delete = icon_button(ui, icon::TRASH, del_style, can_delete)
-            .on_hover_text("Delete Layer")
-            .clicked();
-        add = icon_button(ui, icon::PLUS, IconStyle::small(), true)
-            .on_hover_text("New Layer")
-            .clicked();
-    });
-    if add {
-        doc.add_layer();
-    }
-    if delete {
-        doc.delete_active_layer();
-        ui_state.renaming_layer = None;
-    }
-
     let mut action = None;
-    egui::ScrollArea::vertical()
-        .id_salt("layers_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            egui::Frame::NONE.inner_margin(8).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                for i in 0..doc.data.layers.len() {
-                    if let Some(a) = layer_row(ui, doc, i, ui_state) {
-                        action = Some(a);
-                    }
-                }
-            });
-        });
+    egui::Frame::NONE.inner_margin(8).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        layer_toolbar(ui, doc, ui_state);
+        ui.add_space(2.0);
+
+        // Higher indices draw on top, so the list runs from the last layer.
+        for i in (0..doc.data.layers.len()).rev() {
+            if let Some(a) = layer_row(ui, doc, i, ui_state) {
+                action = Some(a);
+            }
+        }
+
+        ui.add_space(6.0);
+        layer_operations(ui, doc, ui_state);
+    });
 
     match action {
         Some(LayerAction::Select(i)) => doc.active_layer = i,
         Some(LayerAction::ToggleVisible(i)) => doc.toggle_layer_visible(i),
+        Some(LayerAction::Solo(i)) => doc.solo_layer(i),
         Some(LayerAction::ToggleLocked(i)) => doc.toggle_layer_locked(i),
         Some(LayerAction::StartRename(i)) => {
             doc.active_layer = i;
             ui_state.renaming_layer = Some((i, doc.data.layers[i].name.clone()));
         }
+        Some(LayerAction::Duplicate(i)) => {
+            doc.active_layer = i;
+            doc.duplicate_active_layer();
+        }
+        Some(LayerAction::MergeDown(i)) => {
+            doc.active_layer = i;
+            doc.merge_active_layer_down();
+            ui_state.renaming_layer = None;
+        }
+        Some(LayerAction::Move { from, to }) => {
+            doc.move_layer(from, to);
+            ui_state.renaming_layer = None;
+        }
+        Some(LayerAction::Delete(i)) => {
+            doc.active_layer = i;
+            doc.delete_active_layer();
+            ui_state.renaming_layer = None;
+        }
         None => {}
+    }
+}
+
+/// New / delete / merge down / move up / move down / duplicate for the
+/// active layer.
+fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
+    let count = doc.data.layers.len();
+    let active = doc.active_layer;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let style = IconStyle::small();
+        if icon_button(ui, icon::PLUS, style, true)
+            .on_hover_text("New layer")
+            .clicked()
+        {
+            doc.add_layer();
+        }
+        let del = style.hover_color(theme::DANGER);
+        if icon_button(ui, icon::TRASH, del, count > 1)
+            .on_hover_text("Delete layer")
+            .clicked()
+        {
+            doc.delete_active_layer();
+            ui_state.renaming_layer = None;
+        }
+        if icon_button(ui, icon::ARROW_LINE_DOWN, style, active > 0)
+            .on_hover_text("Merge down")
+            .clicked()
+        {
+            doc.merge_active_layer_down();
+            ui_state.renaming_layer = None;
+        }
+        if icon_button(ui, icon::ARROW_UP, style, active + 1 < count)
+            .on_hover_text("Move layer up")
+            .clicked()
+        {
+            doc.move_active_layer(true);
+            ui_state.renaming_layer = None;
+        }
+        if icon_button(ui, icon::ARROW_DOWN, style, active > 0)
+            .on_hover_text("Move layer down")
+            .clicked()
+        {
+            doc.move_active_layer(false);
+            ui_state.renaming_layer = None;
+        }
+        if icon_button(ui, icon::COPY, style, true)
+            .on_hover_text("Duplicate layer")
+            .clicked()
+        {
+            doc.duplicate_active_layer();
+        }
+    });
+}
+
+/// Full-width button for an operation spanning several layers.
+fn wide_button(ui: &mut Ui, glyph: &str, label: &str, enabled: bool, tip: &str) -> bool {
+    let text = icon_label(ui, glyph, label, Some(12.0));
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(text).min_size(egui::vec2(ui.available_width(), 26.0)),
+    )
+    .on_hover_text(tip)
+    .on_disabled_hover_text(tip)
+    .clicked()
+}
+
+fn layer_operations(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
+    let visible = doc.data.layers.iter().filter(|l| l.visible).count();
+    let hidden = doc.data.layers.len() - visible;
+    let all_locked = doc.data.layers.iter().all(|l| l.locked);
+
+    if wide_button(
+        ui,
+        icon::STACK,
+        "Merge visible",
+        visible > 1,
+        "Merge every visible layer into the lowest visible one",
+    ) {
+        doc.merge_visible_layers();
+        ui_state.renaming_layer = None;
+    }
+    if wide_button(
+        ui,
+        icon::EYE_SLASH,
+        "Delete hidden layers",
+        hidden > 0 && visible > 0,
+        "Delete every hidden layer",
+    ) {
+        doc.delete_hidden_layers();
+        ui_state.renaming_layer = None;
+    }
+    let (glyph, label) = if all_locked {
+        (icon::LOCK_OPEN, "Unlock all layers")
+    } else {
+        (icon::LOCK, "Lock all layers")
+    };
+    if wide_button(ui, glyph, label, true, "Lock or unlock every layer") {
+        doc.set_all_locked(!all_locked);
+    }
+
+    if let Some(layer) = doc.active_layer() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(format!(
+                "Active: {} ({} voxels)",
+                layer.name,
+                layer.volume.voxel_count()
+            ))
+            .size(11.0)
+            .color(theme::TEXT_MUTED),
+        );
+    }
+}
+
+/// Final index of a layer dragged from `from` and dropped above (`true`) or
+/// below row `target`. Rows run top layer first, so "above" is a higher index.
+fn drop_index(from: usize, target: usize, above: bool) -> usize {
+    match (above, from > target) {
+        (true, true) => target + 1,
+        (true, false) | (false, true) => target,
+        (false, false) => target - 1,
     }
 }
 
@@ -252,10 +383,17 @@ fn layer_row(
     i: usize,
     ui_state: &mut UiState,
 ) -> Option<LayerAction> {
-    let layer = doc.data.layers[i].clone();
+    let layer = &doc.data.layers[i];
+    let (visible, locked) = (layer.visible, layer.locked);
+    let name = layer.name.clone();
+    let voxels = layer.volume.voxel_count();
+    let count = doc.data.layers.len();
     let selected = i == doc.active_layer;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), LAYER_ROW_HEIGHT),
+        Sense::click_and_drag(),
+    );
+    response.dnd_set_drag_payload(LayerDrag(i));
 
     let painter = ui.painter();
     if selected {
@@ -272,20 +410,18 @@ fn layer_row(
 
     let mut action = None;
 
-    // Eye toggle.
+    // Eye toggle; Ctrl+click shows only this layer.
     let eye_rect = Rect::from_center_size(
         rect.left_center() + egui::vec2(16.0, 0.0),
         egui::vec2(18.0, 18.0),
     );
-    let (eye_glyph, eye_color) = if layer.visible {
-        (
-            icon::EYE,
-            if selected {
-                theme::TEXT
-            } else {
-                theme::TEXT_DIM
-            },
-        )
+    let (eye_glyph, eye_color) = if visible {
+        let color = if selected {
+            theme::TEXT
+        } else {
+            theme::TEXT_DIM
+        };
+        (icon::EYE, color)
     } else {
         (icon::EYE_SLASH, Color32::from_rgb(0x4b, 0x55, 0x63))
     };
@@ -293,13 +429,18 @@ fn layer_row(
         .put(eye_rect, |ui: &mut Ui| {
             icon_button(ui, eye_glyph, IconStyle::small().color(eye_color), true)
         })
-        .on_hover_text(if layer.visible {
-            "Hide layer"
+        .on_hover_text(if visible {
+            "Hide layer (Ctrl+click: show only this layer)"
         } else {
-            "Show layer"
+            "Show layer (Ctrl+click: show only this layer)"
         });
     if eye.clicked() {
-        action = Some(LayerAction::ToggleVisible(i));
+        let solo = ui.input(|inp| inp.modifiers.command);
+        action = Some(if solo {
+            LayerAction::Solo(i)
+        } else {
+            LayerAction::ToggleVisible(i)
+        });
     }
 
     // Lock toggle.
@@ -307,12 +448,8 @@ fn layer_row(
         rect.right_center() - egui::vec2(16.0, 0.0),
         egui::vec2(18.0, 18.0),
     );
-    let lock_glyph = if layer.locked {
-        icon::LOCK
-    } else {
-        icon::LOCK_OPEN
-    };
-    let lock_color = if selected && !layer.locked {
+    let lock_glyph = if locked { icon::LOCK } else { icon::LOCK_OPEN };
+    let lock_color = if selected && !locked {
         theme::TEXT_MUTED
     } else {
         theme::TEXT_DIM
@@ -321,19 +458,26 @@ fn layer_row(
         .put(lock_rect, |ui: &mut Ui| {
             icon_button(ui, lock_glyph, IconStyle::small().color(lock_color), true)
         })
-        .on_hover_text(if layer.locked {
-            "Unlock layer"
-        } else {
-            "Lock layer"
-        });
+        .on_hover_text(if locked { "Unlock layer" } else { "Lock layer" });
     if lock.clicked() {
         action = Some(LayerAction::ToggleLocked(i));
     }
 
+    // Voxel count, right-aligned before the lock.
+    let count_galley =
+        ui.painter()
+            .layout_no_wrap(voxels.to_string(), theme::regular(10.0), theme::TEXT_MUTED);
+    let count_pos = egui::pos2(
+        lock_rect.left() - 6.0 - count_galley.size().x,
+        rect.center().y - count_galley.size().y / 2.0,
+    );
+    ui.painter()
+        .galley(count_pos, count_galley, theme::TEXT_MUTED);
+
     // Name (inline rename on double-click).
     let name_rect = Rect::from_min_max(
         egui::pos2(eye_rect.right() + 10.0, rect.top() + 4.0),
-        egui::pos2(lock_rect.left() - 6.0, rect.bottom() - 4.0),
+        egui::pos2(count_pos.x - 6.0, rect.bottom() - 4.0),
     );
     let renaming = matches!(&ui_state.renaming_layer, Some((r, _)) if *r == i);
     if renaming {
@@ -355,9 +499,9 @@ fn layer_row(
                 }
             }
         }
-    } else {
-        let mut text = RichText::new(&layer.name).size(12.0);
-        text = match (selected, layer.visible) {
+    } else if name_rect.width() > 0.0 {
+        let mut text = RichText::new(&name).size(12.0);
+        text = match (selected, visible) {
             (true, _) => text.color(theme::TEXT_STRONG).font(theme::semibold(12.0)),
             (false, false) => text.color(theme::TEXT_DIM).italics(),
             (false, true) => text.color(theme::TEXT_DIM),
@@ -372,6 +516,33 @@ fn layer_row(
         ui.painter().galley(pos, galley, theme::TEXT);
     }
 
+    // Drag a row onto another to reorder: the upper half drops above it.
+    if let Some(from) = response.dnd_hover_payload::<LayerDrag>().map(|p| p.0) {
+        if from != i {
+            let above = ui
+                .input(|inp| inp.pointer.interact_pos())
+                .is_some_and(|p| p.y < rect.center().y);
+            let y = if above {
+                rect.top() - 2.0
+            } else {
+                rect.bottom() + 2.0
+            };
+            ui.painter()
+                .hline(rect.x_range(), y, Stroke::new(2.0, theme::ACCENT));
+        }
+    }
+    if let Some(from) = response.dnd_release_payload::<LayerDrag>().map(|p| p.0) {
+        if from != i {
+            let above = ui
+                .input(|inp| inp.pointer.interact_pos())
+                .is_some_and(|p| p.y < rect.center().y);
+            action = Some(LayerAction::Move {
+                from,
+                to: drop_index(from, i, above),
+            });
+        }
+    }
+
     if action.is_none() && !renaming {
         if response.double_clicked() {
             action = Some(LayerAction::StartRename(i));
@@ -379,7 +550,43 @@ fn layer_row(
             action = Some(LayerAction::Select(i));
         }
     }
-    response.on_hover_text("Double-click to rename");
+
+    response
+        .on_hover_text("Double-click to rename, drag to reorder, right-click for more")
+        .context_menu(|ui| {
+            ui.set_min_width(180.0);
+            let item = |ui: &mut Ui, glyph: &str, label: &str, enabled: bool| {
+                let button = egui::Button::new(icon_label(ui, glyph, label, None));
+                let clicked = ui.add_enabled(enabled, button).clicked();
+                if clicked {
+                    ui.close();
+                }
+                clicked
+            };
+            if item(ui, icon::PENCIL_SIMPLE, "Rename", true) {
+                action = Some(LayerAction::StartRename(i));
+            }
+            if item(ui, icon::COPY, "Duplicate", true) {
+                action = Some(LayerAction::Duplicate(i));
+            }
+            if item(ui, icon::ARROW_LINE_DOWN, "Merge Down", i > 0) {
+                action = Some(LayerAction::MergeDown(i));
+            }
+            ui.separator();
+            if item(ui, icon::ARROW_UP, "Move Up", i + 1 < count) {
+                action = Some(LayerAction::Move { from: i, to: i + 1 });
+            }
+            if item(ui, icon::ARROW_DOWN, "Move Down", i > 0) {
+                action = Some(LayerAction::Move { from: i, to: i - 1 });
+            }
+            if item(ui, icon::EYE, "Show Only This", true) {
+                action = Some(LayerAction::Solo(i));
+            }
+            ui.separator();
+            if item(ui, icon::TRASH, "Delete", count > 1) {
+                action = Some(LayerAction::Delete(i));
+            }
+        });
     action
 }
 
@@ -442,4 +649,18 @@ fn bounds_section(ui: &mut Ui, doc: &mut Document) {
                 .color(theme::TEXT_MUTED),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drop_index;
+
+    #[test]
+    fn drop_index_places_layer_next_to_target() {
+        // Layers [0, 1, 2, 3], list shows 3 at the top.
+        assert_eq!(drop_index(0, 2, true), 2, "0 above 2 -> [1,2,0,3]");
+        assert_eq!(drop_index(0, 2, false), 1, "0 below 2 -> [1,0,2,3]");
+        assert_eq!(drop_index(3, 1, true), 2, "3 above 1 -> [0,1,3,2]");
+        assert_eq!(drop_index(3, 1, false), 1, "3 below 1 -> [0,3,1,2]");
+    }
 }

@@ -7,7 +7,7 @@ use rizxel_app::AppState;
 
 use super::UiState;
 use crate::dock::{self, Workspace};
-use crate::widgets::{icon_button, IconStyle};
+use crate::widgets::{icon_button, icon_label, IconStyle};
 use crate::{actions, theme};
 
 const CONTROL_WIDTH: f32 = 46.0;
@@ -131,7 +131,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             ui.separator();
 
             // Standard views: each family of targets is its own submenu.
-            ui.menu_button(format!("{}  Faces", icon::SQUARE), |ui| {
+            ui.menu_button(icon_label(ui, icon::SQUARE, "Faces", None), |ui| {
                 ui.set_min_width(160.0);
                 for face in rizxel_app::ViewFace::ALL {
                     if menu_item(ui, icon::SQUARE, face.label(), "", true) {
@@ -140,7 +140,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 }
             });
 
-            ui.menu_button(format!("{}  Edges", icon::LINE_SEGMENT), |ui| {
+            ui.menu_button(icon_label(ui, icon::LINE_SEGMENT, "Edges", None), |ui| {
                 ui.set_min_width(160.0);
                 for edge in rizxel_app::ViewEdge::ALL {
                     if menu_item(ui, icon::LINE_SEGMENT, edge.label(), "", true) {
@@ -149,7 +149,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 }
             });
 
-            ui.menu_button(format!("{}  Corners", icon::CUBE), |ui| {
+            ui.menu_button(icon_label(ui, icon::CUBE, "Corners", None), |ui| {
                 ui.set_min_width(160.0);
                 for corner in rizxel_app::ViewCorner::ALL {
                     if menu_item(ui, icon::CUBE, corner.label(), "", true) {
@@ -182,7 +182,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
 
 /// Menu entry with leading icon and trailing shortcut. Returns true on click.
 fn menu_item(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool) -> bool {
-    let button = egui::Button::new(format!("{glyph}  {label}")).shortcut_text(shortcut);
+    let button = egui::Button::new(icon_label(ui, glyph, label, None)).shortcut_text(shortcut);
     let clicked = ui.add_enabled(enabled, button).clicked();
     if clicked {
         ui.close();
@@ -192,7 +192,7 @@ fn menu_item(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: boo
 
 /// View > Panels: toggle visibility and restore the default workspace layout.
 fn panels_menu(ui: &mut Ui, dock: &mut Workspace) {
-    ui.menu_button(format!("{}  Panels", icon::SQUARES_FOUR), |ui| {
+    ui.menu_button(icon_label(ui, icon::SQUARES_FOUR, "Panels", None), |ui| {
         ui.set_min_width(200.0);
         for panel in dock::Panel::ALL {
             let closable = panel.permissions().closable;
@@ -265,7 +265,7 @@ pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut U
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(icon::CUBE)
-                            .size(28.0)
+                            .font(theme::icon(28.0))
                             .color(theme::ACCENT),
                     );
                     ui.vertical(|ui| {

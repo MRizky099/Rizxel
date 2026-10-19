@@ -25,21 +25,25 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         };
         ui.label(
             RichText::new(icon::CROSSHAIR)
-                .size(12.0)
+                .font(theme::icon(12.0))
                 .color(theme::TEXT_DIM),
         );
         ui.label(small(coords));
 
         separator(ui);
 
-        ui.label(RichText::new(icon::CUBE).size(12.0).color(theme::TEXT_DIM));
+        ui.label(
+            RichText::new(icon::CUBE)
+                .font(theme::icon(12.0))
+                .color(theme::TEXT_DIM),
+        );
         ui.label(small(format!("Selected: {} voxels", state.selected_voxels)));
 
         if let Some(doc) = state.doc() {
             separator(ui);
             ui.label(
                 RichText::new(icon::CUBE_TRANSPARENT)
-                    .size(12.0)
+                    .font(theme::icon(12.0))
                     .color(theme::TEXT_DIM),
             );
             ui.label(small(format!("Voxels: {}", doc.visible_voxel_count())));
@@ -48,7 +52,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             let b = doc.data.bounds;
             ui.label(
                 RichText::new(icon::BOUNDING_BOX)
-                    .size(12.0)
+                    .font(theme::icon(12.0))
                     .color(theme::TEXT_DIM),
             );
             ui.label(small(format!("Bounds: {}×{}×{}", b.x(), b.y(), b.z())));
@@ -61,7 +65,11 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                 None => (state.hint(), theme::BOUND),
             };
             ui.label(RichText::new(text).size(11.0).color(color));
-            ui.label(RichText::new(icon::INFO).size(12.0).color(color));
+            ui.label(
+                RichText::new(icon::INFO)
+                    .font(theme::icon(12.0))
+                    .color(color),
+            );
         });
     });
 

@@ -95,6 +95,22 @@ pub fn icon_button(ui: &mut Ui, icon: &str, style: IconStyle, enabled: bool) -> 
 }
 
 /// Paints a centered icon glyph inside `rect`.
+/// `glyph` (in the icon font) followed by `label`, for buttons and menus.
+/// Uses the widget's own text color, so hover/disabled styling still applies.
+pub fn icon_label(ui: &Ui, glyph: &str, label: &str, size: Option<f32>) -> egui::text::LayoutJob {
+    let size = size.unwrap_or_else(|| egui::TextStyle::Button.resolve(ui.style()).size);
+    let mut job = egui::text::LayoutJob::default();
+    let format = |font_id| egui::TextFormat {
+        font_id,
+        color: Color32::PLACEHOLDER,
+        valign: egui::Align::Center,
+        ..Default::default()
+    };
+    job.append(glyph, 0.0, format(theme::icon(size)));
+    job.append(label, size * 0.6, format(theme::regular(size)));
+    job
+}
+
 pub fn paint_icon(ui: &Ui, rect: Rect, icon: &str, size: f32, color: Color32) {
     ui.painter().text(
         rect.center(),
@@ -122,50 +138,6 @@ pub fn horizontal_divider(ui: &mut Ui, width: f32) {
         rect.x_range(),
         rect.center().y,
         Stroke::new(1.0, theme::SEPARATOR),
-    );
-}
-
-/// Panel header row (`COLOR PALETTE`, `LAYERS`, ...) with optional bottom accent.
-pub fn panel_header(
-    ui: &mut Ui,
-    title: &str,
-    icon: Option<&str>,
-    text_color: Color32,
-    border: Color32,
-    add_right: impl FnOnce(&mut Ui),
-) {
-    let height = 32.0;
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, theme::BG_HEADER);
-    painter.hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        Stroke::new(1.0, border),
-    );
-
-    let label = match icon {
-        Some(icon) => format!("{icon}  {title}"),
-        None => title.to_owned(),
-    };
-    painter.text(
-        rect.left_center() + egui::vec2(12.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        label,
-        theme::semibold(11.0),
-        text_color,
-    );
-
-    let right = Rect::from_min_max(
-        egui::pos2(rect.right() - 80.0, rect.top()),
-        egui::pos2(rect.right() - 8.0, rect.bottom()),
-    );
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(right)
-            .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        add_right,
     );
 }
 
