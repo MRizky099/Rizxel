@@ -5,9 +5,11 @@
 
 pub mod mesher;
 pub mod raycast;
+pub mod shapes;
 pub mod tools;
 
 pub use mesher::{greedy_mesh, mesh_volume, Mesh};
+pub use shapes::rasterize_shape;
 pub use tools::{
     BrushOptions, BrushShape, ColorPickerOptions, CursorOptions, DragMode, ExtrudeOptions,
     FillOptions, FuzzySelectOptions, MaskMode, MoveOptions, NamesMode, PlaneMode, PlaneOptions,

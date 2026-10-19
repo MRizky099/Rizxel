@@ -2668,6 +2668,8 @@ dependencies = [
  "rizxel-engine",
  "rizxel-io",
  "rizxel-math",
+ "serde_json",
+ "zstd",
 ]
 
 [[package]]
@@ -2698,6 +2700,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

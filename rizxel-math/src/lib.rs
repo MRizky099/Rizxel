@@ -5,11 +5,13 @@
 //! the tiled voxel volume.
 
 pub mod aabb;
+pub mod layer;
 pub mod types;
 pub mod volume;
 
 pub use aabb::Aabb;
 pub use glam::{IVec3, UVec3, Vec3};
+pub use layer::{LayerId, LayerKind, Material, ShapeKind, VoxelBox};
 pub use types::{
     is_empty, BoundSize, Palette, Rgba8, Voxel, EMPTY_VOXEL, FIRST_COLOR_INDEX, MAX_PALETTE_COLORS,
 };

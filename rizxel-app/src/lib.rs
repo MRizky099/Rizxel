@@ -13,7 +13,7 @@ use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::{Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
-pub use document::{DocData, Document, Layer};
+pub use document::{DocData, Document, Layer, LayerProps};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
