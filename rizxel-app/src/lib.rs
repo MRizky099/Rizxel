@@ -8,7 +8,8 @@ pub mod history;
 
 use std::path::Path;
 
-use glam::{IVec3, Vec3};
+use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
+use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::{Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
@@ -41,6 +42,10 @@ pub struct OrbitCamera {
 impl OrbitCamera {
     pub const MIN_DISTANCE: f32 = 2.0;
     pub const MAX_DISTANCE: f32 = 1000.0;
+    /// Vertical field of view (radians).
+    pub const FOV_Y: f32 = 45.0 * std::f32::consts::PI / 180.0;
+    pub const NEAR: f32 = 0.1;
+    pub const FAR: f32 = 4000.0;
 
     /// Rotates by a delta (degrees), clamping pitch.
     pub fn orbit(&mut self, d_yaw: f32, d_pitch: f32) {
@@ -52,8 +57,11 @@ impl OrbitCamera {
         self.distance = (self.distance * factor).clamp(Self::MIN_DISTANCE, Self::MAX_DISTANCE);
     }
 
-    pub fn snap(&mut self, view: ViewFace) {
-        let (yaw, pitch) = view.angles();
+    /// Snaps the camera so its view direction points at `target`.
+    /// Faces keep the level horizon; edges tilt 45 deg; corners use a
+    /// three-quarter view (yaw/pitch diagonals).
+    pub fn snap(&mut self, target: ViewTarget) {
+        let (yaw, pitch) = target.angles();
         self.yaw = yaw;
         self.pitch = pitch;
     }
@@ -82,6 +90,26 @@ impl OrbitCamera {
         self.pan += (-right * dx + up * dy) * span;
     }
 
+    /// Eye position orbiting `target`.
+    pub fn eye(&self, target: Vec3) -> Vec3 {
+        target + self.eye_direction() * self.distance
+    }
+
+    /// World -> view matrix (right-handed, +Y up).
+    pub fn view_matrix(&self, target: Vec3) -> Mat4 {
+        look_at_mat4(self.eye(target), target, Vec3::Y)
+    }
+
+    /// View -> clip matrix using the wgpu/DirectX convention (depth in `[0, 1]`).
+    pub fn projection_matrix(aspect: f32) -> Mat4 {
+        perspective(Self::FOV_Y, aspect.max(0.01), Self::NEAR, Self::FAR)
+    }
+
+    /// Combined world -> clip matrix for a viewport of the given aspect ratio.
+    pub fn view_proj(&self, target: Vec3, aspect: f32) -> Mat4 {
+        Self::projection_matrix(aspect) * self.view_matrix(target)
+    }
+
     /// Restores the default orientation, zoom and pan.
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -100,7 +128,26 @@ impl Default for OrbitCamera {
     }
 }
 
-/// Faces of the view cube that snap the camera.
+/// View cube selection: 6 faces + 12 edges + 8 corners (26 total).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewTarget {
+    Face(ViewFace),
+    Edge(ViewEdge),
+    Corner(ViewCorner),
+}
+
+impl ViewTarget {
+    /// Camera `(yaw, pitch)` that looks at this target.
+    pub const fn angles(self) -> (f32, f32) {
+        match self {
+            ViewTarget::Face(f) => f.angles(),
+            ViewTarget::Edge(e) => e.angles(),
+            ViewTarget::Corner(c) => c.angles(),
+        }
+    }
+}
+
+/// Faces of the view cube.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewFace {
     Front,
@@ -141,6 +188,126 @@ impl ViewFace {
             ViewFace::Left => "Left",
             ViewFace::Top => "Top",
             ViewFace::Bottom => "Bottom",
+        }
+    }
+}
+
+/// Edges of the view cube (12 total).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewEdge {
+    FrontTop,
+    FrontBottom,
+    FrontRight,
+    FrontLeft,
+    BackTop,
+    BackBottom,
+    BackRight,
+    BackLeft,
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+}
+
+impl ViewEdge {
+    pub const ALL: [ViewEdge; 12] = [
+        ViewEdge::FrontTop,
+        ViewEdge::FrontBottom,
+        ViewEdge::FrontRight,
+        ViewEdge::FrontLeft,
+        ViewEdge::BackTop,
+        ViewEdge::BackBottom,
+        ViewEdge::BackRight,
+        ViewEdge::BackLeft,
+        ViewEdge::TopRight,
+        ViewEdge::TopLeft,
+        ViewEdge::BottomRight,
+        ViewEdge::BottomLeft,
+    ];
+
+    pub const fn angles(self) -> (f32, f32) {
+        match self {
+            ViewEdge::FrontTop => (0.0, 45.0),
+            ViewEdge::FrontBottom => (0.0, -45.0),
+            ViewEdge::FrontRight => (45.0, 0.0),
+            ViewEdge::FrontLeft => (315.0, 0.0),
+            ViewEdge::BackTop => (180.0, 45.0),
+            ViewEdge::BackBottom => (180.0, -45.0),
+            ViewEdge::BackRight => (135.0, 0.0),
+            ViewEdge::BackLeft => (225.0, 0.0),
+            ViewEdge::TopRight => (90.0, 45.0),
+            ViewEdge::TopLeft => (270.0, 45.0),
+            ViewEdge::BottomRight => (90.0, -45.0),
+            ViewEdge::BottomLeft => (270.0, -45.0),
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            ViewEdge::FrontTop => "Front-Top",
+            ViewEdge::FrontBottom => "Front-Bottom",
+            ViewEdge::FrontRight => "Front-Right",
+            ViewEdge::FrontLeft => "Front-Left",
+            ViewEdge::BackTop => "Back-Top",
+            ViewEdge::BackBottom => "Back-Bottom",
+            ViewEdge::BackRight => "Back-Right",
+            ViewEdge::BackLeft => "Back-Left",
+            ViewEdge::TopRight => "Top-Right",
+            ViewEdge::TopLeft => "Top-Left",
+            ViewEdge::BottomRight => "Bottom-Right",
+            ViewEdge::BottomLeft => "Bottom-Left",
+        }
+    }
+}
+
+/// Corners of the view cube (8 total).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewCorner {
+    FrontTopRight,
+    FrontTopLeft,
+    FrontBottomRight,
+    FrontBottomLeft,
+    BackTopRight,
+    BackTopLeft,
+    BackBottomRight,
+    BackBottomLeft,
+}
+
+impl ViewCorner {
+    pub const ALL: [ViewCorner; 8] = [
+        ViewCorner::FrontTopRight,
+        ViewCorner::FrontTopLeft,
+        ViewCorner::FrontBottomRight,
+        ViewCorner::FrontBottomLeft,
+        ViewCorner::BackTopRight,
+        ViewCorner::BackTopLeft,
+        ViewCorner::BackBottomRight,
+        ViewCorner::BackBottomLeft,
+    ];
+
+    pub const fn angles(self) -> (f32, f32) {
+        match self {
+            ViewCorner::FrontTopRight => (45.0, 35.0),
+            ViewCorner::FrontTopLeft => (315.0, 35.0),
+            ViewCorner::FrontBottomRight => (45.0, -35.0),
+            ViewCorner::FrontBottomLeft => (315.0, -35.0),
+            ViewCorner::BackTopRight => (135.0, 35.0),
+            ViewCorner::BackTopLeft => (225.0, 35.0),
+            ViewCorner::BackBottomRight => (135.0, -35.0),
+            ViewCorner::BackBottomLeft => (225.0, -35.0),
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            ViewCorner::FrontTopRight => "Front-Top-Right",
+            ViewCorner::FrontTopLeft => "Front-Top-Left",
+            ViewCorner::FrontBottomRight => "Front-Bottom-Right",
+            ViewCorner::FrontBottomLeft => "Front-Bottom-Left",
+            ViewCorner::BackTopRight => "Back-Top-Right",
+            ViewCorner::BackTopLeft => "Back-Top-Left",
+            ViewCorner::BackBottomRight => "Back-Bottom-Right",
+            ViewCorner::BackBottomLeft => "Back-Bottom-Left",
         }
     }
 }
@@ -337,7 +504,7 @@ mod tests {
         c.orbit(400.0, 200.0);
         assert_eq!(c.pitch, 90.0);
         assert!((c.yaw - 85.0).abs() < 1e-4);
-        c.snap(ViewFace::Left);
+        c.snap(ViewTarget::Face(ViewFace::Left));
         assert_eq!((c.yaw, c.pitch), (270.0, 0.0));
     }
 
@@ -345,14 +512,14 @@ mod tests {
     fn camera_pan_moves_in_view_plane() {
         // Front view: right = +X, up = +Y.
         let mut c = OrbitCamera::default();
-        c.snap(ViewFace::Front);
+        c.snap(ViewTarget::Face(ViewFace::Front));
         c.pan_screen(0.5, 0.0, 90f32.to_radians());
         // Dragging right moves the target left by half the viewport span.
         assert!((c.pan.x + c.distance).abs() < 1e-3, "{:?}", c.pan);
         assert!(c.pan.y.abs() < 1e-4 && c.pan.z.abs() < 1e-4);
 
         c.reset();
-        c.snap(ViewFace::Front);
+        c.snap(ViewTarget::Face(ViewFace::Front));
         c.pan_screen(0.0, 0.5, 90f32.to_radians());
         assert!((c.pan.y - c.distance).abs() < 1e-3, "{:?}", c.pan);
     }

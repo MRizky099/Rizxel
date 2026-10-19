@@ -4,22 +4,37 @@
 use egui::{Frame, Key, KeyboardShortcut, Modifiers, Panel};
 use rizxel_app::AppState;
 
+use eframe::egui_wgpu::wgpu;
+
+use crate::render::ViewportRenderer;
 use crate::{actions, icons::Icons, panels, resize, theme, viewport};
 
 pub struct RizxelApp {
     state: AppState,
     ui: panels::UiState,
     icons: Icons,
+    /// Framebuffer format of the wgpu surface; `None` if wgpu is unavailable.
+    target_format: Option<wgpu::TextureFormat>,
 }
 
 impl RizxelApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
+        let target_format = cc.wgpu_render_state.as_ref().map(|rs| {
+            ViewportRenderer::install(rs);
+            log::info!(
+                "viewport renderer ready ({:?}, {:?})",
+                rs.adapter.get_info().backend,
+                rs.target_format
+            );
+            rs.target_format
+        });
         Self {
             state: AppState::default(),
             ui: panels::UiState::default(),
             icons: Icons::load(&cc.egui_ctx),
+            target_format,
         }
     }
 
@@ -54,6 +69,9 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD, Key::N)) {
             actions::new_document(&mut self.state);
         }
+        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::F)) {
+            self.ui.zen_mode = !self.ui.zen_mode;
+        }
     }
 }
 
@@ -78,12 +96,15 @@ impl eframe::App for RizxelApp {
             .resizable(false)
             .show(ui, |ui| panels::top_bar::show(ui, state, ui_state));
 
-        Panel::top("option_bar")
-            .exact_size(theme::OPTION_BAR_HEIGHT)
-            .frame(flat(theme::BG_PANEL).inner_margin(egui::Margin::symmetric(8, 0)))
-            .show_separator_line(false)
-            .resizable(false)
-            .show(ui, |ui| panels::options::show(ui, state, &self.icons));
+        // Zen mode: only show tabs, viewport, and status bar.
+        if !ui_state.zen_mode {
+            Panel::top("option_bar")
+                .exact_size(theme::OPTION_BAR_HEIGHT)
+                .frame(flat(theme::BG_PANEL).inner_margin(egui::Margin::symmetric(8, 0)))
+                .show_separator_line(false)
+                .resizable(false)
+                .show(ui, |ui| panels::options::show(ui, state, &self.icons));
+        }
 
         Panel::top("doc_tabs")
             .exact_size(theme::TAB_BAR_HEIGHT)
@@ -99,21 +120,25 @@ impl eframe::App for RizxelApp {
             .resizable(false)
             .show(ui, |ui| panels::status::show(ui, state));
 
-        Panel::left("tools")
-            .exact_size(theme::TOOLS_WIDTH)
-            .frame(flat(theme::BG_PANEL))
-            .show_separator_line(false)
-            .resizable(false)
-            .show(ui, |ui| panels::tools::show(ui, state, &self.icons));
+        if !ui_state.zen_mode {
+            Panel::left("tools")
+                .default_size(theme::TOOLS_WIDTH)
+                .size_range(48.0..=200.0)
+                .frame(flat(theme::BG_PANEL))
+                .show_separator_line(true)
+                .resizable(true)
+                .show(ui, |ui| panels::tools::show(ui, state, &self.icons));
 
-        Panel::right("sidebar")
-            .exact_size(theme::SIDEBAR_WIDTH)
-            .frame(flat(theme::BG_PANEL))
-            .show_separator_line(false)
-            .resizable(false)
-            .show(ui, |ui| panels::sidebar::show(ui, state, ui_state));
+            Panel::right("sidebar")
+                .default_size(theme::SIDEBAR_WIDTH)
+                .size_range(200.0..=400.0)
+                .frame(flat(theme::BG_PANEL))
+                .show_separator_line(true)
+                .resizable(true)
+                .show(ui, |ui| panels::sidebar::show(ui, state, ui_state));
+        }
 
-        egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(ui, state));
+        egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(ui, state, self.target_format));
 
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);

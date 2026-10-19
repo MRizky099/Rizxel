@@ -17,4 +17,32 @@ pub struct UiState {
     /// Collapsed state of sidebar sections.
     pub palette_collapsed: bool,
     pub bounds_collapsed: bool,
+    /// Zen mode: hide all panels except viewport, tabs, and status bar.
+    pub zen_mode: bool,
+    /// Sidebar section draw order, permuted by dragging headers.
+    /// 0 = palette, 1 = layers, 2 = bounds.
+    pub sidebar_order: SidebarOrder,
+}
+
+/// Sidebar draw order; defaults to palette, layers, bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarOrder(pub [usize; 3]);
+
+impl Default for SidebarOrder {
+    fn default() -> Self {
+        Self([0, 1, 2])
+    }
+}
+
+impl std::ops::Deref for SidebarOrder {
+    type Target = [usize; 3];
+    fn deref(&self) -> &[usize; 3] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SidebarOrder {
+    fn deref_mut(&mut self) -> &mut [usize; 3] {
+        &mut self.0
+    }
 }
