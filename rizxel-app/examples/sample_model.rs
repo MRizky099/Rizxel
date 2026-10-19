@@ -6,13 +6,14 @@
 //! ```
 //!
 //! Layer 1 holds a stepped pyramid, layer 2 a ring of colored pillars, so
-//! hiding a layer visibly removes part of the model.
+//! hiding a layer visibly removes part of the model. A group holds a sphere
+//! shape layer and a cropped, half-transparent linked clone of it (`.rzxl` v3).
 
 use std::path::PathBuf;
 
 use glam::IVec3;
-use rizxel_app::Document;
-use rizxel_math::BoundSize;
+use rizxel_app::{Document, LayerProps};
+use rizxel_math::{BoundSize, ShapeKind, VoxelBox};
 
 fn main() {
     let path = std::env::args_os()
@@ -47,6 +48,28 @@ fn main() {
         }
     }
     doc.set_voxels(1, pillars, false);
+
+    // Version 3 layer features: a group holding a sphere shape layer and a
+    // linked clone of it, cropped to its lower half and half transparent.
+    let group = doc.add_group();
+    let sphere = doc.add_shape_layer(
+        ShapeKind::Sphere,
+        VoxelBox::from_corners(IVec3::new(9, 6, 9), IVec3::new(14, 11, 14)),
+        36,
+    );
+    let sphere_index = doc.active_layer;
+    debug_assert_eq!(doc.data.layers[sphere_index].id, sphere);
+    if let Some(clone) = doc.add_linked_clone(sphere_index, IVec3::new(-6, -3, -6)) {
+        let index = doc.active_layer;
+        debug_assert_eq!(doc.data.layers[index].id, clone);
+        let props = LayerProps {
+            opacity: 0.5,
+            parent: Some(group),
+            crop: Some(VoxelBox::from_corners(IVec3::ZERO, IVec3::new(23, 5, 23))),
+            ..doc.data.layers[index].props.clone()
+        };
+        doc.set_layer_props(index, props, false);
+    }
 
     if let Err(e) = doc.save_to(&path) {
         eprintln!("failed to write {}: {e}", path.display());

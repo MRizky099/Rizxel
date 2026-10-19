@@ -1,32 +1,74 @@
 //! A single open project (one tab) and its undoable data.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::IVec3;
-use rizxel_engine::{greedy_mesh, Mesh};
+use rizxel_engine::{greedy_mesh, rasterize_shape, Mesh};
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
-use rizxel_math::{BoundSize, Palette, Rgba8, Voxel, VoxelVolume, FIRST_COLOR_INDEX};
+use rizxel_math::{
+    BoundSize, LayerId, LayerKind, Material, Palette, Rgba8, ShapeKind, Voxel, VoxelBox,
+    VoxelVolume, FIRST_COLOR_INDEX,
+};
 
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
 
-/// A named group of voxels. Its volume always has the document's bounds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Layer properties other than name, visibility, lock and voxels. Changed as
+/// one undoable unit through [`Document::set_layer_props`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerProps {
+    /// `0..=1`, multiplies the layer's alpha when rendering.
+    pub opacity: f32,
+    /// Group layer containing this layer.
+    pub parent: Option<LayerId>,
+    /// Index into [`DocData::materials`].
+    pub material: Option<u32>,
+    /// Non-destructive crop box.
+    pub crop: Option<VoxelBox>,
+    pub kind: LayerKind,
+}
+
+impl Default for LayerProps {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            parent: None,
+            material: None,
+            crop: None,
+            kind: LayerKind::Voxels,
+        }
+    }
+}
+
+/// One layer of the document. `volume` always has the document's bounds and
+/// holds voxels only for [`LayerKind::Voxels`] layers.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layer {
+    /// Stable id (non-zero once the layer is in a document).
+    pub id: LayerId,
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    pub props: LayerProps,
     pub volume: VoxelVolume,
 }
 
 impl Layer {
+    /// Voxel layer with default properties and id 0 (assigned on insertion).
     pub fn new(name: impl Into<String>, bounds: BoundSize) -> Self {
         Self {
+            id: 0,
             name: name.into(),
             visible: true,
             locked: false,
+            props: LayerProps::default(),
             volume: VoxelVolume::new(bounds),
         }
+    }
+
+    pub fn kind(&self) -> &LayerKind {
+        &self.props.kind
     }
 }
 
@@ -40,6 +82,85 @@ pub struct DocData {
     pub palette: Palette,
     pub layers: Vec<Layer>,
     pub bounds: BoundSize,
+    /// Materials referenced by [`LayerProps::material`].
+    pub materials: Vec<Material>,
+}
+
+impl DocData {
+    pub fn layer_index(&self, id: LayerId) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == id)
+    }
+
+    /// Visible itself and inside visible groups only.
+    pub fn effectively_visible(&self, index: usize) -> bool {
+        let Some(mut layer) = self.layers.get(index) else {
+            return false;
+        };
+        // Depth-capped walk; validated files cannot cycle, but stay safe.
+        for _ in 0..=rizxel_io::MAX_GROUP_DEPTH {
+            if !layer.visible {
+                return false;
+            }
+            match layer
+                .props
+                .parent
+                .and_then(|p| self.layer_index(p))
+                .and_then(|i| self.layers.get(i))
+            {
+                Some(parent) => layer = parent,
+                None => return true,
+            }
+        }
+        false
+    }
+
+    /// Geometry a layer contributes before visibility: own voxels, the
+    /// rasterized shape or the moved clone source, then the crop box.
+    /// `None` for groups and broken clones.
+    fn evaluate(&self, index: usize) -> Option<Derived> {
+        let layer = self.layers.get(index)?;
+        let mut derived = match layer.props.kind {
+            LayerKind::Group { .. } => return None,
+            LayerKind::Voxels => Derived::Own,
+            LayerKind::Shape { shape, area, color } => {
+                Derived::Owned(rasterize_shape(shape, &area, color, self.bounds))
+            }
+            LayerKind::Clone { source, offset } => {
+                let src = self.layer_index(source)?;
+                let base = match self.layers.get(src)?.props.kind {
+                    LayerKind::Voxels => self.layers.get(src)?.volume.translated(offset),
+                    LayerKind::Shape { shape, area, color } => {
+                        rasterize_shape(shape, &area, color, self.bounds).translated(offset)
+                    }
+                    _ => return None,
+                };
+                Derived::Owned(base)
+            }
+        };
+        if let Some(crop) = &layer.props.crop {
+            let cropped = match &derived {
+                Derived::Own => layer.volume.cropped(crop),
+                Derived::Owned(v) => v.cropped(crop),
+            };
+            derived = Derived::Owned(cropped);
+        }
+        Some(derived)
+    }
+}
+
+/// Result of [`DocData::evaluate`]: the layer's own volume or a computed one.
+#[derive(Debug)]
+enum Derived {
+    Own,
+    Owned(VoxelVolume),
+}
+
+/// Geometry of the effectively visible layers for one revision, in layer
+/// order. `None` entries mean "use the layer's own volume".
+#[derive(Debug)]
+struct GeometryCache {
+    revision: u64,
+    layers: Vec<(usize, Option<VoxelVolume>)>,
 }
 
 /// An open project: undoable data plus view/selection state.
@@ -59,6 +180,9 @@ pub struct Document {
     /// Incremented on every data change; compared with `saved_revision`.
     revision: u64,
     saved_revision: u64,
+    /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
+    /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
+    geometry: RefCell<Option<GeometryCache>>,
 }
 
 impl Document {
@@ -77,8 +201,13 @@ impl Document {
         if layers.is_empty() {
             layers.push(Layer::new("Layer 1", bounds));
         }
+        let mut next_id = layers.iter().map(|l| l.id).max().unwrap_or(0);
         for layer in &mut layers {
             layer.volume.resize(bounds);
+            if layer.id == 0 {
+                next_id += 1;
+                layer.id = next_id;
+            }
         }
         Self {
             id: NEXT_DOC_ID.fetch_add(1, Ordering::Relaxed),
@@ -88,12 +217,14 @@ impl Document {
                 palette: Palette::default(),
                 layers,
                 bounds,
+                materials: Vec::new(),
             },
             active_layer: 0,
             selected_color: Palette::DEFAULT_SELECTED,
             history: History::default(),
             revision: 0,
             saved_revision: 0,
+            geometry: RefCell::new(None),
         }
     }
 
@@ -114,38 +245,60 @@ impl Document {
         self.revision
     }
 
-    /// Visible layers as mesher input.
-    fn mesh_layers(&self) -> Vec<(&VoxelVolume, bool)> {
-        self.data
-            .layers
-            .iter()
-            .map(|l| (&l.volume, l.visible))
-            .collect()
+    /// Runs `f` with the final geometry of every effectively visible layer,
+    /// bottom to top: voxel layers, rasterized shapes and moved linked
+    /// clones, each clipped by its crop box. Groups contribute nothing; a
+    /// hidden group hides its children. Cached per revision.
+    pub fn with_visible_geometry<R>(&self, f: impl FnOnce(&[&VoxelVolume]) -> R) -> R {
+        let mut cache = self.geometry.borrow_mut();
+        if cache.as_ref().is_none_or(|c| c.revision != self.revision) {
+            let layers = (0..self.data.layers.len())
+                .filter(|&i| self.data.effectively_visible(i))
+                .filter_map(|i| {
+                    self.data.evaluate(i).map(|d| match d {
+                        Derived::Own => (i, None),
+                        Derived::Owned(v) => (i, Some(v)),
+                    })
+                })
+                .collect();
+            *cache = Some(GeometryCache {
+                revision: self.revision,
+                layers,
+            });
+        }
+        let volumes: Vec<&VoxelVolume> = cache
+            .as_ref()
+            .map(|c| {
+                c.layers
+                    .iter()
+                    .filter_map(|(i, v)| v.as_ref().or(self.data.layers.get(*i).map(|l| &l.volume)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        f(&volumes)
     }
 
     /// Greedy mesh of the visible layers, in model space.
     pub fn visible_mesh(&self) -> Mesh {
-        greedy_mesh(&self.mesh_layers(), &self.data.palette)
+        self.with_visible_geometry(|volumes| {
+            let layers: Vec<(&VoxelVolume, bool)> = volumes.iter().map(|v| (*v, true)).collect();
+            greedy_mesh(&layers, &self.data.palette)
+        })
     }
 
     /// Voxel count summed over visible layers (overlaps count once per layer).
     pub fn visible_voxel_count(&self) -> usize {
-        self.data
-            .layers
-            .iter()
-            .filter(|l| l.visible)
-            .map(|l| l.volume.voxel_count())
-            .sum()
+        self.with_visible_geometry(|volumes| volumes.iter().map(|v| v.voxel_count()).sum())
     }
 
     /// Box around the voxels of the visible layers: `(min, max exclusive)`.
     pub fn occupied_bounds(&self) -> Option<(IVec3, IVec3)> {
-        self.data
-            .layers
-            .iter()
-            .filter(|l| l.visible)
-            .filter_map(|l| l.volume.occupied_bounds())
-            .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)))
+        self.with_visible_geometry(|volumes| {
+            volumes
+                .iter()
+                .filter_map(|v| v.occupied_bounds())
+                .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)))
+        })
     }
 
     /// Display title: file name if saved, otherwise the document name.
@@ -238,7 +391,13 @@ impl Document {
         writes: impl IntoIterator<Item = (IVec3, Voxel)>,
         merge: bool,
     ) -> bool {
-        let Some(l) = self.data.layers.get(layer) else {
+        // Only voxel layers store voxels; shapes and clones are procedural.
+        let Some(l) = self
+            .data
+            .layers
+            .get(layer)
+            .filter(|l| l.kind().stores_voxels())
+        else {
             return false;
         };
         let mut changes: Vec<VoxelChange> = Vec::new();
@@ -269,28 +428,243 @@ impl Document {
 
     // ------------------------------------------------------ layer helpers
 
-    /// Adds a new layer above the active one and selects it.
-    pub fn add_layer(&mut self) {
-        let index = (self.active_layer + 1).min(self.data.layers.len());
-        let name = self.unique_layer_name();
-        self.apply(
-            Edit::InsertLayer {
-                index,
-                layer: Layer::new(name, self.data.bounds),
-            },
-            false,
-        );
-        self.active_layer = index;
+    /// Next free layer id.
+    fn next_layer_id(&self) -> LayerId {
+        self.data
+            .layers
+            .iter()
+            .map(|l| l.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
     }
 
-    /// Deletes the active layer. The last remaining layer cannot be deleted.
+    /// Inserts `layer` above the active one (in the active layer's group),
+    /// gives it a fresh id, selects it and returns the id.
+    fn insert_above_active(&mut self, mut layer: Layer) -> LayerId {
+        let index = (self.active_layer + 1).min(self.data.layers.len());
+        layer.id = self.next_layer_id();
+        if layer.props.parent.is_none() {
+            layer.props.parent = self.active_layer().and_then(|a| match a.kind() {
+                LayerKind::Group { .. } => Some(a.id),
+                _ => a.props.parent,
+            });
+        }
+        let id = layer.id;
+        self.apply(Edit::InsertLayer { index, layer }, false);
+        self.active_layer = index;
+        id
+    }
+
+    /// Adds a new voxel layer above the active one and selects it.
+    pub fn add_layer(&mut self) -> LayerId {
+        let name = self.unique_layer_name();
+        self.insert_above_active(Layer::new(name, self.data.bounds))
+    }
+
+    /// Adds an empty group above the active layer. Layers join it by setting
+    /// their `parent` (see [`Document::set_layer_props`]).
+    pub fn add_group(&mut self) -> LayerId {
+        let mut layer = Layer::new(self.unique_name_from("Group"), self.data.bounds);
+        layer.props.kind = LayerKind::Group { collapsed: false };
+        self.insert_above_active(layer)
+    }
+
+    /// Adds a linked clone of layer `source` (a voxel or shape layer) moved by
+    /// `offset`. The clone follows every later change to its source.
+    pub fn add_linked_clone(&mut self, source: usize, offset: IVec3) -> Option<LayerId> {
+        let src = self.data.layers.get(source)?;
+        if !src.kind().is_clone_source() {
+            return None;
+        }
+        let mut layer = Layer::new(
+            self.unique_name_from(&format!("{} (linked)", src.name)),
+            self.data.bounds,
+        );
+        layer.props.kind = LayerKind::Clone {
+            source: src.id,
+            offset,
+        };
+        layer.props.parent = src.props.parent;
+        layer.props.material = src.props.material;
+        Some(self.insert_above_active(layer))
+    }
+
+    /// Adds a procedural shape layer filling `area` with palette `color`.
+    pub fn add_shape_layer(&mut self, shape: ShapeKind, area: VoxelBox, color: Voxel) -> LayerId {
+        let mut layer = Layer::new(self.unique_name_from(shape.label()), self.data.bounds);
+        layer.props.kind = LayerKind::Shape { shape, area, color };
+        self.insert_above_active(layer)
+    }
+
+    /// Changes opacity, group, material, crop or kind of a layer as one undo
+    /// step (`merge` folds slider drags). Refused when the result would break
+    /// a link: parent not a group or creating a cycle, clone source missing,
+    /// or a layer that clones are linked to stopping being a clone source.
+    pub fn set_layer_props(&mut self, index: usize, new: LayerProps, merge: bool) -> bool {
+        let Some(layer) = self.data.layers.get(index) else {
+            return false;
+        };
+        let old = layer.props.clone();
+        if old == new || !self.props_are_consistent(index, &new) {
+            return false;
+        }
+        // Switching away from a voxel layer drops its voxels: keep them in the
+        // edit so undo restores them.
+        let mut edits = Vec::new();
+        if old.kind.stores_voxels() && !new.kind.stores_voxels() && !layer.volume.is_empty() {
+            let changes = layer
+                .volume
+                .iter()
+                .map(|(pos, v)| VoxelChange {
+                    pos,
+                    old: v,
+                    new: 0,
+                })
+                .collect();
+            edits.push(Edit::Voxels {
+                layer: index,
+                changes,
+            });
+        }
+        edits.push(Edit::SetLayerProps { index, old, new });
+        let edit = match edits.len() {
+            1 => edits.pop().unwrap_or(Edit::Batch(Vec::new())),
+            _ => Edit::Batch(edits),
+        };
+        self.apply(edit, merge);
+        true
+    }
+
+    fn props_are_consistent(&self, index: usize, new: &LayerProps) -> bool {
+        let Some(layer) = self.data.layers.get(index) else {
+            return false;
+        };
+        let opacity_ok = new.opacity.is_finite() && (0.0..=1.0).contains(&new.opacity);
+        let material_ok = new
+            .material
+            .is_none_or(|m| (m as usize) < self.data.materials.len());
+        let crop_ok = new.crop.is_none_or(|c| c.is_valid());
+        // Parent chain: groups only, and never through this layer itself.
+        let mut parent_ok = true;
+        let mut parent = new.parent;
+        for _ in 0..=rizxel_io::MAX_GROUP_DEPTH {
+            let Some(p) = parent else { break };
+            let group = self
+                .data
+                .layer_index(p)
+                .and_then(|i| self.data.layers.get(i));
+            match group {
+                Some(g) if g.kind().is_group() && g.id != layer.id => parent = g.props.parent,
+                _ => {
+                    parent_ok = false;
+                    break;
+                }
+            }
+        }
+        parent_ok &= parent.is_none();
+        let kind_ok = match new.kind {
+            LayerKind::Clone { source, .. } => {
+                source != layer.id
+                    && self
+                        .data
+                        .layer_index(source)
+                        .and_then(|i| self.data.layers.get(i))
+                        .is_some_and(|s| s.kind().is_clone_source())
+            }
+            LayerKind::Shape { area, color, .. } => {
+                area.is_valid() && self.data.palette.is_selectable(color as usize)
+            }
+            _ => true,
+        };
+        // A layer others clone must stay a clone source; a group with
+        // children must stay a group.
+        let links_ok = (new.kind.is_clone_source() || !self.is_clone_source_in_use(index))
+            && (new.kind.is_group() || !self.has_children(index));
+        opacity_ok && material_ok && crop_ok && parent_ok && kind_ok && links_ok
+    }
+
+    /// True when some other layer is a linked clone of layer `index`.
+    fn is_clone_source_in_use(&self, index: usize) -> bool {
+        let Some(id) = self.data.layers.get(index).map(|l| l.id) else {
+            return false;
+        };
+        self.data
+            .layers
+            .iter()
+            .any(|l| matches!(l.props.kind, LayerKind::Clone { source, .. } if source == id))
+    }
+
+    fn has_children(&self, index: usize) -> bool {
+        let Some(id) = self.data.layers.get(index).map(|l| l.id) else {
+            return false;
+        };
+        self.data.layers.iter().any(|l| l.props.parent == Some(id))
+    }
+
+    /// Replaces the material list. Layers whose material index no longer
+    /// exists fall back to the default material in the same undo step.
+    pub fn set_materials(&mut self, new: Vec<Material>) -> bool {
+        if new == self.data.materials || new.len() > rizxel_io::MAX_MATERIALS {
+            return false;
+        }
+        let mut edits: Vec<Edit> = self
+            .data
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.props.material.is_some_and(|m| m as usize >= new.len()))
+            .map(|(index, l)| Edit::SetLayerProps {
+                index,
+                old: l.props.clone(),
+                new: LayerProps {
+                    material: None,
+                    ..l.props.clone()
+                },
+            })
+            .collect();
+        edits.push(Edit::SetMaterials {
+            old: self.data.materials.clone(),
+            new,
+        });
+        self.apply(Edit::Batch(edits), false);
+        true
+    }
+
+    /// The active layer can be deleted unless it is the last layer or linked
+    /// clones still point at it.
+    pub fn can_delete_active_layer(&self) -> bool {
+        self.data.layers.len() > 1 && !self.is_clone_source_in_use(self.active_layer)
+    }
+
+    /// Deletes the active layer. Children of a deleted group move up to the
+    /// group's parent in the same undo step. Refused for the last layer and
+    /// for layers that linked clones point at.
     pub fn delete_active_layer(&mut self) -> bool {
-        if self.data.layers.len() <= 1 {
+        if !self.can_delete_active_layer() {
             return false;
         }
         let index = self.active_layer;
-        let layer = self.data.layers[index].clone();
-        self.apply(Edit::RemoveLayer { index, layer }, false);
+        let Some(layer) = self.data.layers.get(index).cloned() else {
+            return false;
+        };
+        let mut edits: Vec<Edit> = self
+            .data
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.props.parent == Some(layer.id))
+            .map(|(i, l)| Edit::SetLayerProps {
+                index: i,
+                old: l.props.clone(),
+                new: LayerProps {
+                    parent: layer.props.parent,
+                    ..l.props.clone()
+                },
+            })
+            .collect();
+        edits.push(Edit::RemoveLayer { index, layer });
+        self.apply(Edit::Batch(edits), false);
         true
     }
 
@@ -359,10 +733,36 @@ impl Document {
         };
         let mut layer = source.clone();
         layer.name = self.unique_name_from(&format!("{} copy", source.name));
+        layer.id = self.next_layer_id();
         let index = self.active_layer + 1;
         self.apply(Edit::InsertLayer { index, layer }, false);
         self.active_layer = index;
         true
+    }
+
+    /// True when layer `index` can be painted into and removed by a merge:
+    /// the target must store voxels, sources must have geometry and must not
+    /// be needed by layers that survive the merge.
+    fn mergeable(&self, target: usize, sources: &[usize]) -> bool {
+        let target_ok = self
+            .data
+            .layers
+            .get(target)
+            .is_some_and(|l| l.kind().stores_voxels());
+        let sources_ok = sources.iter().all(|&i| {
+            self.data.layers.get(i).is_some_and(|l| {
+                let id = l.id;
+                // Survivors that clone or are grouped under this source.
+                let needed = self.data.layers.iter().enumerate().any(|(j, other)| {
+                    !sources.contains(&j)
+                        && (other.props.parent == Some(id)
+                            || matches!(other.props.kind,
+                                LayerKind::Clone { source, .. } if source == id))
+                });
+                !l.kind().is_group() && !needed
+            })
+        });
+        target_ok && sources_ok
     }
 
     /// Merges the active layer into the one below it (upper voxels win).
@@ -371,7 +771,7 @@ impl Document {
         let Some(lower) = upper.checked_sub(1) else {
             return false;
         };
-        if upper >= self.data.layers.len() {
+        if upper >= self.data.layers.len() || !self.mergeable(lower, &[upper]) {
             return false;
         }
         let edit = self.merge_into(lower, &[upper]);
@@ -380,17 +780,24 @@ impl Document {
         true
     }
 
-    /// Merges every visible layer into the lowest visible one.
+    /// Merges every visible layer with geometry (voxels, shapes, clones) into
+    /// the lowest visible voxel layer. Groups stay.
     pub fn merge_visible_layers(&mut self) -> bool {
         let visible: Vec<usize> = (0..self.data.layers.len())
-            .filter(|&i| self.data.layers[i].visible)
+            .filter(|&i| self.data.effectively_visible(i) && !self.data.layers[i].kind().is_group())
             .collect();
-        let [target, rest @ ..] = visible.as_slice() else {
+        let Some(target_pos) = visible
+            .iter()
+            .position(|&i| self.data.layers[i].kind().stores_voxels())
+        else {
             return false;
         };
-        if rest.is_empty() {
+        let target = &visible[target_pos];
+        let rest: Vec<usize> = visible[target_pos + 1..].to_vec();
+        if rest.is_empty() || !self.mergeable(*target, &rest) {
             return false;
         }
+        let rest = rest.as_slice();
         let edit = self.merge_into(*target, rest);
         self.apply(edit, false);
         self.active_layer = *target;
@@ -403,7 +810,13 @@ impl Document {
         let mut working = self.data.layers[target].volume.clone();
         let mut changes = Vec::new();
         for &i in sources {
-            for (pos, new) in self.data.layers[i].volume.iter() {
+            // Shapes and clones are baked from their evaluated geometry.
+            let derived = match self.data.evaluate(i) {
+                Some(Derived::Owned(v)) => v,
+                Some(Derived::Own) => self.data.layers[i].volume.clone(),
+                None => continue,
+            };
+            for (pos, new) in derived.iter() {
                 let old = working.get(pos);
                 if old != new {
                     working.set(pos, new);
@@ -433,6 +846,17 @@ impl Document {
             .filter(|&i| !self.data.layers[i].visible)
             .collect();
         if hidden.is_empty() || hidden.len() == self.data.layers.len() {
+            return false;
+        }
+        // Refused while a visible layer still needs a hidden one (clone
+        // source or group parent): deleting would break the link.
+        let ids: Vec<LayerId> = hidden.iter().map(|&i| self.data.layers[i].id).collect();
+        let needed = self.data.layers.iter().enumerate().any(|(i, l)| {
+            !hidden.contains(&i)
+                && (l.props.parent.is_some_and(|p| ids.contains(&p))
+                    || matches!(l.props.kind, LayerKind::Clone { source, .. } if ids.contains(&source)))
+        });
+        if needed {
             return false;
         }
         let active = self.active_layer;
@@ -554,18 +978,30 @@ impl Document {
 
     pub fn to_project(&self) -> ProjectFile {
         ProjectFile {
+            generator: rizxel_io::generator(),
             name: self.name.clone(),
             palette: self.data.palette.clone(),
             selected_color: self.selected_color,
+            materials: self.data.materials.clone(),
             layers: self
                 .data
                 .layers
                 .iter()
                 .map(|l| LayerData {
+                    id: l.id,
                     name: l.name.clone(),
                     visible: l.visible,
                     locked: l.locked,
-                    voxels: rizxel_io::runs_from_volume(self.data.bounds, &l.volume),
+                    opacity: l.props.opacity,
+                    parent: l.props.parent,
+                    material: l.props.material,
+                    crop: l.props.crop,
+                    kind: l.props.kind,
+                    voxels: if l.kind().stores_voxels() {
+                        rizxel_io::runs_from_volume(self.data.bounds, &l.volume)
+                    } else {
+                        Vec::new()
+                    },
                 })
                 .collect(),
             active_layer: self.active_layer,
@@ -573,9 +1009,12 @@ impl Document {
         }
     }
 
-    /// Builds a document from a decoded project. Fails when a layer's voxel
-    /// runs do not fit the project bounds.
+    /// Builds a document from a decoded project. Fails when the project breaks
+    /// a structural rule (see `ProjectFile::validate`) or a layer's voxel runs
+    /// do not fit the project bounds.
     pub fn from_project(project: ProjectFile, path: Option<PathBuf>) -> Result<Self, RzxlError> {
+        // `read_rzxl` already validated; projects built in memory may not be.
+        project.validate()?;
         // Re-clamp: the file may carry out-of-range bounds.
         let bounds = BoundSize::new(project.bounds.x(), project.bounds.y(), project.bounds.z());
         let layers = project
@@ -584,14 +1023,23 @@ impl Document {
             .map(|l| {
                 Ok(Layer {
                     volume: rizxel_io::volume_from_runs(bounds, &l.voxels)?,
+                    id: l.id,
                     name: l.name,
                     visible: l.visible,
                     locked: l.locked,
+                    props: LayerProps {
+                        opacity: l.opacity,
+                        parent: l.parent,
+                        material: l.material,
+                        crop: l.crop,
+                        kind: l.kind,
+                    },
                 })
             })
             .collect::<Result<Vec<_>, RzxlError>>()?;
         let mut doc = Self::with_bounds(project.name, bounds, layers);
         doc.data.palette = project.palette;
+        doc.data.materials = project.materials;
         doc.active_layer = project.active_layer;
         doc.selected_color = project.selected_color;
         doc.path = path;

@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use glam::{IVec3, Vec3};
 
 use crate::types::{BoundSize, Voxel, EMPTY_VOXEL};
-use crate::Aabb;
+use crate::{Aabb, VoxelBox};
 
 /// Edge length of a tile, in voxels.
 pub const TILE_SIZE: i32 = 16;
@@ -304,6 +304,32 @@ impl VoxelVolume {
         });
         self.non_empty -= removed;
     }
+
+    /// Copy moved by `offset`; voxels that leave the bounds are dropped.
+    pub fn translated(&self, offset: IVec3) -> VoxelVolume {
+        if offset == IVec3::ZERO {
+            return self.clone();
+        }
+        let mut out = VoxelVolume::new(self.bounds);
+        for (pos, v) in self.iter() {
+            out.set(pos + offset, v);
+        }
+        out
+    }
+
+    /// Copy keeping only the voxels inside `area`.
+    pub fn cropped(&self, area: &VoxelBox) -> VoxelVolume {
+        let mut out = self.clone();
+        let outside: Vec<IVec3> = self
+            .iter()
+            .map(|(p, _)| p)
+            .filter(|p| !area.contains(*p))
+            .collect();
+        for p in outside {
+            out.clear_at(p);
+        }
+        out
+    }
 }
 
 impl Default for VoxelVolume {
@@ -430,6 +456,22 @@ mod tests {
         for i in [0, 1, 15, 16, 255, 256, 4095] {
             assert_eq!(local_index(local_coord(i)), i);
         }
+    }
+
+    #[test]
+    fn translate_and_crop() {
+        let mut v = vol(8);
+        v.set(IVec3::new(0, 0, 0), 1);
+        v.set(IVec3::new(7, 0, 0), 2);
+        let moved = v.translated(IVec3::new(1, 2, 0));
+        assert_eq!(moved.voxel_count(), 1, "x = 8 leaves the bounds");
+        assert_eq!(moved.get(IVec3::new(1, 2, 0)), 1);
+
+        let area = VoxelBox::from_corners(IVec3::ZERO, IVec3::new(3, 3, 3));
+        let cropped = v.cropped(&area);
+        assert_eq!(cropped.voxel_count(), 1);
+        assert_eq!(cropped.get(IVec3::ZERO), 1);
+        assert_eq!(v.voxel_count(), 2, "source untouched");
     }
 
     #[test]

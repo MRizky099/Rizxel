@@ -270,7 +270,8 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             doc.add_layer();
         }
         let del = style.hover_color(theme::DANGER);
-        if icon_button(ui, icon::TRASH, del, count > 1)
+        // Disabled for the last layer and for layers linked clones point at.
+        if icon_button(ui, icon::TRASH, del, doc.can_delete_active_layer())
             .on_hover_text("Delete layer")
             .clicked()
         {

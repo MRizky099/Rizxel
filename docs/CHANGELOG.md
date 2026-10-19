@@ -3,6 +3,48 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — `.rzxl` v3: Layer Data (2026-10-19)
+
+### Added
+- `.rzxl` **version 3** (spec: `docs/rzxl_format.md`). Layers gain a stable
+  `id`, `opacity`, `parent` (group), `material`, a non-destructive `crop`
+  box, and a tagged `kind`: `voxels`, `group`, `clone` (linked clone of a
+  voxel/shape layer by id, with an offset) or `shape` (cube, sphere or
+  cylinder inscribed in a box). Projects gain a `materials` list (metallic,
+  roughness, emission, tint) and a `generator` string.
+- `rizxel-math/src/layer.rs`: shared `LayerId`, `LayerKind`, `ShapeKind`,
+  `VoxelBox` and `Material` types. `VoxelVolume::translated` / `cropped`.
+- `rizxel-engine/src/shapes.rs`: `rasterize_shape` for shape layers.
+- `ProjectFile::validate`: unique non-zero ids, parents that exist and are
+  groups (no cycles, depth ≤ 32), clone sources that exist and are
+  voxel/shape layers, opacity/material ranges, valid crop/shape boxes,
+  palette shape colors, no runs on non-voxel layers, plus caps of 1024
+  layers, 256 materials and 256-character names. Runs on every read and
+  every write, so a save can never produce a file that fails to load. New
+  `RzxlError::Invalid` variant (malformed voxel runs report through it too).
+- Document API: `add_group`, `add_linked_clone`, `add_shape_layer`,
+  `set_layer_props` (one undo step, slider drags merge), `set_materials`,
+  `can_delete_active_layer`, and `with_visible_geometry`, which evaluates
+  shapes, clones, crops and group visibility once per revision. New
+  `Edit::SetLayerProps` and `Edit::SetMaterials`.
+- Tests: `rizxel-app/tests/layer_features.rs` plus format tests (v3 round
+  trip, v2 migration, every validation rule). The sample model example now
+  includes a group, a sphere shape layer and a cropped linked clone.
+
+### Changed
+- Version 1/2 files load through migration (layers get ids `1..=n`). Files
+  newer than version 3 are still rejected rather than partially loaded.
+- Mesh, voxel count, occupied bounds and OBJ export use the evaluated
+  geometry, so shapes, linked clones, crops and hidden groups show
+  correctly. Opacity and materials are stored but not rendered yet.
+- Layer operations keep links intact:
+  - Deleting a group moves its children up one level.
+  - A layer with linked clones cannot be deleted, and the delete button is
+    disabled for it.
+  - Merges bake shapes and clones, and are refused when a surviving layer
+    still links to a merged one. "Delete hidden" is refused in the same case.
+  - Only voxel layers accept voxel edits.
+
 ## [Unreleased] — Phase 4: Core Engine & Data (2026-10-19)
 
 ### Added

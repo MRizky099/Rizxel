@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use glam::IVec3;
-use rizxel_math::{BoundSize, Rgba8, Voxel};
+use rizxel_math::{BoundSize, Material, Rgba8, Voxel};
 
-use crate::document::{DocData, Layer};
+use crate::document::{DocData, Layer, LayerProps};
 
 /// Maximum number of undo steps kept per document.
 const MAX_UNDO: usize = 512;
@@ -78,6 +78,17 @@ pub enum Edit {
         layer: usize,
         changes: Vec<VoxelChange>,
     },
+    /// Opacity, group, material, crop or kind of one layer.
+    SetLayerProps {
+        index: usize,
+        old: LayerProps,
+        new: LayerProps,
+    },
+    /// Replaces the project material list.
+    SetMaterials {
+        old: Vec<Material>,
+        new: Vec<Material>,
+    },
 }
 
 impl Edit {
@@ -113,6 +124,12 @@ impl Edit {
                     }
                 }
             }
+            Edit::SetLayerProps { index, new, .. } => {
+                if let Some(l) = data.layers.get_mut(*index) {
+                    l.props = new.clone();
+                }
+            }
+            Edit::SetMaterials { new, .. } => data.materials = new.clone(),
         }
     }
 
@@ -145,6 +162,12 @@ impl Edit {
                     }
                 }
             }
+            Edit::SetLayerProps { index, old, .. } => {
+                if let Some(l) = data.layers.get_mut(*index) {
+                    l.props = old.clone();
+                }
+            }
+            Edit::SetMaterials { old, .. } => data.materials = old.clone(),
         }
     }
 
@@ -179,6 +202,16 @@ impl Edit {
                 },
             ) if index == i => {
                 *new = *n;
+                true
+            }
+            // Slider drags (opacity, crop) on one layer become one step.
+            (
+                Edit::SetLayerProps { index, new, .. },
+                Edit::SetLayerProps {
+                    index: i, new: n, ..
+                },
+            ) if index == i => {
+                *new = n.clone();
                 true
             }
             _ => false,
@@ -277,6 +310,7 @@ mod tests {
             palette: Palette::default(),
             layers: vec![Layer::new("A", BoundSize::default())],
             bounds: BoundSize::default(),
+            materials: Vec::new(),
         }
     }
 
