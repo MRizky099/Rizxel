@@ -5,17 +5,62 @@
 //! [`crate::render`]). The view cube and XYZ axis gizmo remain egui overlays.
 //! Picking runs on the CPU with the same matrices as the GPU.
 //!
+//! Phase 4: the visible layers are greedy-meshed once per document revision
+//! ([`MeshCache`]) and drawn as opaque voxels. Picking is still ground-plane
+//! only; voxel picking arrives with the Phase 5a tools.
+//!
 //! Controls: wheel = zoom, right drag = orbit, middle drag = pan,
 //! middle double-click = reset camera.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use eframe::egui_wgpu;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use glam::{IVec3, Mat3, Mat4, Vec3};
-use rizxel_app::{AppState, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget};
+use rizxel_app::{
+    AppState, Document, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget,
+};
 use rizxel_math::BoundSize;
 
-use crate::render::{FillVertex, LineInstance, SceneFrame, ViewportCallback};
+use crate::render::{FillVertex, GpuMesh, LineInstance, SceneFrame, ViewportCallback};
 use crate::theme;
+
+/// Viewport meshes per open document, rebuilt only when the document's
+/// revision changes (edits, undo/redo, load, visibility, palette, bounds).
+/// Switching tabs therefore never re-meshes.
+#[derive(Default)]
+pub struct MeshCache {
+    entries: HashMap<u64, Arc<GpuMesh>>,
+}
+
+impl MeshCache {
+    /// Mesh of `doc`'s visible layers in world space.
+    pub fn get(&mut self, doc: &Document) -> Arc<GpuMesh> {
+        let key = (doc.id(), doc.revision());
+        match self.entries.get(&doc.id()) {
+            Some(m) if m.key == key => m.clone(),
+            _ => {
+                let (bmin, _) = bounds_box(doc.data.bounds);
+                let mesh = Arc::new(GpuMesh::from_mesh(key, &doc.visible_mesh(), bmin));
+                log::debug!(
+                    "meshed {} rev {}: {} triangles",
+                    doc.title(),
+                    key.1,
+                    mesh.triangle_count()
+                );
+                self.entries.insert(doc.id(), mesh.clone());
+                mesh
+            }
+        }
+    }
+
+    /// Drops meshes of documents that are no longer open.
+    pub fn retain_open(&mut self, documents: &[Document]) {
+        self.entries
+            .retain(|id, _| documents.iter().any(|d| d.id() == *id));
+    }
+}
 
 /// Degrees of rotation per dragged pixel.
 const ORBIT_SPEED: f32 = 0.4;
@@ -78,6 +123,7 @@ pub fn show(
     ui: &mut Ui,
     state: &mut AppState,
     target_format: Option<egui_wgpu::wgpu::TextureFormat>,
+    meshes: &mut MeshCache,
 ) {
     let rect = ui.max_rect();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -85,6 +131,15 @@ pub fn show(
 
     let bounds = state.doc().map(|d| d.data.bounds).unwrap_or_default();
     let (bmin, bmax) = bounds_box(bounds);
+    meshes.retain_open(&state.documents);
+    let voxels = state.doc().map(|d| meshes.get(d));
+    // Box around the visible voxels, in world space, when it is smaller than
+    // the bounds (shows how much of the editable volume the model uses).
+    let occupied = state
+        .doc()
+        .and_then(Document::occupied_bounds)
+        .filter(|&(lo, hi)| lo != IVec3::ZERO || hi != bounds.0.as_ivec3())
+        .map(|(lo, hi)| (bmin + lo.as_vec3(), bmin + hi.as_vec3()));
 
     // --- Camera input ------------------------------------------------------
     // Right drag: orbit. Middle drag: pan. Wheel: zoom. Left is reserved for tools.
@@ -127,7 +182,7 @@ pub fn show(
         .cursor_voxel
         .map(|v| bmin + Vec3::new(v.x as f32, 0.0, v.z as f32));
     let ppp = ui.ctx().pixels_per_point();
-    let frame = scene_frame(
+    let mut frame = scene_frame(
         &state.camera,
         &proj,
         state.view_mode,
@@ -136,6 +191,15 @@ pub fn show(
         hover,
         ppp,
     );
+    if let Some((lo, hi)) = occupied {
+        let color = theme::BOUND.gamma_multiply(0.45);
+        frame.lines.extend(
+            bounds_edges(lo, hi)
+                .into_iter()
+                .map(|(a, b)| LineInstance::new(a, b, color, ppp)),
+        );
+    }
+    frame.voxels = voxels;
     match target_format {
         Some(format) => {
             let size_px = [
@@ -223,6 +287,7 @@ fn scene_frame(
         axis_z: theme::AXIS_Z,
         lines,
         fills,
+        voxels: None,
     }
 }
 
@@ -597,6 +662,26 @@ mod tests {
         let proj = Projection::new(&cam, Vec3::ZERO, rect);
         let hit = proj.ground_hit(rect.center()).unwrap();
         assert!(hit.length() < 0.5, "hit = {hit:?}");
+    }
+
+    #[test]
+    fn mesh_cache_rebuilds_only_on_new_revision() {
+        let mut doc = Document::new("t");
+        let mut cache = MeshCache::default();
+        let a = cache.get(&doc);
+        assert!(a.indices.is_empty());
+        assert!(Arc::ptr_eq(&a, &cache.get(&doc)), "same revision is cached");
+
+        doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
+        let b = cache.get(&doc);
+        assert_eq!(b.triangle_count(), 12);
+        // Voxel (0,0,0) sits at the bounds' min corner in world space.
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        let min_x = b.vertices.iter().map(|v| v.pos[0]).fold(f32::MAX, f32::min);
+        assert_eq!(min_x, bmin.x);
+
+        cache.retain_open(&[]);
+        assert!(cache.entries.is_empty());
     }
 
     #[test]

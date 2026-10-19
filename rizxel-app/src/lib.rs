@@ -14,9 +14,13 @@ use rizxel_engine::{Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
 pub use document::{DocData, Document, Layer};
-pub use history::{Edit, History};
+pub use history::{ClippedVoxel, Edit, History, VoxelChange};
+pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::RZXL_EXTENSION;
+
+/// File extension of mesh exports.
+pub const OBJ_EXTENSION: &str = "obj";
 
 /// Viewport presentation mode (option bar toggle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -422,6 +426,25 @@ impl AppState {
             Some(doc) => doc.save_to(path),
             None => Ok(()),
         }
+    }
+
+    /// True when the active document has visible voxels to export.
+    pub fn can_export_obj(&self) -> bool {
+        self.doc().is_some_and(|d| d.visible_voxel_count() > 0)
+    }
+
+    /// Exports the visible layers of the active document as a Wavefront OBJ
+    /// with vertex colors. Returns the number of triangles written.
+    pub fn export_active_obj(&self, path: &Path) -> std::io::Result<usize> {
+        let mesh = self.doc().map(Document::visible_mesh).unwrap_or_default();
+        if mesh.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "nothing to export: the visible layers contain no voxels",
+            ));
+        }
+        rizxel_io::write_obj_file(&mesh, path)?;
+        Ok(mesh.triangle_count())
     }
 
     // ----------------------------------------------------------- history

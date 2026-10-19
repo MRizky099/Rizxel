@@ -1,29 +1,37 @@
 //! A single open project (one tab) and its undoable data.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use glam::IVec3;
+use rizxel_engine::{greedy_mesh, Mesh};
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
-use rizxel_math::{BoundSize, Palette, Rgba8};
+use rizxel_math::{BoundSize, Palette, Rgba8, Voxel, VoxelVolume, FIRST_COLOR_INDEX};
 
-use crate::history::{Edit, History};
+use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
 
-/// A named group of voxels. Voxel storage is added in Phase 4.
+/// A named group of voxels. Its volume always has the document's bounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    pub volume: VoxelVolume,
 }
 
 impl Layer {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, bounds: BoundSize) -> Self {
         Self {
             name: name.into(),
             visible: true,
             locked: false,
+            volume: VoxelVolume::new(bounds),
         }
     }
 }
+
+/// Source of [`Document::id`]s; unique for the lifetime of the process.
+static NEXT_DOC_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Document content that is modified exclusively through [`Edit`]s so every
 /// change can be undone.
@@ -37,6 +45,9 @@ pub struct DocData {
 /// An open project: undoable data plus view/selection state.
 #[derive(Debug)]
 pub struct Document {
+    /// Process-unique id, used together with [`Document::revision`] to key
+    /// caches (e.g. the viewport mesh) per open tab.
+    id: u64,
     pub name: String,
     pub path: Option<PathBuf>,
     pub data: DocData,
@@ -53,22 +64,30 @@ pub struct Document {
 impl Document {
     /// Empty document with one layer and the default palette.
     pub fn new(name: impl Into<String>) -> Self {
-        Self::with_layers(name, vec![Layer::new("Layer 1")])
+        Self::with_layers(name, Vec::new())
     }
 
+    /// Document with the default bounds. Layer volumes are resized to them;
+    /// an empty list gets one default layer.
     pub fn with_layers(name: impl Into<String>, layers: Vec<Layer>) -> Self {
-        let layers = if layers.is_empty() {
-            vec![Layer::new("Layer 1")]
-        } else {
-            layers
-        };
+        Self::with_bounds(name, BoundSize::default(), layers)
+    }
+
+    fn with_bounds(name: impl Into<String>, bounds: BoundSize, mut layers: Vec<Layer>) -> Self {
+        if layers.is_empty() {
+            layers.push(Layer::new("Layer 1", bounds));
+        }
+        for layer in &mut layers {
+            layer.volume.resize(bounds);
+        }
         Self {
+            id: NEXT_DOC_ID.fetch_add(1, Ordering::Relaxed),
             name: name.into(),
             path: None,
             data: DocData {
                 palette: Palette::default(),
                 layers,
-                bounds: BoundSize::default(),
+                bounds,
             },
             active_layer: 0,
             selected_color: Palette::DEFAULT_SELECTED,
@@ -82,6 +101,51 @@ impl Document {
 
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+
+    /// Process-unique document id.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Bumped on every data change (edit, undo, redo, load). Caches derived
+    /// from [`DocData`] are valid while `(id, revision)` is unchanged.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Visible layers as mesher input.
+    fn mesh_layers(&self) -> Vec<(&VoxelVolume, bool)> {
+        self.data
+            .layers
+            .iter()
+            .map(|l| (&l.volume, l.visible))
+            .collect()
+    }
+
+    /// Greedy mesh of the visible layers, in model space.
+    pub fn visible_mesh(&self) -> Mesh {
+        greedy_mesh(&self.mesh_layers(), &self.data.palette)
+    }
+
+    /// Voxel count summed over visible layers (overlaps count once per layer).
+    pub fn visible_voxel_count(&self) -> usize {
+        self.data
+            .layers
+            .iter()
+            .filter(|l| l.visible)
+            .map(|l| l.volume.voxel_count())
+            .sum()
+    }
+
+    /// Box around the voxels of the visible layers: `(min, max exclusive)`.
+    pub fn occupied_bounds(&self) -> Option<(IVec3, IVec3)> {
+        self.data
+            .layers
+            .iter()
+            .filter(|l| l.visible)
+            .filter_map(|l| l.volume.occupied_bounds())
+            .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)))
     }
 
     /// Display title: file name if saved, otherwise the document name.
@@ -146,8 +210,61 @@ impl Document {
         // Keep selection indices valid after structural changes.
         let last = self.data.layers.len().saturating_sub(1);
         self.active_layer = self.active_layer.min(last);
+        // Palette slot 0 is the reserved "empty" voxel and never selected.
         let last = self.data.palette.len().saturating_sub(1);
-        self.selected_color = self.selected_color.min(last);
+        self.selected_color = self.selected_color.clamp(
+            FIRST_COLOR_INDEX as usize,
+            last.max(FIRST_COLOR_INDEX as usize),
+        );
+    }
+
+    /// Selects a paint color; ignored for the reserved slot 0 or bad indices.
+    pub fn select_color(&mut self, index: usize) -> bool {
+        let ok = self.data.palette.is_selectable(index);
+        if ok {
+            self.selected_color = index;
+        }
+        ok
+    }
+
+    // ------------------------------------------------------ voxel helpers
+
+    /// Writes voxels into a layer as one undoable edit. No-op and out-of-bounds
+    /// writes are skipped; returns `false` when nothing changed. With `merge`,
+    /// consecutive writes to the same layer become one undo step (a drag).
+    pub fn set_voxels(
+        &mut self,
+        layer: usize,
+        writes: impl IntoIterator<Item = (IVec3, Voxel)>,
+        merge: bool,
+    ) -> bool {
+        let Some(l) = self.data.layers.get(layer) else {
+            return false;
+        };
+        let mut changes: Vec<VoxelChange> = Vec::new();
+        for (pos, new) in writes {
+            if !l.volume.in_bounds(pos) {
+                continue;
+            }
+            let old = l.volume.get(pos);
+            if old != new {
+                changes.push(VoxelChange { pos, old, new });
+            }
+        }
+        // Repeated positions inside one batch collapse to first-old/last-new.
+        let mut deduped = Vec::with_capacity(changes.len());
+        crate::history::merge_voxel_changes(&mut deduped, &changes);
+        if deduped.is_empty() {
+            return false;
+        }
+        self.apply(
+            Edit::Voxels {
+                layer,
+                changes: deduped,
+            },
+            merge,
+        );
+        true
     }
 
     // ------------------------------------------------------ layer helpers
@@ -159,7 +276,7 @@ impl Document {
         self.apply(
             Edit::InsertLayer {
                 index,
-                layer: Layer::new(name),
+                layer: Layer::new(name, self.data.bounds),
             },
             false,
         );
@@ -202,9 +319,25 @@ impl Document {
 
     pub fn set_bounds(&mut self, new: BoundSize, merge: bool) {
         let old = self.data.bounds;
-        if old != new {
-            self.apply(Edit::SetBounds { old, new }, merge);
+        if old == new {
+            return;
         }
+        // Voxels outside the new bounds are dropped by the resize; remember
+        // them so the shrink is undoable. Only tiles are visited, not cells.
+        let limit = new.0;
+        let clipped = self
+            .data
+            .layers
+            .iter()
+            .enumerate()
+            .flat_map(|(layer, l)| {
+                l.volume
+                    .iter()
+                    .filter(move |(pos, _)| pos.as_uvec3().cmpge(limit).any())
+                    .map(move |(pos, value)| ClippedVoxel { layer, pos, value })
+            })
+            .collect();
+        self.apply(Edit::SetBounds { old, new, clipped }, merge);
     }
 
     pub fn set_palette_color(&mut self, index: usize, new: Rgba8, merge: bool) {
@@ -237,6 +370,7 @@ impl Document {
                     name: l.name.clone(),
                     visible: l.visible,
                     locked: l.locked,
+                    voxels: rizxel_io::runs_from_volume(self.data.bounds, &l.volume),
                 })
                 .collect(),
             active_layer: self.active_layer,
@@ -244,31 +378,36 @@ impl Document {
         }
     }
 
-    pub fn from_project(project: ProjectFile, path: Option<PathBuf>) -> Self {
+    /// Builds a document from a decoded project. Fails when a layer's voxel
+    /// runs do not fit the project bounds.
+    pub fn from_project(project: ProjectFile, path: Option<PathBuf>) -> Result<Self, RzxlError> {
+        // Re-clamp: the file may carry out-of-range bounds.
+        let bounds = BoundSize::new(project.bounds.x(), project.bounds.y(), project.bounds.z());
         let layers = project
             .layers
             .into_iter()
-            .map(|l| Layer {
-                name: l.name,
-                visible: l.visible,
-                locked: l.locked,
+            .map(|l| {
+                Ok(Layer {
+                    volume: rizxel_io::volume_from_runs(bounds, &l.voxels)?,
+                    name: l.name,
+                    visible: l.visible,
+                    locked: l.locked,
+                })
             })
-            .collect();
-        let mut doc = Self::with_layers(project.name, layers);
+            .collect::<Result<Vec<_>, RzxlError>>()?;
+        let mut doc = Self::with_bounds(project.name, bounds, layers);
         doc.data.palette = project.palette;
-        doc.data.bounds =
-            BoundSize::new(project.bounds.x(), project.bounds.y(), project.bounds.z());
         doc.active_layer = project.active_layer;
         doc.selected_color = project.selected_color;
         doc.path = path;
         doc.touch();
         doc.saved_revision = doc.revision;
-        doc
+        Ok(doc)
     }
 
     pub fn load(path: &Path) -> Result<Self, RzxlError> {
         let project = rizxel_io::load_rzxl(path)?;
-        Ok(Self::from_project(project, Some(path.to_path_buf())))
+        Self::from_project(project, Some(path.to_path_buf()))
     }
 
     /// Saves to `path` and makes it the document's path.
@@ -339,11 +478,83 @@ mod tests {
         d.set_bounds(BoundSize::new(8, 16, 24), false);
         d.selected_color = 3;
 
-        let back = Document::from_project(d.to_project(), None);
+        d.set_voxels(
+            1,
+            [(IVec3::new(1, 2, 3), 5), (IVec3::new(7, 0, 0), 9)],
+            false,
+        );
+
+        let back = Document::from_project(d.to_project(), None).unwrap();
         assert_eq!(back.data, d.data);
+        assert_eq!(back.data.layers[1].volume.voxel_count(), 2);
         assert_eq!(back.active_layer, d.active_layer);
         assert_eq!(back.selected_color, 3);
         assert!(!back.is_dirty());
         assert!(!back.can_undo());
+        assert_ne!(back.id(), d.id());
+    }
+
+    #[test]
+    fn voxel_writes_are_undoable_and_bump_revision() {
+        let mut d = Document::new("t");
+        let r0 = d.revision();
+        assert!(d.set_voxels(0, [(IVec3::ZERO, 4), (IVec3::X, 4)], false));
+        assert!(d.revision() > r0);
+        assert!(d.is_dirty());
+        // No-op and out-of-bounds writes produce no edit.
+        let r1 = d.revision();
+        assert!(!d.set_voxels(0, [(IVec3::ZERO, 4), (IVec3::splat(99), 1)], false));
+        assert_eq!(d.revision(), r1);
+        // A drag merges into one undo step.
+        d.set_voxels(0, [(IVec3::Y, 2)], true);
+        d.set_voxels(0, [(IVec3::Z, 2)], true);
+        assert_eq!(d.visible_voxel_count(), 4);
+        assert!(d.undo());
+        assert_eq!(d.visible_voxel_count(), 0);
+        assert!(!d.can_undo());
+        assert!(d.redo());
+        assert_eq!(d.data.layers[0].volume.get(IVec3::Z), 2);
+    }
+
+    #[test]
+    fn hidden_layers_leave_the_mesh() {
+        let mut d = Document::new("t");
+        d.set_voxels(0, [(IVec3::ZERO, 4)], false);
+        assert_eq!(d.visible_mesh().triangle_count(), 12);
+        d.toggle_layer_visible(0);
+        assert!(d.visible_mesh().is_empty());
+        assert_eq!(d.visible_voxel_count(), 0);
+        assert_eq!(d.occupied_bounds(), None);
+    }
+
+    #[test]
+    fn shrinking_bounds_is_undoable() {
+        let mut d = Document::new("t");
+        d.set_voxels(
+            0,
+            [(IVec3::new(2, 2, 2), 1), (IVec3::new(20, 2, 2), 2)],
+            false,
+        );
+        // Drag 32 -> 16 -> 30: the voxel at x=20 is clipped mid-drag.
+        d.set_bounds(BoundSize::new(16, 32, 32), false);
+        d.set_bounds(BoundSize::new(30, 32, 32), true);
+        assert_eq!(d.data.layers[0].volume.voxel_count(), 1);
+        assert_eq!(d.data.layers[0].volume.bounds(), BoundSize::new(30, 32, 32));
+        assert!(d.undo());
+        assert_eq!(d.data.bounds, BoundSize::default());
+        assert_eq!(d.data.layers[0].volume.get(IVec3::new(20, 2, 2)), 2);
+        // Redo reproduces the live state, including the clipped voxel.
+        assert!(d.redo());
+        assert_eq!(d.data.layers[0].volume.voxel_count(), 1);
+    }
+
+    #[test]
+    fn slot_zero_is_never_selected() {
+        let mut d = Document::new("t");
+        assert!(!d.select_color(0));
+        assert!(d.select_color(1));
+        let mut p = d.to_project();
+        p.selected_color = 0;
+        assert_eq!(Document::from_project(p, None).unwrap().selected_color, 1);
     }
 }

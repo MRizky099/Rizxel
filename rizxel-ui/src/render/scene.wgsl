@@ -1,4 +1,4 @@
-// Rizxel viewport scene shaders (Phase 3).
+// Rizxel viewport scene shaders (Phase 3 grid/overlays, Phase 4 voxels).
 //
 // Rendered into an offscreen MSAA target; colors are in gamma space to match
 // egui's non-sRGB framebuffer (and the CSS colors of the HTML prototype).
@@ -190,4 +190,51 @@ fn vs_fill(v: FillIn) -> ColorOut {
     out.pos = cam.view_proj * vec4<f32>(pull_to_eye(v.pos), 1.0);
     out.color = v.color;
     return out;
+}
+
+// ---------------------------------------------------------------- voxels
+
+struct VoxelIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
+};
+
+struct VoxelOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+/// Key light: above, slightly front-right of the default camera, so the top
+/// face is brightest and the two visible sides read differently.
+const KEY_LIGHT: vec3<f32> = vec3<f32>(0.4, 0.85, 0.35);
+const AMBIENT: f32 = 0.35;
+
+@vertex
+fn vs_voxel(v: VoxelIn) -> VoxelOut {
+    var out: VoxelOut;
+    out.pos = cam.view_proj * vec4<f32>(v.pos, 1.0);
+    out.normal = v.normal;
+    out.color = v.color;
+    return out;
+}
+
+@fragment
+fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
+    let n = normalize(in.normal);
+    var shade: f32;
+    if cam.viewport.z > 0.5 {
+        // Render: Lambert key light + ambient + a half-Lambert fill so faces
+        // turned away from the light never go fully black.
+        let ndl = dot(n, normalize(KEY_LIGHT));
+        let lambert = max(ndl, 0.0);
+        let half_lambert = ndl * 0.5 + 0.5;
+        shade = AMBIENT + 0.6 * lambert + 0.15 * half_lambert * half_lambert;
+    } else {
+        // Model: palette colors kept almost flat, with a fixed per-axis tint
+        // so adjacent faces of one color stay distinguishable.
+        shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
+    }
+    return vec4<f32>(min(in.color.rgb * shade, vec3<f32>(1.0)), 1.0);
 }

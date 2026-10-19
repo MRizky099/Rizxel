@@ -210,11 +210,29 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document) {
                 ),
             egui::vec2(size, size),
         );
+        // Slot 0 is the reserved "empty" voxel: drawn as an empty swatch
+        // with a diagonal slash, and never selectable as a paint color.
+        if !doc.data.palette.is_selectable(i) {
+            ui.interact(rect, ui.id().with(("swatch", i)), Sense::hover())
+                .on_hover_text("Empty (reserved)");
+            let painter = ui.painter();
+            painter.rect_stroke(
+                rect.shrink(0.5),
+                2.0,
+                Stroke::new(1.0, theme::TEXT_DIM),
+                StrokeKind::Inside,
+            );
+            painter.line_segment(
+                [rect.left_bottom(), rect.right_top()],
+                Stroke::new(1.0, theme::AXIS_X),
+            );
+            continue;
+        }
         let response = ui
             .interact(rect, ui.id().with(("swatch", i)), Sense::click())
             .on_hover_text(c.to_hex_string());
         if response.clicked() {
-            doc.selected_color = i;
+            doc.select_color(i);
         }
         if response.hovered() {
             hovered = Some((i, rect));

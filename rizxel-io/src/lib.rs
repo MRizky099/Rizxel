@@ -9,6 +9,6 @@ pub mod format_rzxl;
 
 pub use format_obj::{export_obj, write_obj_file};
 pub use format_rzxl::{
-    load_rzxl, read_rzxl, save_rzxl, write_rzxl, LayerData, ProjectFile, RzxlError, RZXL_EXTENSION,
-    RZXL_VERSION,
+    linear_index, load_rzxl, read_rzxl, runs_from_volume, save_rzxl, volume_from_runs, write_rzxl,
+    LayerData, ProjectFile, RzxlError, VoxelRun, RZXL_EXTENSION, RZXL_VERSION,
 };
