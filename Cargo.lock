@@ -728,6 +728,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-ui"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=ae2f796b673f29cf3161f36eb6a8933f0a3fe028#ae2f796b673f29cf3161f36eb6a8933f0a3fe028"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2697,6 +2705,7 @@ name = "rizxel-ui"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "craft-ui",
  "eframe",
  "egui",
  "egui-phosphor",

@@ -42,8 +42,6 @@ pub const TITLE_BAR_HEIGHT: f32 = 32.0;
 pub const OPTION_BAR_HEIGHT: f32 = 48.0;
 pub const TAB_BAR_HEIGHT: f32 = 36.0;
 pub const STATUS_BAR_HEIGHT: f32 = 24.0;
-pub const TOOLS_WIDTH: f32 = 48.0;
-pub const SIDEBAR_WIDTH: f32 = 288.0;
 pub const RADIUS: CornerRadius = CornerRadius::same(4);
 
 /// Font family for the SemiBold weight (panel headers, active labels).

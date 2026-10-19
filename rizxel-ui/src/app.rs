@@ -7,7 +7,7 @@ use rizxel_app::AppState;
 use eframe::egui_wgpu::wgpu;
 
 use crate::render::ViewportRenderer;
-use crate::{actions, icons::Icons, panels, resize, theme, viewport};
+use crate::{actions, dock, icons::Icons, panels, resize, theme, viewport};
 
 pub struct RizxelApp {
     state: AppState,
@@ -17,6 +17,8 @@ pub struct RizxelApp {
     meshes: viewport::MeshCache,
     /// Framebuffer format of the wgpu surface; `None` if wgpu is unavailable.
     target_format: Option<wgpu::TextureFormat>,
+    /// Dockable panel layout of the editor workspace.
+    dock: dock::Workspace,
 }
 
 impl RizxelApp {
@@ -38,6 +40,7 @@ impl RizxelApp {
             icons: Icons::load(&cc.egui_ctx),
             meshes: viewport::MeshCache::default(),
             target_format,
+            dock: dock::Workspace::default(),
         }
     }
 
@@ -100,6 +103,10 @@ impl eframe::App for RizxelApp {
 
         let state = &mut self.state;
         let ui_state = &mut self.ui;
+        let icons = &self.icons;
+        let meshes = &mut self.meshes;
+        let target_format = self.target_format;
+        let dock = &mut self.dock;
         let flat = |fill| Frame::NONE.fill(fill);
 
         // Panel order matters: outermost first, central panel last.
@@ -108,24 +115,7 @@ impl eframe::App for RizxelApp {
             .frame(flat(theme::BG_HEADER))
             .show_separator_line(false)
             .resizable(false)
-            .show(ui, |ui| panels::top_bar::show(ui, state, ui_state));
-
-        // Zen mode: only show tabs, viewport, and status bar.
-        if !ui_state.zen_mode {
-            Panel::top("option_bar")
-                .exact_size(theme::OPTION_BAR_HEIGHT)
-                .frame(flat(theme::BG_PANEL).inner_margin(egui::Margin::symmetric(8, 0)))
-                .show_separator_line(false)
-                .resizable(false)
-                .show(ui, |ui| panels::options::show(ui, state, &self.icons));
-        }
-
-        Panel::top("doc_tabs")
-            .exact_size(theme::TAB_BAR_HEIGHT)
-            .frame(flat(theme::BG_APP))
-            .show_separator_line(false)
-            .resizable(false)
-            .show(ui, |ui| panels::tabs::show(ui, state));
+            .show(ui, |ui| panels::top_bar::show(ui, state, ui_state, dock));
 
         Panel::bottom("status_bar")
             .exact_size(theme::STATUS_BAR_HEIGHT)
@@ -134,27 +124,28 @@ impl eframe::App for RizxelApp {
             .resizable(false)
             .show(ui, |ui| panels::status::show(ui, state));
 
-        if !ui_state.zen_mode {
-            Panel::left("tools")
-                .default_size(theme::TOOLS_WIDTH)
-                .size_range(48.0..=200.0)
-                .frame(flat(theme::BG_PANEL))
-                .show_separator_line(true)
-                .resizable(true)
-                .show(ui, |ui| panels::tools::show(ui, state, &self.icons));
-
-            Panel::right("sidebar")
-                .default_size(theme::SIDEBAR_WIDTH)
-                .size_range(200.0..=400.0)
-                .frame(flat(theme::BG_PANEL))
-                .show_separator_line(true)
-                .resizable(true)
-                .show(ui, |ui| panels::sidebar::show(ui, state, ui_state));
-        }
-
-        let meshes = &mut self.meshes;
+        // Zen mode: only the viewport (with its document tabs) and status bar.
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            viewport::show(ui, state, self.target_format, meshes)
+            if ui_state.zen_mode {
+                viewport_panel(ui, state, target_format, meshes);
+                return;
+            }
+            let error = dock.show(ui, |ui, panel| match panel {
+                dock::Panel::Viewport => viewport_panel(ui, state, target_format, meshes),
+                dock::Panel::Tools => panels::tools::show(ui, state, icons),
+                dock::Panel::Options => {
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::symmetric(8, 0))
+                        .show(ui, |ui| panels::options::show(ui, state, icons));
+                }
+                dock::Panel::Palette => panels::sidebar::palette(ui, state),
+                dock::Panel::Layers => panels::sidebar::layers(ui, state, ui_state),
+                dock::Panel::Bounds => panels::sidebar::bounds(ui, state),
+            });
+            if let Some(error) = error {
+                log::warn!("{error}");
+                state.status_message = Some(error);
+            }
         });
 
         // Modal dialogs and frameless window chrome draw on top of everything.
@@ -162,4 +153,22 @@ impl eframe::App for RizxelApp {
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }
+}
+
+/// Viewport panel: document tabs above the 3D view, so they move with it.
+fn viewport_panel(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    target_format: Option<wgpu::TextureFormat>,
+    meshes: &mut viewport::MeshCache,
+) {
+    let rect = ui.max_rect();
+    let (tabs_rect, view_rect) = rect.split_top_bottom_at_y(rect.top() + theme::TAB_BAR_HEIGHT);
+    ui.painter().rect_filled(tabs_rect, 0.0, theme::BG_APP);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
+        panels::tabs::show(ui, state);
+    });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(view_rect), |ui| {
+        viewport::show(ui, state, target_format, meshes);
+    });
 }
