@@ -6,12 +6,13 @@ use egui_phosphor::regular as icon;
 use rizxel_app::AppState;
 
 use super::UiState;
+use crate::dock::{self, Workspace};
 use crate::widgets::{icon_button, IconStyle};
 use crate::{actions, theme};
 
 const CONTROL_WIDTH: f32 = 46.0;
 
-pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
     let bar = ui.max_rect();
 
     // Background interaction: drag to move, double-click to maximize. Widgets
@@ -45,7 +46,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         let (r, _) = ui.allocate_exact_size(egui::vec2(32.0, bar.height()), Sense::hover());
         crate::widgets::paint_icon(ui, r, icon::CUBE, 15.0, theme::ACCENT);
 
-        menus(ui, state, ui_state);
+        menus(ui, state, ui_state, dock);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             window_controls(ui, bar.height());
@@ -53,7 +54,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     });
 }
 
-fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
     ui.style_mut().spacing.button_padding = egui::vec2(10.0, 4.0);
     ui.style_mut()
         .text_styles
@@ -129,50 +130,42 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
             }
             ui.separator();
 
-            // Faces, then edges, then corners — the same 26 targets as the
-            // view cube itself.
-            let faces_label = egui::RichText::new("Faces").strong();
-            ui.add(egui::Label::new(faces_label).sense(Sense::hover()));
-            for face in rizxel_app::ViewFace::ALL {
-                if menu_item(ui, icon::CUBE_FOCUS, face.label(), "", true) {
-                    state.camera.snap(rizxel_app::ViewTarget::Face(face));
+            // Standard views: each family of targets is its own submenu.
+            ui.menu_button(format!("{}  Faces", icon::SQUARE), |ui| {
+                ui.set_min_width(160.0);
+                for face in rizxel_app::ViewFace::ALL {
+                    if menu_item(ui, icon::SQUARE, face.label(), "", true) {
+                        state.camera.snap(rizxel_app::ViewTarget::Face(face));
+                    }
                 }
-            }
+            });
+
+            ui.menu_button(format!("{}  Edges", icon::LINE_SEGMENT), |ui| {
+                ui.set_min_width(160.0);
+                for edge in rizxel_app::ViewEdge::ALL {
+                    if menu_item(ui, icon::LINE_SEGMENT, edge.label(), "", true) {
+                        state.camera.snap(rizxel_app::ViewTarget::Edge(edge));
+                    }
+                }
+            });
+
+            ui.menu_button(format!("{}  Corners", icon::CUBE), |ui| {
+                ui.set_min_width(160.0);
+                for corner in rizxel_app::ViewCorner::ALL {
+                    if menu_item(ui, icon::CUBE, corner.label(), "", true) {
+                        state.camera.snap(rizxel_app::ViewTarget::Corner(corner));
+                    }
+                }
+            });
+
             ui.separator();
 
-            let edges_label = egui::RichText::new("Edges").strong();
-            ui.add(egui::Label::new(edges_label).sense(Sense::hover()));
-            for edge in rizxel_app::ViewEdge::ALL {
-                if menu_item(
-                    ui,
-                    icon::ARROW_BEND_DOWN_RIGHT,
-                    &format!("Edge {}", edge.label()),
-                    "",
-                    true,
-                ) {
-                    state.camera.snap(rizxel_app::ViewTarget::Edge(edge));
-                }
-            }
-            ui.separator();
-
-            let corners_label = egui::RichText::new("Corners").strong();
-            ui.add(egui::Label::new(corners_label).sense(Sense::hover()));
-            for corner in rizxel_app::ViewCorner::ALL {
-                if menu_item(
-                    ui,
-                    icon::CUBE,
-                    &format!("Corner {}", corner.label()),
-                    "",
-                    true,
-                ) {
-                    state.camera.snap(rizxel_app::ViewTarget::Corner(corner));
-                }
-            }
-            ui.separator();
-
-            if menu_item(ui, icon::ARROWS_COUNTER_CLOCKWISE, "Reset Camera", "", true) {
+            if menu_item(ui, icon::ARROW_COUNTER_CLOCKWISE, "Reset Camera", "", true) {
                 state.camera = rizxel_app::OrbitCamera::default();
             }
+
+            ui.separator();
+            panels_menu(ui, dock);
         });
 
         ui.menu_button("Help", |ui| {
@@ -195,6 +188,27 @@ fn menu_item(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: boo
         ui.close();
     }
     clicked
+}
+
+/// View > Panels: toggle visibility and restore the default workspace layout.
+fn panels_menu(ui: &mut Ui, dock: &mut Workspace) {
+    ui.menu_button(format!("{}  Panels", icon::SQUARES_FOUR), |ui| {
+        ui.set_min_width(200.0);
+        for panel in dock::Panel::ALL {
+            let closable = panel.permissions().closable;
+            let mut open = dock.is_visible(panel);
+            let toggle = ui.add_enabled(closable, egui::Checkbox::new(&mut open, panel.label()));
+            if toggle.changed() {
+                if let Err(e) = dock.set_visible(panel, open) {
+                    log::warn!("toggle {panel:?}: {e}");
+                }
+            }
+        }
+        ui.separator();
+        if menu_item(ui, icon::ARROWS_CLOCKWISE, "Reset Layout", "", true) {
+            dock.reset(ui.ctx());
+        }
+    });
 }
 
 fn window_controls(ui: &mut Ui, height: f32) {

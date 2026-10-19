@@ -5,6 +5,7 @@
 
 mod actions;
 mod app;
+mod dock;
 mod icons;
 mod panels;
 mod render;

@@ -1,6 +1,6 @@
-//! Right inspector: Color Palette, Layers and Bound Model sections.
+//! Inspector dock panels: Color Palette, Layers and Bound Model.
 
-use egui::{Color32, Id, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use egui_phosphor::regular as icon;
 use rizxel_app::{AppState, Document};
 use rizxel_math::BoundSize;
@@ -12,104 +12,30 @@ use crate::widgets::{icon_button, panel_header, IconStyle};
 const PALETTE_COLUMNS: usize = 8;
 const SWATCH_GAP: f32 = 4.0;
 
-pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
-    let Some(doc) = state.doc_mut() else {
-        return;
-    };
-
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let total = ui.available_height();
-    let collapsed = [ui_state.palette_collapsed, false, ui_state.bounds_collapsed];
-
-    // Collapsed sections keep a header-only height; the rest share the rest
-    // of the space evenly (matching the prototype's flex ratios).
-    let order = ui_state.sidebar_order;
-    let n_open = order.iter().filter(|&&s| !collapsed[s]).count().max(1) as f32;
-    let used = order.iter().filter(|&&s| collapsed[s]).count() as f32 * 32.0;
-    let flex = ((total - used) / n_open).max(120.0);
-
-    // Draw each section; register its header rect for drag-to-reorder.
-    for (slot, &s) in order.iter().enumerate() {
-        let h = if collapsed[s] { 32.0 } else { flex };
-        let header_rect =
-            Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 32.0));
-        register_header(ui, ui_state, s, slot, header_rect);
-        match s {
-            0 => section(ui, h, |ui| palette_section(ui, doc, ui_state)),
-            1 => section(ui, h, |ui| layers_section(ui, doc, ui_state)),
-            _ => section(ui, h, |ui| bounds_section(ui, doc, ui_state)),
-        }
+/// Color Palette dock panel.
+pub fn palette(ui: &mut Ui, state: &mut AppState) {
+    if let Some(doc) = state.doc_mut() {
+        palette_section(ui, doc);
     }
 }
 
-/// Tracks header drags so sections can be reordered. A drag that moves
-/// beyond the midpoint of an adjacent slot swaps the two sections.
-fn register_header(ui: &mut Ui, ui_state: &mut UiState, section: usize, slot: usize, rect: Rect) {
-    let resp = ui.interact(rect, Id::new(("sidebar_header", section)), Sense::drag());
-    let drag = resp.drag_delta().y;
-    if drag == 0.0 || ui_state.sidebar_order[slot] != section {
-        return;
+/// Layers dock panel.
+pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+    if let Some(doc) = state.doc_mut() {
+        layers_section(ui, doc, ui_state);
     }
-    let target = if drag < 0.0 {
-        slot.checked_sub(1)
-    } else {
-        (slot + 1 < 3).then_some(slot + 1)
-    };
-    let Some(target) = target else {
-        return;
-    };
-    let order = &mut ui_state.sidebar_order;
-    order.swap(slot, target);
 }
 
-/// Allocates a fixed-height vertical region with a dark bottom separator.
-fn section(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui)) {
-    let rect = Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), height));
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-        |ui| {
-            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-            ui.set_min_size(rect.size());
-            add(ui);
-        },
-    );
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        Stroke::new(1.0, theme::BG_APP),
-    );
-}
-
-fn collapse_icon(collapsed: bool) -> &'static str {
-    if collapsed {
-        icon::CARET_RIGHT
-    } else {
-        icon::CARET_DOWN
+/// Bound Model dock panel.
+pub fn bounds(ui: &mut Ui, state: &mut AppState) {
+    if let Some(doc) = state.doc_mut() {
+        bounds_section(ui, doc);
     }
 }
 
 // ------------------------------------------------------------------ palette
 
-fn palette_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    let collapsed = ui_state.palette_collapsed;
-    panel_header(
-        ui,
-        "COLOR PALETTE",
-        None,
-        theme::TEXT,
-        theme::BORDER,
-        |ui| {
-            if icon_button(ui, collapse_icon(collapsed), IconStyle::small(), true).clicked() {
-                ui_state.palette_collapsed = !collapsed;
-            }
-        },
-    );
-    if collapsed {
-        return;
-    }
-
+fn palette_section(ui: &mut Ui, doc: &mut Document) {
     // Selected color preview with an editable color picker.
     egui::Frame::NONE
         .inner_margin(egui::Margin {
@@ -275,7 +201,7 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let can_delete = doc.data.layers.len() > 1;
     let mut add = false;
     let mut delete = false;
-    panel_header(ui, "LAYERS", None, theme::TEXT, theme::BORDER, |ui| {
+    panel_header(ui, "", None, theme::TEXT, theme::BORDER, |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let del_style = IconStyle::small().hover_color(theme::DANGER);
         delete = icon_button(ui, icon::TRASH, del_style, can_delete)
@@ -459,25 +385,7 @@ fn layer_row(
 
 // ------------------------------------------------------------------- bounds
 
-fn bounds_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    let collapsed = ui_state.bounds_collapsed;
-    panel_header(
-        ui,
-        "BOUND MODEL",
-        Some(icon::PACKAGE),
-        theme::BOUND,
-        theme::BOUND,
-        |ui| {
-            let style = IconStyle::small().hover_color(theme::BOUND);
-            if icon_button(ui, collapse_icon(collapsed), style, true).clicked() {
-                ui_state.bounds_collapsed = !collapsed;
-            }
-        },
-    );
-    if collapsed {
-        return;
-    }
-
+fn bounds_section(ui: &mut Ui, doc: &mut Document) {
     egui::Frame::NONE.inner_margin(12).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
         ui.label(
