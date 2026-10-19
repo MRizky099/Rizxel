@@ -3,6 +3,57 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Phase 4: Core Engine & Data (2026-10-19)
+
+### Added
+- `rizxel-math`: `Voxel = u8` palette index (`EMPTY_VOXEL = 0`,
+  `FIRST_COLOR_INDEX = 1`), `Palette::is_selectable`, and `volume.rs` with
+  the Goxel-style tiled `VoxelVolume` (16³ tiles in a hash map keyed by tile
+  origin, empty tiles never stored, shared static empty tile for misses,
+  `occupied_bounds`, `tiles_in`, O(tiles) `resize`).
+- `rizxel-engine`: `greedy_mesh` / `mesh_volume` — per-tile greedy meshing
+  over 3 axes × 2 directions, faces culled against neighbours across tiles,
+  out-of-bounds treated as empty (closed shell), per-color quad merging, CCW
+  winding from outside, deterministic output (sorted tiles). Hidden layers
+  are skipped; overlapping visible layers resolve to the later layer.
+- `rizxel-io`: `.rzxl` **version 2** — each layer stores `voxels` as RLE
+  `VoxelRun { start, len, value }` over the bounds in Z-X-Y order (`y`
+  fastest). `runs_from_volume` / `volume_from_runs` validate runs (inside the
+  bounds, sorted, non-overlapping, value ≠ 0). Version 1 files still load
+  with empty layers; newer versions are rejected.
+- `rizxel-app`: `Layer::volume`; `Edit::Voxels` (with `VoxelChange`) and
+  per-layer coalescing so a drag is one undo step; `Document::set_voxels`,
+  `select_color`, `visible_mesh`, `visible_voxel_count`, `occupied_bounds`,
+  and `id()` / `revision()` for caching; `AppState::export_active_obj`.
+- `rizxel-ui`: opaque voxel pipeline (`VoxelVertex`, dynamic vertex + index
+  buffers, back-face culling, 4× MSAA, depth) with `vs_voxel` / `fs_voxel`:
+  Render mode is Lambert key light + 0.35 ambient + half-Lambert fill, Model
+  mode keeps palette colors with a light per-axis tint. Meshes are cached per
+  document and rebuilt once per revision (`MeshCache`); the GPU upload happens
+  only when the mesh key changes.
+- File ▸ **Export OBJ…** is enabled when the visible layers hold voxels and
+  exports only visible layers (vertex colors included).
+- Status bar shows `Voxels: N` for the visible layers.
+- `rizxel <file.rzxl>` opens a project at startup;
+  `cargo run -p rizxel-app --example sample_model` writes a demo project.
+- Phase 4 smoke test (`rizxel-app/tests/phase4_smoke.rs`): edit, undo, redo,
+  save/load, mesh and OBJ export.
+
+### Changed
+- Shrinking the bounds is now undoable with voxel content: `Edit::SetBounds`
+  records the clipped voxels and restores them on undo (merged bound drags
+  stay consistent on redo).
+- Palette slot 0 is drawn as a struck-out "empty" swatch and can no longer be
+  selected; loaded projects with `selected_color = 0` move to slot 1.
+- The viewport draws a dimmer box around the occupied voxels (when it is
+  smaller than the bounds) inside the yellow bounds wireframe.
+- `Document::from_project` returns `Result` (malformed voxel runs fail the
+  load instead of producing a broken document).
+- Architecture plan: Phase 4 marked done; L0/L1 descriptions updated (u8
+  voxels in tiles, in-house greedy mesher instead of `block_mesh`); local
+  reference clones of CADCraft (`cadcraft`, with its current crate
+  layering) and Goxel are listed.
+
 ## [Unreleased] — UI Optimization: View Cube, Zen Mode, Resizable Panels
 
 ### Added
@@ -21,6 +72,27 @@ All notable changes to Rizxel are documented here. Format follows
 - Tools panel and sidebar are resizable: the tools panel can grow from 48 to
   200 pt and the sidebar from 200 to 400 pt via their separator lines; the
   sidebar no longer paints a duplicate border.
+
+## [Unreleased] — Phase Plans: 4, 5a, 5b (2026-10-19)
+
+### Added
+- `docs/rizxel_phase4_implementation_plan.md` — Core Engine & Data: tiled
+  `VoxelVolume` (Goxel-style 16³ hash-mapped tiles), greedy meshing, lit GPU
+  voxel pipeline, `.rzxl` version 2 with RLE voxel runs, OBJ export enablement.
+- `docs/rizxel_phase5a_implementation_plan.md` — Interaction & Core Tools:
+  DDA voxel raycast, Cursor/Brush/Plane/Move/Color Picker/Extrude, undo
+  transactions (one drag = one step), hover and stamp previews. Includes the
+  Plane **Slice** mode (§4.3a): axis-aligned cut with keep-side, offset and
+  optional cap, previewed as a translucent cut plane, undoable as one step
+  (reference: `docs/Slice panel feature.png`).
+- `docs/rizxel_phase5b_implementation_plan.md` — Selection, Fill, Shape &
+  Polish: per-layer selection with Set/Add/Subtract mask modes, Selection,
+  Fuzzy Select, Fill, Shape, selection-aware Move/Extrude, option-bar
+  completion and the performance pass.
+
+### Changed
+- `docs/rizxel_native_architecture_plan.md` splits Phase 5 into 5a and 5b and
+  links each phase heading to its implementation plan.
 
 ## [Unreleased] — Phase 3: WGPU Viewport (2026-10-19)
 

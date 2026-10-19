@@ -10,16 +10,21 @@
 //!   red X / blue Z axes, distance fade).
 //! - Thick screen-space lines (yellow model bounds).
 //! - Filled translucent triangles (hovered ground cell).
+//! - Opaque voxel mesh (Phase 4): greedy-meshed quads with per-vertex palette
+//!   colors, flat-shaded in Model mode and Lambert-lit in Render mode. The
+//!   vertex/index buffers are re-uploaded only when the mesh key changes.
 //!
 //! GPU resources live in egui-wgpu's `CallbackResources`; each frame the UI
 //! submits a [`SceneFrame`] describing what to draw.
 
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
 use egui::Color32;
 use glam::{Mat4, Vec2, Vec3};
+use rizxel_app::Mesh;
 
 /// Samples per pixel of the offscreen target.
 const MSAA_SAMPLES: u32 = 4;
@@ -80,6 +85,53 @@ impl FillVertex {
     }
 }
 
+/// Vertex of the opaque voxel mesh (see `vs_voxel`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct VoxelVertex {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub color: [f32; 4],
+}
+
+/// Voxel mesh ready for upload, identified by `key` so the renderer uploads
+/// it only once (the UI keys it by document id and revision).
+#[derive(Debug, Default)]
+pub struct GpuMesh {
+    pub key: (u64, u64),
+    pub vertices: Vec<VoxelVertex>,
+    pub indices: Vec<u32>,
+}
+
+impl GpuMesh {
+    /// Converts a model-space mesh, translating it by `offset` into world space.
+    pub fn from_mesh(key: (u64, u64), mesh: &Mesh, offset: Vec3) -> Self {
+        let vertices = mesh
+            .positions
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let n = mesh.normals.get(i).copied().unwrap_or(Vec3::Y);
+                let c = mesh.colors.get(i).copied().unwrap_or_default();
+                VoxelVertex {
+                    pos: (*p + offset).to_array(),
+                    normal: n.to_array(),
+                    color: [c.r, c.g, c.b, c.a].map(|v| v as f32 / 255.0),
+                }
+            })
+            .collect();
+        Self {
+            key,
+            vertices,
+            indices: mesh.indices.clone(),
+        }
+    }
+
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+}
+
 /// Converts an egui color to straight (non-premultiplied) gamma-space RGBA.
 fn rgba(c: Color32) -> [f32; 4] {
     let [r, g, b, a] = c.to_srgba_unmultiplied();
@@ -101,6 +153,8 @@ pub struct SceneFrame {
     pub axis_z: Color32,
     pub lines: Vec<LineInstance>,
     pub fills: Vec<FillVertex>,
+    /// Opaque voxel mesh in world space (`None` = nothing to draw).
+    pub voxels: Option<Arc<GpuMesh>>,
 }
 
 impl SceneFrame {
@@ -131,29 +185,46 @@ pub fn grid_fade_distance(distance: f32) -> f32 {
     (distance * 4.0).clamp(96.0, 3000.0)
 }
 
-/// Growable GPU vertex buffer.
+/// Growable GPU buffer (vertex or index data).
 struct DynBuffer {
     buffer: wgpu::Buffer,
     capacity: u64,
     stride: u64,
+    usage: wgpu::BufferUsages,
     label: &'static str,
 }
 
 impl DynBuffer {
     fn new(device: &wgpu::Device, label: &'static str, stride: u64) -> Self {
+        Self::with_usage(device, label, stride, wgpu::BufferUsages::VERTEX)
+    }
+
+    fn with_usage(
+        device: &wgpu::Device,
+        label: &'static str,
+        stride: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
+        let usage = usage | wgpu::BufferUsages::COPY_DST;
         Self {
-            buffer: Self::alloc(device, label, stride * INITIAL_CAPACITY),
+            buffer: Self::alloc(device, label, stride * INITIAL_CAPACITY, usage),
             capacity: INITIAL_CAPACITY,
             stride,
+            usage,
             label,
         }
     }
 
-    fn alloc(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
+    fn alloc(
+        device: &wgpu::Device,
+        label: &str,
+        size: u64,
+        usage: wgpu::BufferUsages,
+    ) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage,
             mapped_at_creation: false,
         })
     }
@@ -162,7 +233,7 @@ impl DynBuffer {
         let count = data.len() as u64 / self.stride;
         if count > self.capacity {
             self.capacity = count.next_power_of_two();
-            self.buffer = Self::alloc(device, self.label, self.capacity * self.stride);
+            self.buffer = Self::alloc(device, self.label, self.capacity * self.stride, self.usage);
         }
         if !data.is_empty() {
             queue.write_buffer(&self.buffer, 0, data);
@@ -186,14 +257,20 @@ pub struct ViewportRenderer {
     grid_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     fill_pipeline: wgpu::RenderPipeline,
+    voxel_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     lines: DynBuffer,
     fills: DynBuffer,
+    voxel_vertices: DynBuffer,
+    voxel_indices: DynBuffer,
     targets: Option<Targets>,
     line_count: u32,
     fill_count: u32,
+    /// Key of the mesh currently in the voxel buffers.
+    voxel_key: Option<(u64, u64)>,
+    voxel_index_count: u32,
 }
 
 impl ViewportRenderer {
@@ -348,6 +425,40 @@ impl ViewportRenderer {
             cache: None,
         });
 
+        let voxel_attrs = wgpu::vertex_attr_array![
+            0 => Float32x3, 1 => Float32x3, 2 => Float32x4
+        ];
+        let voxel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rizxel_voxels"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_voxel"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<VoxelVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &voxel_attrs,
+                })],
+            },
+            // The mesher emits CCW quads seen from outside: cull the backs.
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: depth(true, wgpu::CompareFunction::Less),
+            multisample: msaa,
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_voxel"),
+                compilation_options: Default::default(),
+                targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rizxel_blit_layout"),
             entries: &[
@@ -409,6 +520,7 @@ impl ViewportRenderer {
             grid_pipeline,
             line_pipeline,
             fill_pipeline,
+            voxel_pipeline,
             blit_pipeline,
             blit_layout,
             sampler,
@@ -422,10 +534,46 @@ impl ViewportRenderer {
                 "rizxel_fills",
                 std::mem::size_of::<FillVertex>() as u64,
             ),
+            voxel_vertices: DynBuffer::new(
+                device,
+                "rizxel_voxel_vertices",
+                std::mem::size_of::<VoxelVertex>() as u64,
+            ),
+            voxel_indices: DynBuffer::with_usage(
+                device,
+                "rizxel_voxel_indices",
+                std::mem::size_of::<u32>() as u64,
+                wgpu::BufferUsages::INDEX,
+            ),
             targets: None,
             line_count: 0,
             fill_count: 0,
+            voxel_key: None,
+            voxel_index_count: 0,
         }
+    }
+
+    /// Uploads the voxel mesh when its key differs from the one on the GPU.
+    fn upload_voxels(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: Option<&GpuMesh>,
+    ) {
+        let Some(mesh) = mesh.filter(|m| !m.indices.is_empty()) else {
+            self.voxel_key = None;
+            self.voxel_index_count = 0;
+            return;
+        };
+        if self.voxel_key == Some(mesh.key) {
+            return;
+        }
+        self.voxel_vertices
+            .upload(device, queue, bytemuck::cast_slice(&mesh.vertices));
+        self.voxel_indices
+            .upload(device, queue, bytemuck::cast_slice(&mesh.indices));
+        self.voxel_key = Some(mesh.key);
+        self.voxel_index_count = mesh.indices.len() as u32;
     }
 
     /// (Re)creates the offscreen targets when the viewport size changes.
@@ -520,6 +668,7 @@ impl ViewportRenderer {
             .upload(device, queue, bytemuck::cast_slice(&frame.fills));
         self.line_count = frame.lines.len() as u32;
         self.fill_count = frame.fills.len() as u32;
+        self.upload_voxels(device, queue, frame.voxels.as_deref());
 
         let Some(targets) = &self.targets else {
             return;
@@ -557,6 +706,18 @@ impl ViewportRenderer {
 
         pass.set_pipeline(&self.grid_pipeline);
         pass.draw(0..3, 0..1);
+
+        // Voxels after the grid so the depth test orders them against the
+        // ground; overlays after the voxels so voxels hide what is behind them.
+        if self.voxel_index_count > 0 {
+            pass.set_pipeline(&self.voxel_pipeline);
+            pass.set_vertex_buffer(0, self.voxel_vertices.buffer.slice(..));
+            pass.set_index_buffer(
+                self.voxel_indices.buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            pass.draw_indexed(0..self.voxel_index_count, 0, 0..1);
+        }
 
         if self.fill_count > 0 {
             pass.set_pipeline(&self.fill_pipeline);
@@ -630,6 +791,46 @@ mod tests {
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
+        // vec3 + vec3 + vec4.
+        assert_eq!(std::mem::size_of::<VoxelVertex>(), 40);
+    }
+
+    #[test]
+    fn gpu_mesh_is_offset_and_normalized() {
+        let mesh = Mesh::unit_cube(rizxel_math::Rgba8::rgb(255, 0, 0));
+        let gpu = GpuMesh::from_mesh((1, 2), &mesh, Vec3::new(-4.0, 0.0, -4.0));
+        assert_eq!(gpu.key, (1, 2));
+        assert_eq!(gpu.vertices.len(), 8);
+        assert_eq!(gpu.triangle_count(), 12);
+        assert_eq!(gpu.vertices[0].pos, [-4.0, 0.0, -4.0]);
+        assert_eq!(gpu.vertices[0].color, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn voxel_faces_are_front_facing_on_screen() {
+        // A CCW-from-outside voxel face must be CCW in NDC for the camera in
+        // front of it, otherwise back-face culling would hide the model.
+        use rizxel_app::{OrbitCamera, ViewFace, ViewTarget};
+        let mut volume = rizxel_math::VoxelVolume::new(rizxel_math::BoundSize::new(4, 4, 4));
+        volume.set(glam::IVec3::ZERO, 1);
+        let mesh = rizxel_engine::mesh_volume(&volume, &rizxel_math::Palette::default());
+        for (face, normal) in [
+            (ViewFace::Front, Vec3::Z),
+            (ViewFace::Right, Vec3::X),
+            (ViewFace::Top, Vec3::Y),
+        ] {
+            let mut cam = OrbitCamera::default();
+            cam.snap(ViewTarget::Face(face));
+            let vp = cam.view_proj(Vec3::splat(0.5), 1.0);
+            let tri = mesh
+                .indices
+                .chunks_exact(3)
+                .find(|t| mesh.normals[t[0] as usize] == normal)
+                .unwrap();
+            let [a, b, c] = [0, 1, 2].map(|i| vp.project_point3(mesh.positions[tri[i] as usize]));
+            let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            assert!(area > 0.0, "{face:?} face is clockwise on screen");
+        }
     }
 
     #[test]

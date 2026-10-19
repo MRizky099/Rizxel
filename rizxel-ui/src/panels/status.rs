@@ -37,6 +37,14 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
 
         if let Some(doc) = state.doc() {
             separator(ui);
+            ui.label(
+                RichText::new(icon::CUBE_TRANSPARENT)
+                    .size(12.0)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.label(small(format!("Voxels: {}", doc.visible_voxel_count())));
+
+            separator(ui);
             let b = doc.data.bounds;
             ui.label(
                 RichText::new(icon::BOUNDING_BOX)

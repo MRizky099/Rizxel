@@ -13,6 +13,8 @@ pub struct RizxelApp {
     state: AppState,
     ui: panels::UiState,
     icons: Icons,
+    /// Viewport meshes per open document (re-meshed once per revision).
+    meshes: viewport::MeshCache,
     /// Framebuffer format of the wgpu surface; `None` if wgpu is unavailable.
     target_format: Option<wgpu::TextureFormat>,
 }
@@ -34,7 +36,19 @@ impl RizxelApp {
             state: AppState::default(),
             ui: panels::UiState::default(),
             icons: Icons::load(&cc.egui_ctx),
+            meshes: viewport::MeshCache::default(),
             target_format,
+        }
+    }
+
+    /// Opens a project passed on the command line; failures go to the status bar.
+    pub fn open_at_startup(&mut self, path: &std::path::Path) {
+        match self.state.open(path) {
+            Ok(()) => self.state.status_message = Some(format!("Opened {}", path.display())),
+            Err(e) => {
+                log::error!("open {}: {e}", path.display());
+                self.state.status_message = Some(format!("Failed to open: {e}"));
+            }
         }
     }
 
@@ -138,7 +152,10 @@ impl eframe::App for RizxelApp {
                 .show(ui, |ui| panels::sidebar::show(ui, state, ui_state));
         }
 
-        egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(ui, state, self.target_format));
+        let meshes = &mut self.meshes;
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            viewport::show(ui, state, self.target_format, meshes)
+        });
 
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);

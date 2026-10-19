@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 /// Maximum number of colors a palette can hold (MagicaVoxel-compatible size).
 pub const MAX_PALETTE_COLORS: usize = 256;
 
+/// One voxel cell: a palette index. `0` is empty, `1..=255` are colors.
+pub type Voxel = u8;
+
+/// The empty voxel (palette slot 0 is reserved and never painted).
+pub const EMPTY_VOXEL: Voxel = 0;
+
+/// First palette index that can hold a voxel color.
+pub const FIRST_COLOR_INDEX: Voxel = 1;
+
+/// True when `v` is the empty voxel.
+pub const fn is_empty(v: Voxel) -> bool {
+    v == EMPTY_VOXEL
+}
+
 /// 8-bit RGBA color, laid out for direct GPU upload.
 #[repr(C)]
 #[derive(
@@ -132,6 +146,12 @@ impl Palette {
             .map(|slot| std::mem::replace(slot, color))
     }
 
+    /// True when `index` can be used as a paint color: inside the palette
+    /// and not the reserved empty slot `0`.
+    pub fn is_selectable(&self, index: usize) -> bool {
+        index >= FIRST_COLOR_INDEX as usize && index < self.colors.len()
+    }
+
     /// Index of the swatch highlighted by default (`#38BDF8`).
     pub const DEFAULT_SELECTED: usize = 35;
 }
@@ -234,6 +254,16 @@ mod tests {
         assert_eq!(Rgba8::from_hsl(0.0, 1.0, 0.5), Rgba8::rgb(255, 0, 0));
         assert_eq!(Rgba8::from_hsl(120.0, 1.0, 0.5), Rgba8::rgb(0, 255, 0));
         assert_eq!(Rgba8::from_hsl(240.0, 1.0, 0.5), Rgba8::rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn slot_zero_is_not_selectable() {
+        let p = Palette::default();
+        assert!(!p.is_selectable(0));
+        assert!(p.is_selectable(1));
+        assert!(p.is_selectable(p.len() - 1));
+        assert!(!p.is_selectable(p.len()));
+        assert!(is_empty(EMPTY_VOXEL) && !is_empty(FIRST_COLOR_INDEX));
     }
 
     #[test]

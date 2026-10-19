@@ -82,9 +82,16 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                 actions::save_as(state);
             }
             ui.separator();
-            // Enabled once voxel meshing lands (Phase 4); the OBJ writer
-            // already exists in `rizxel-io::format_obj`.
-            menu_item(ui, icon::EXPORT, "Export OBJ...", "", false);
+            // Exports the visible layers; disabled while they hold no voxels.
+            if menu_item(
+                ui,
+                icon::EXPORT,
+                "Export OBJ...",
+                "",
+                state.can_export_obj(),
+            ) {
+                actions::export_obj(state);
+            }
             ui.separator();
             if menu_item(ui, icon::SIGN_OUT, "Exit", "Alt+F4", true) {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);

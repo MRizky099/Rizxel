@@ -1,13 +1,13 @@
 //! # rizxel-engine (L1)
 //!
 //! Core voxel logic independent of any UI or file format: tool definitions,
-//! mesh data structures and (from Phase 4/5) meshing and raycasting.
+//! greedy meshing of voxel volumes and (from Phase 5) raycasting.
 
 pub mod mesher;
 pub mod raycast;
 pub mod tools;
 
-pub use mesher::Mesh;
+pub use mesher::{greedy_mesh, mesh_volume, Mesh};
 pub use tools::{
     BrushOptions, BrushShape, ColorPickerOptions, CursorOptions, DragMode, ExtrudeOptions,
     FillOptions, FuzzySelectOptions, MaskMode, MoveOptions, NamesMode, PlaneMode, PlaneOptions,

@@ -36,9 +36,18 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
+    // `rizxel path/to/model.rzxl` opens that project at startup.
+    let open_path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+
     eframe::run_native(
         "Rizxel",
         options,
-        Box::new(|cc| Ok(Box::new(app::RizxelApp::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = app::RizxelApp::new(cc);
+            if let Some(path) = open_path {
+                app.open_at_startup(&path);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
