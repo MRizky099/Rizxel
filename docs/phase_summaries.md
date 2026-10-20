@@ -1,0 +1,142 @@
+# Rizxel — Phase Summaries
+
+A short summary of each development phase. For full details, see each phase's
+implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
+
+| Phase | Theme | Status | Commit |
+|---|---|---|---|
+| 1–2 | Workspace and UI skeleton | ✅ Done | `f072972` |
+| 3 | WGPU viewport | ✅ Done | `fed30db` |
+| UI | Docking, view cube, Zen mode, icons | ✅ Done | `125f54b`, `73a5315` |
+| 4 | Core engine and voxel data | ✅ Done | `0ceeb6a` |
+| 4.5 | `.rzxl` v3 layer data | ✅ Done | `6dbbd34` |
+| 5a | Interaction and core tools | ✅ Done | `26c24f1`, `8e4e881` |
+| 5b | Selection, fill, shape and performance | ✅ Done | `00e6924` |
+| 6 (in progress) | Import and export | 🚧 Uncommitted on `ui-docking` | — |
+
+---
+
+## Phase 1–2 — Workspace and UI skeleton
+
+Plan: [`rizxel_phase1-3_implementation_plan.md`](rizxel_phase1-3_implementation_plan.md)
+
+**Goal:** restart the project as pure Rust, replacing the Tauri/React prototype, and
+reproduce `rizxel_ui.html` one to one in egui.
+
+**Delivered**
+- A five-crate Cargo workspace (`ui → app → io → engine → math`) with
+  `unsafe_code = "forbid"` and clippy warnings on.
+- L0 types: `Rgba8`, `Palette` (56 default swatches), `BoundSize` (32³ by default, up to
+  256), `Aabb`.
+- `.rzxl` v1: `RZXL` magic, version, length and a zstd JSON body. Saves are atomic and
+  the body is capped at 512 MiB.
+- `History` undo/redo with reversible `Edit` commands, merged drags and a 512-step cap.
+- A frameless window with a custom title bar and resize zones, plus the menu bar,
+  option bar, tabs, toolbar, sidebar (palette, layers, bounds) and status bar.
+- A placeholder viewport drawn with the egui painter, with the view cube and axis gizmo.
+
+## Phase 3 — WGPU viewport
+
+**Goal:** replace the painter placeholder with a native wgpu render pass.
+
+**Delivered**
+- An offscreen 4× MSAA + `Depth32Float` pass blitted into egui through
+  `egui_wgpu::Callback`.
+- `scene.wgsl`: a procedural infinity grid (anti-aliased with `fwidth`, axis lines,
+  distance fade), instanced thick screen-space lines and translucent fills.
+- Shared `OrbitCamera` matrices for GPU rendering and CPU picking.
+- WGSL is validated with `naga` in tests.
+
+## UI optimization and docking
+
+**Delivered**
+- 26 view-cube targets (6 faces, 12 edges, 8 corners), Zen mode (`Ctrl+Shift+F`) and
+  resizable panels.
+- Pixel-art tool icons, the application icon and scrolling tab and option strips.
+- Each tool keeps its own option settings, modelled on Goxel's tool panels.
+- Dockable, floating workspace panels through `craft-ui`, shared with CADCraft. The
+  layer panel follows Goxel's style.
+
+## Phase 4 — Core engine and data
+
+Plan: [`rizxel_phase4_implementation_plan.md`](rizxel_phase4_implementation_plan.md)
+
+**Goal:** real voxel data, meshing and rendering.
+
+**Delivered**
+- `VoxelVolume`: a Goxel-style sparse volume of 16³ tiles stored in a hash map. Voxels
+  are `u8` palette indices.
+- `greedy_mesh`: greedy meshing per tile, with faces culled across tiles and
+  deterministic output.
+- A lit voxel pipeline. Render mode uses Lambert, ambient and fill lighting; Model mode
+  uses flat palette colors. The mesh is cached per revision.
+- `.rzxl` v2 stores voxels as RLE runs in the zstd body. OBJ export is enabled.
+- Shrinking the bounds can be undone without losing voxels.
+
+## Phase 4.5 — `.rzxl` v3 layer data
+
+Spec: [`rzxl_format.md`](rzxl_format.md)
+
+**Delivered**
+- Each layer gains a stable `id`, opacity, a parent group, a material, a crop box and a
+  `kind`: voxels, group, linked clone or shape.
+- A project-level `materials` list.
+- `ProjectFile::validate` runs on every read and write. It checks ids, cycles, clone
+  sources, ranges and caps.
+- The document API covers groups, clones, shape layers and layer properties, with
+  evaluated geometry cached per revision.
+
+## Phase 5a — Interaction and core tools
+
+Plan: [`rizxel_phase5a_implementation_plan.md`](rizxel_phase5a_implementation_plan.md)
+
+**Goal:** make the model editable.
+
+**Delivered**
+- Amanatides–Woo DDA raycasting (`raycast_grid`, `raycast_volume`, `raycast_floor`).
+- Pure-function tools: Brush (cube, sphere and cylinder stamps, antialiasing, surface
+  paint, gapless strokes), Move and Resize, Color Picker, Extrude (out or in, with a
+  color threshold) and Symmetry.
+- **Plane tool**: a work plane that drawing tools snap onto, and a Qubicle-style Slice
+  mode that edits both sides of the plane. A destructive Cut with an optional cap, and a
+  3D arrow gizmo for dragging the plane.
+- Undo transactions, so one drag is one undo step and Cancel restores the model exactly.
+- Hover, ghost and extrude previews, the `Shift`/`Alt`/`Ctrl` modifiers and
+  single-letter tool shortcuts.
+
+## Phase 5b — Selection, fill, shape and polish
+
+Plan: [`rizxel_phase5b_implementation_plan.md`](rizxel_phase5b_implementation_plan.md)
+
+**Goal:** finish the toolset.
+
+**Delivered**
+- A `Selection` per layer (a sparse cell set with a cached AABB), with Set / Add /
+  Subtract masks. Selection changes can be undone but aren't saved.
+- Tools: box Selection, Fuzzy Select (magic wand with an RGBA threshold), Fill (recolor,
+  or fill empty cells with a bounded flood), Shape (drag a cube, sphere or cylinder), and
+  Move and Extrude that act on the selection.
+- A guarded flood fill capped at 2 million cells.
+- Selection rendering (faces and outline, falling back to the box above 20k faces) and a
+  marquee.
+- `TileMeshCache` re-meshes only changed tiles. A drag on a 128³ model drops from about
+  21 ms to 4 ms per frame.
+- A randomized undo-all / redo-all test that restores grids and selections exactly.
+
+## Phase 6 (in progress) — Import and export
+
+Spec: [`interchange_formats.md`](interchange_formats.md)
+
+**Delivered (uncommitted)**
+- MagicaVoxel `.vox`: import reads the scene graph, and repeated instances become linked
+  clones. Export writes one model per layer.
+- Goxel `.gox`: import reads PNG blocks and layer dicts, and groups, shapes, materials
+  and clones survive the round trip.
+- OBJ + MTL + palette PNG in MagicaVoxel's exact layout. Re-exporting `chr_knight.vox`
+  gives 1012 triangles against MagicaVoxel's 1124, with a pixel-identical palette.
+- OBJ import (vertex colors, `Kd`, `map_Kd`), MTL palette import as one undo step, and
+  STL import and export.
+- `voxelize`: meshes from voxel editors import exactly on their own grid. Other meshes
+  are voxelized with a parity fill.
+- `build_color_map` reduces imported colors to the palette with median cut.
+- A headless `convert` example, round-trip tests and tests with hostile inputs.
