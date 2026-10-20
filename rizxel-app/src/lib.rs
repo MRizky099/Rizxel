@@ -5,6 +5,7 @@
 
 pub mod document;
 pub mod history;
+pub mod selection;
 
 use std::path::Path;
 
@@ -18,6 +19,7 @@ pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::RZXL_EXTENSION;
+pub use selection::Selection;
 
 /// File extension of mesh exports.
 pub const OBJ_EXTENSION: &str = "obj";
@@ -328,7 +330,6 @@ pub struct AppState {
     pub camera: OrbitCamera,
     /// Voxel under the cursor (set by the viewport; `None` when off-model).
     pub cursor_voxel: Option<IVec3>,
-    pub selected_voxels: usize,
     /// Transient message shown in the status bar (e.g. save errors).
     pub status_message: Option<String>,
     /// Live feedback of the active tool (hovered slice plane, pending
@@ -348,7 +349,6 @@ impl Default for AppState {
             view_mode: ViewMode::default(),
             camera: OrbitCamera::default(),
             cursor_voxel: None,
-            selected_voxels: 0,
             status_message: None,
             tool_feedback: None,
             untitled_counter: 0,
@@ -482,6 +482,15 @@ impl AppState {
 
     pub fn can_redo(&self) -> bool {
         self.doc().is_some_and(Document::can_redo)
+    }
+
+    // --------------------------------------------------------- selection
+
+    /// Number of selected cells on the active layer of the active document.
+    pub fn selected_voxels(&self) -> usize {
+        self.doc()
+            .and_then(Document::selection)
+            .map_or(0, Selection::len)
     }
 
     // ------------------------------------------------------------ status

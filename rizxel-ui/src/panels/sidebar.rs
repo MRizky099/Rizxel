@@ -388,6 +388,7 @@ fn layer_row(
     let (visible, locked) = (layer.visible, layer.locked);
     let name = layer.name.clone();
     let voxels = layer.volume.voxel_count();
+    let selected_cells = layer.selection.len();
     let count = doc.data.layers.len();
     let selected = i == doc.active_layer;
     let (rect, response) = ui.allocate_exact_size(
@@ -475,10 +476,32 @@ fn layer_row(
     ui.painter()
         .galley(count_pos, count_galley, theme::TEXT_MUTED);
 
+    // Selection badge: selected cell count in a pill before the voxel count.
+    let mut count_left = count_pos.x;
+    if selected_cells > 0 {
+        let galley = ui.painter().layout_no_wrap(
+            selected_cells.to_string(),
+            theme::regular(10.0),
+            theme::TEXT_STRONG,
+        );
+        let size = galley.size() + egui::vec2(8.0, 2.0);
+        let badge = Rect::from_min_size(
+            egui::pos2(count_left - 6.0 - size.x, rect.center().y - size.y / 2.0),
+            size,
+        );
+        ui.painter()
+            .rect_filled(badge, egui::CornerRadius::same(6), theme::ACCENT);
+        ui.painter()
+            .galley(badge.min + egui::vec2(4.0, 1.0), galley, theme::TEXT_STRONG);
+        ui.interact(badge, ui.id().with(("sel_badge", i)), Sense::hover())
+            .on_hover_text(format!("{selected_cells} selected cells"));
+        count_left = badge.left();
+    }
+
     // Name (inline rename on double-click).
     let name_rect = Rect::from_min_max(
         egui::pos2(eye_rect.right() + 10.0, rect.top() + 4.0),
-        egui::pos2(count_pos.x - 6.0, rect.bottom() - 4.0),
+        egui::pos2(count_left - 6.0, rect.bottom() - 4.0),
     );
     let renaming = matches!(&ui_state.renaming_layer, Some((r, _)) if *r == i);
     if renaming {

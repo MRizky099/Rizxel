@@ -6,6 +6,14 @@
 //! empty (or outside the bounds, so the shell is always closed) are collected
 //! into a 16×16 mask per slice and merged greedily into rectangles of one
 //! palette index. Quads never merge across tile borders.
+//!
+//! Because a tile's quads depend only on that tile and the boundary voxels
+//! of its face neighbours, [`TileMeshCache`] can re-mesh just the tiles a
+//! drag changed and concatenate the rest from its cache; the result is
+//! identical to a full [`mesh_volume`].
+
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use glam::{IVec3, Vec3};
 use rizxel_math::volume::local_index;
@@ -101,14 +109,106 @@ pub fn mesh_volume(volume: &VoxelVolume, palette: &Palette) -> Mesh {
     };
     // Sorted tiles keep the output byte-identical across runs.
     for origin in volume.sorted_tile_origins() {
-        let tile = volume.tile(origin);
-        for axis in 0..3 {
-            for positive in [false, true] {
-                mesher.sweep(volume, origin, tile, Face { axis, positive });
-            }
-        }
+        mesher.tile(volume, origin);
     }
     mesher.mesh
+}
+
+/// Quads of the single tile at `origin` (in model space).
+pub fn mesh_tile(volume: &VoxelVolume, origin: IVec3, palette: &Palette) -> Mesh {
+    let mut mesher = Mesher {
+        mesh: Mesh::default(),
+        palette,
+    };
+    mesher.tile(volume, origin);
+    mesher.mesh
+}
+
+/// Per-tile meshes of the last volume meshed, for incremental re-meshing
+/// while a drag edits a few tiles per frame.
+///
+/// [`TileMeshCache::mesh`] compares each tile with the previous volume and
+/// re-meshes only the changed ones and their face neighbours (their border
+/// faces may have appeared or vanished). A palette or bounds change, or the
+/// first call, rebuilds everything. The output always equals
+/// [`mesh_volume`] of the same volume.
+#[derive(Debug, Default)]
+pub struct TileMeshCache {
+    source: Option<VoxelVolume>,
+    palette: Option<Palette>,
+    tiles: HashMap<IVec3, Mesh>,
+    /// Tiles re-meshed by the last call (diagnostics and tests).
+    last_rebuilt: usize,
+}
+
+impl TileMeshCache {
+    /// Mesh of `volume`, reusing the cached tiles that did not change.
+    pub fn mesh(&mut self, volume: &VoxelVolume, palette: &Palette) -> Mesh {
+        let full = self.palette.as_ref() != Some(palette)
+            || self
+                .source
+                .as_ref()
+                .is_none_or(|s| s.bounds() != volume.bounds());
+        let origins = volume.sorted_tile_origins();
+        let dirty: HashSet<IVec3> = match (&self.source, full) {
+            (Some(old), false) => {
+                let mut candidates: HashSet<IVec3> = origins.iter().copied().collect();
+                candidates.extend(old.sorted_tile_origins());
+                let changed: Vec<IVec3> = candidates
+                    .into_iter()
+                    .filter(|&o| old.tile(o) != volume.tile(o))
+                    .collect();
+                let step = TILE_SIZE;
+                changed
+                    .iter()
+                    .flat_map(|&o| {
+                        [
+                            IVec3::ZERO,
+                            IVec3::X * step,
+                            IVec3::NEG_X * step,
+                            IVec3::Y * step,
+                            IVec3::NEG_Y * step,
+                            IVec3::Z * step,
+                            IVec3::NEG_Z * step,
+                        ]
+                        .map(|d| o + d)
+                    })
+                    .collect()
+            }
+            _ => {
+                self.tiles.clear();
+                origins.iter().copied().collect()
+            }
+        };
+        self.tiles.retain(|o, _| !dirty.contains(o));
+        let mut rebuilt = 0;
+        for &o in &origins {
+            if let Entry::Vacant(slot) = self.tiles.entry(o) {
+                slot.insert(mesh_tile(volume, o, palette));
+                rebuilt += 1;
+            }
+        }
+        self.last_rebuilt = rebuilt;
+        self.source = Some(volume.clone());
+        self.palette = Some(palette.clone());
+
+        let mut out = Mesh::default();
+        for o in &origins {
+            if let Some(m) = self.tiles.get(o) {
+                let base = out.positions.len() as u32;
+                out.positions.extend_from_slice(&m.positions);
+                out.normals.extend_from_slice(&m.normals);
+                out.colors.extend_from_slice(&m.colors);
+                out.indices.extend(m.indices.iter().map(|i| base + i));
+            }
+        }
+        out
+    }
+
+    /// Number of tiles the last [`TileMeshCache::mesh`] call re-meshed.
+    pub fn last_rebuilt(&self) -> usize {
+        self.last_rebuilt
+    }
 }
 
 const N: usize = TILE_SIZE as usize;
@@ -144,6 +244,16 @@ struct Mesher<'p> {
 }
 
 impl Mesher<'_> {
+    /// Emits every face of the tile at `origin`.
+    fn tile(&mut self, volume: &VoxelVolume, origin: IVec3) {
+        let tile = volume.tile(origin);
+        for axis in 0..3 {
+            for positive in [false, true] {
+                self.sweep(volume, origin, tile, Face { axis, positive });
+            }
+        }
+    }
+
     /// Emits the faces of one tile that point along `face`.
     fn sweep(&mut self, volume: &VoxelVolume, origin: IVec3, tile: &Tile, face: Face) {
         let (axis, u_axis, v_axis) = (face.axis, face.u(), face.v());
@@ -393,6 +503,47 @@ mod tests {
             })
             .collect();
         assert_eq!(mesh(&volume(&cells)), mesh(&volume(&cells)));
+    }
+
+    #[test]
+    fn tile_cache_matches_full_meshing() {
+        let palette = Palette::default();
+        let mut v = VoxelVolume::new(BoundSize::new(48, 48, 48));
+        for i in 0..400 {
+            let p = IVec3::new((i * 7) % 48, (i * 13) % 20, (i * 5) % 48);
+            v.set(p, 1 + (i % 4) as Voxel);
+        }
+        let mut cache = TileMeshCache::default();
+        assert_eq!(cache.mesh(&v, &palette), mesh_volume(&v, &palette));
+        let all = cache.last_rebuilt();
+        assert_eq!(all, v.tile_count());
+
+        // One voxel on a tile border: its tile and neighbours only.
+        v.set(IVec3::new(16, 3, 3), 9);
+        assert_eq!(cache.mesh(&v, &palette), mesh_volume(&v, &palette));
+        assert!(
+            cache.last_rebuilt() < all,
+            "{} of {all}",
+            cache.last_rebuilt()
+        );
+
+        // Emptying a tile, then an unchanged frame.
+        for x in 32..48 {
+            for y in 0..16 {
+                for z in 0..16 {
+                    v.clear_at(IVec3::new(x, y, z));
+                }
+            }
+        }
+        assert_eq!(cache.mesh(&v, &palette), mesh_volume(&v, &palette));
+        assert_eq!(cache.mesh(&v, &palette), mesh_volume(&v, &palette));
+        assert_eq!(cache.last_rebuilt(), 0);
+
+        // A palette change rebuilds everything.
+        let mut other = palette.clone();
+        other.set(1, Rgba8::rgb(1, 2, 3));
+        assert_eq!(cache.mesh(&v, &other), mesh_volume(&v, &other));
+        assert_eq!(cache.last_rebuilt(), v.tile_count());
     }
 
     #[test]

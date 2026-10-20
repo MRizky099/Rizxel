@@ -3,6 +3,63 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Phase 5b: Selection, Fill, Shape & Polish (2026-10-20)
+
+### Added
+- Selection model (`rizxel-app/src/selection.rs`): `Selection` (sparse cell
+  set with an incrementally cached AABB and a revision for render caches),
+  `combine` with `MaskMode::{Set, Add, Subtract}`, `visible_shell`,
+  `boundary_faces`, `translated`. Each `Layer` owns its selection; it is
+  undoable through `Edit::SetSelection` and never saved to `.rzxl`.
+- `Document::selection/set_selection/select/clear_selection/delete_selected`
+  and `commit_edit_with_selection` (voxel changes and the new selection as
+  one undo step); `History::commit_transaction_with`;
+  `AppState::selected_voxels()`.
+- Tool algorithms in `rizxel-engine/src/tools`:
+  - `select.rs`: box selection (`selection_box`, `select_box`).
+  - `fuzzy.rs`: magic-wand flood with an RGBA threshold, entire-layer mode.
+  - `fill.rs`: Recolor (connected or whole layer, threshold) and Fill empty
+    (flood bounded by the model's box), restricted to the selection when
+    there is one; `FillError` reports capped or impossible fills.
+  - `shape.rs`: cube/sphere/cylinder drag (`shape_box`, `shape_cells`) with
+    antialiasing and symmetry (shared with Brush).
+  - `moving.rs`: `move_selection_changes` (overwrite or refuse on collision).
+  - `extrude.rs`: `selection_region`, `extruded_cells` (selection extrudes
+    chain: the selection grows with each extrude).
+  - `quality.rs`: guarded `flood` with `MAX_FLOOD_CELLS` (2M) and
+    `color_distance` / `colors_match`.
+- Viewport: Selection (box drag between the pressed and hovered voxel,
+  click toggles one voxel), Fuzzy Select and Fill clicks, Shape drag with a
+  live preview, selection-aware Move (the outline follows the drag) and
+  Extrude. `Shift`/`Ctrl` add/subtract for the selection tools, `Esc`
+  deselects, `Delete` deletes the selection. Selection outline: translucent
+  accent faces plus edge outline, falling back to the selection's box above
+  20k faces; marquee box for Selection/Shape drags; fill start cell
+  highlight; Shape anchor ghost.
+- Option bar: every tool's row is enabled. Selection (mask, all layers,
+  Deselect/Delete), Fuzzy Select (+ all layers), Fill (mode, connected,
+  current layer, threshold, color swatch), Move (+ Overwrite).
+- Status bar: selected voxel count and the selection tools' mask mode
+  (following the held modifiers). Layers panel: selection badge per layer.
+- `TileMeshCache` / `mesh_tile` (`rizxel-engine/src/mesher.rs`):
+  incremental re-meshing of changed tiles, used by `Document::view_mesh`.
+  `rizxel-app/examples/mesh_bench.rs` times a drag on a 128³ / 51k-voxel
+  model (release: ~21 ms → ~4 ms per frame).
+- Tests: per-algorithm unit tests (box counts, mask combination, fuzzy
+  threshold boundaries, closed room / open shell fills, shape volumes for
+  1³–3³, selection move collisions, tile cache == full mesh) and
+  `rizxel-app/tests/phase5b_tools.rs` (undoable selections, per-layer
+  selections, selection move/extrude in one step, and a randomized tool
+  sequence whose undo-all / redo-all restore grids and selections exactly).
+
+### Changed
+- `FillOptions` gains `mode` and `connected`; `MoveOptions` gains
+  `overwrite`; `SelectionOptions` and `FuzzySelectOptions` gain `all_layers`.
+- `Tool::is_available` is gone (every tool works); `Tool::selects` marks the
+  selection tools. Tool hints describe the new modifiers.
+- The extrude hover cache is keyed on the extrude options and selection too.
+- `AppState::selected_voxels` is a method (was a never-updated field).
+
 ## [Unreleased] — Phase 5a: Interaction & Core Tools (2026-10-20)
 
 ### Added

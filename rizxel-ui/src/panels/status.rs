@@ -5,6 +5,7 @@ use egui_phosphor::regular as icon;
 use rizxel_app::AppState;
 
 use crate::theme;
+use crate::tool_input::mask_mode;
 
 pub fn show(ui: &mut Ui, state: &mut AppState) {
     let bar = ui.max_rect();
@@ -37,7 +38,24 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                 .font(theme::icon(12.0))
                 .color(theme::TEXT_DIM),
         );
-        ui.label(small(format!("Selected: {} voxels", state.selected_voxels)));
+        ui.label(small(format!(
+            "Selected: {} voxels",
+            state.selected_voxels()
+        )));
+        // Mask mode of the selection tools, following the held modifiers.
+        let option = match state.tool {
+            rizxel_engine::Tool::Selection => Some(state.options.selection.mask),
+            rizxel_engine::Tool::FuzzySelect => Some(state.options.fuzzy_select.mask),
+            _ => None,
+        };
+        if let Some(option) = option {
+            let mode = mask_mode(ui.input(|i| i.modifiers), option);
+            ui.label(
+                RichText::new(format!("Mask: {}", mode.label()))
+                    .size(11.0)
+                    .color(theme::ACCENT_LIGHT),
+            );
+        }
 
         if let Some(doc) = state.doc() {
             separator(ui);

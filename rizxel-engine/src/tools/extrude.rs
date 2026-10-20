@@ -1,6 +1,7 @@
 //! Extrude: pushes or pulls the face region under the cursor along its
-//! normal. Without a selection (Phase 5b) the region is the contiguous run
-//! of exposed faces around the hit voxel on the hit face's plane.
+//! normal. Without a selection the region is the contiguous run of exposed
+//! faces around the hit voxel on the hit face's plane; with one it is every
+//! selected voxel whose face toward the hovered normal is exposed.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -75,6 +76,36 @@ pub fn extrude_region(
         }
     }
     out
+}
+
+/// Selected solid voxels of `volume` whose face toward `normal` is exposed
+/// (the selection's boundary in that direction), sorted (z, y, x).
+pub fn selection_region<'a>(
+    volume: &VoxelVolume,
+    selection: impl IntoIterator<Item = &'a IVec3>,
+    normal: IVec3,
+) -> Vec<IVec3> {
+    let mut out: Vec<IVec3> = selection
+        .into_iter()
+        .copied()
+        .filter(|&p| volume.get(p) != EMPTY_VOXEL && volume.get(p + normal) == EMPTY_VOXEL)
+        .collect();
+    out.sort_by_key(|p| (p.z, p.y, p.x));
+    out
+}
+
+/// Cells an extrude of `region` by `depth` along `normal` writes: the new
+/// cells for positive depths, the carved ones for negative depths.
+pub fn extruded_cells(region: &[IVec3], normal: IVec3, depth: i32) -> Vec<IVec3> {
+    let steps: Vec<i32> = if depth > 0 {
+        (1..=depth).collect()
+    } else {
+        (0..-depth).map(|k| -k).collect()
+    };
+    region
+        .iter()
+        .flat_map(|&p| steps.iter().map(move |&k| p + normal * k))
+        .collect()
 }
 
 /// Changes extruding `region` of `target` by `depth` voxels along `normal`.
@@ -160,6 +191,23 @@ mod tests {
             ..top_hit()
         };
         assert!(extrude_region(&v, &miss, &opts, &palette).is_empty());
+    }
+
+    #[test]
+    fn selection_region_is_the_exposed_boundary() {
+        let v = slab();
+        let sel = [
+            IVec3::new(0, 0, 0),
+            IVec3::new(1, 0, 0),
+            IVec3::new(5, 5, 5),
+        ];
+        assert_eq!(selection_region(&v, &sel, IVec3::Y).len(), 2);
+        // Only x = 0 faces -X; empty selected cells never extrude.
+        assert_eq!(selection_region(&v, &sel, IVec3::NEG_X), vec![IVec3::ZERO]);
+        let out = extruded_cells(&[IVec3::ZERO], IVec3::Y, 2);
+        assert_eq!(out, vec![IVec3::Y, IVec3::Y * 2]);
+        let carve = extruded_cells(&[IVec3::Y], IVec3::Y, -2);
+        assert_eq!(carve, vec![IVec3::Y, IVec3::ZERO]);
     }
 
     #[test]

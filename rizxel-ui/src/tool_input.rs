@@ -1,5 +1,5 @@
-//! Viewport tool input (Phase 5a): voxel picking, the left-drag state
-//! machine and the hover/ghost previews.
+//! Viewport tool input: voxel picking, the left-drag state machine, the
+//! hover/ghost previews and the selection outline.
 //!
 //! `Idle -> Pressed -> Dragging -> Released`: a left press inside the
 //! viewport opens an edit transaction on the active document, every frame
@@ -11,7 +11,13 @@
 //!
 //! Modifiers are read at press time: `Shift` erases/subtracts, `Alt` picks a
 //! color with any tool, `Ctrl` copies the picked color into the selected
-//! swatch.
+//! swatch. With the selection tools `Shift` adds to the selection and `Ctrl`
+//! subtracts from it (overriding the option bar's mask mode).
+//!
+//! Selections (Phase 5b) belong to the active layer. Move and Extrude act on
+//! the selection when there is one and carry it along in the same undo
+//! step; Fill stays inside it. `Esc` deselects, `Delete` removes the
+//! selected voxels.
 //!
 //! The Plane tool never writes voxels (Goxel / Qubicle behaviour): a click
 //! places the document's [`WorkPlane`] on the clicked face. While the plane
@@ -24,13 +30,18 @@ use std::collections::HashSet;
 
 use egui::{Color32, Key, Modifiers, Pos2, Rect, Response, Ui};
 use glam::{IVec3, Vec2, Vec3};
-use rizxel_app::{AppState, Document, VoxelChange};
-use rizxel_engine::raycast::{dominant_axis, raycast_floor, raycast_grid};
+use rizxel_app::{AppState, Document, Selection, VoxelChange};
+use rizxel_engine::raycast::{dominant_axis, raycast_face, raycast_floor, raycast_grid};
 use rizxel_engine::tools::{
-    brush_center, brush_positions, brush_stroke, drag_axis, extrude_changes, extrude_region,
-    move_changes, pick_voxel, resize_bounds,
+    apply_op, brush_center, brush_positions, brush_stroke, drag_axis, extrude_changes,
+    extrude_region, extruded_cells, fill_cells, fuzzy_select, move_changes, move_selection_changes,
+    pick_voxel, resize_bounds, select_box, selection_box, selection_region, shape_box, shape_cells,
+    MAX_FLOOD_CELLS,
 };
-use rizxel_engine::{DragMode, Ray, RayHit, Tool, ToolContext, VoxelOp, WorkPlane};
+use rizxel_engine::{
+    DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Tool, ToolContext, VoxelOp,
+    WorkPlane,
+};
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
 
 use crate::render::{FillVertex, LineInstance};
@@ -39,11 +50,13 @@ use crate::viewport::Projection;
 
 /// Ghost previews with more cells than this fall back to the face highlight.
 const MAX_GHOST_CELLS: usize = 4096;
+/// Selection outlines with more faces than this draw only the selection's box.
+const MAX_SELECTION_FACES: usize = 20_000;
 /// Lift of highlight quads off the voxel surface, against z-fighting.
 const SURFACE_EPS: f32 = 0.01;
 
 /// Overlay geometry produced by the active tool, in world space.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Preview {
     pub fills: Vec<FillVertex>,
     pub lines: Vec<LineInstance>,
@@ -53,12 +66,19 @@ pub struct Preview {
 #[derive(Default)]
 pub struct ToolInput {
     drag: Option<Drag>,
-    /// Extrude hover region cache: `(doc id, revision, voxel, normal)`.
+    /// Extrude hover region cache.
     region_cache: Option<(RegionKey, Vec<IVec3>)>,
+    /// Selection outline cache: geometry and whether it fell back to the box.
+    selection_cache: Option<(SelectionKey, Preview, bool)>,
 }
 
-/// `(document id, revision, hit voxel, hit normal)`.
-type RegionKey = (u64, u64, IVec3, IVec3);
+/// `(document id, revision, hit voxel, hit normal, options, selection
+/// revision)`: any change invalidates the hover region, nothing else.
+type RegionKey = (u64, u64, IVec3, IVec3, ExtrudeOptions, u64);
+
+/// `(document id, layer, selection revision, size, bounds origin, pixels
+/// per point)`.
+type SelectionKey = (u64, usize, u64, usize, [f32; 3], f32);
 
 /// One left drag in progress.
 struct Drag {
@@ -93,6 +113,29 @@ enum DragKind {
         /// Voxel-space point whose screen axes measure the drag.
         pivot: Vec3,
         offset: IVec3,
+        /// Offset under the pointer; differs from `offset` while a move of
+        /// the selection is blocked by other voxels.
+        target: IVec3,
+        /// Selection being moved (otherwise the whole layer moves).
+        selected: Option<Selection>,
+    },
+    /// Selection tool: box between the pressed voxel and the hovered one.
+    Select {
+        anchor: IVec3,
+        /// Axis of the pressed face; off the model the drag projects onto it.
+        axis: usize,
+        current: IVec3,
+        mode: MaskMode,
+        moved: bool,
+    },
+    /// Shape tool: shape between the anchor and the hovered cell.
+    Shape {
+        anchor: IVec3,
+        /// Direction the shape grows in from the anchor's plane.
+        grow: IVec3,
+        area: Option<VoxelBox>,
+        /// The last area exceeded the cell cap and was not written.
+        too_large: bool,
     },
     Resize {
         pivot: Vec3,
@@ -107,6 +150,8 @@ enum DragKind {
         pivot: Vec3,
         base: i32,
         depth: i32,
+        /// Selection being extruded; it grows with the new cells.
+        selection: Option<Selection>,
     },
 }
 
@@ -192,7 +237,36 @@ fn pick_drag(drag: &Drag, ray: &Ray) -> Option<RayHit> {
 
 /// Whether a tool snaps onto the work plane.
 fn draws_on_plane(tool: Tool) -> bool {
-    matches!(tool, Tool::Brush | Tool::Cursor)
+    matches!(tool, Tool::Brush | Tool::Cursor | Tool::Shape)
+}
+
+/// Mask mode of a selection click: `Shift` adds, `Ctrl` subtracts,
+/// otherwise the option bar's mode.
+pub fn mask_mode(mods: Modifiers, option: MaskMode) -> MaskMode {
+    if mods.shift {
+        MaskMode::Add
+    } else if mods.command {
+        MaskMode::Subtract
+    } else {
+        option
+    }
+}
+
+/// Visible model of `doc` (slice-clipped): the pick target during a drag.
+fn pick_snapshot(doc: &Document) -> VoxelVolume {
+    match doc.view_clip() {
+        Some(clip) => doc.merged_visible_volume().cropped(&clip),
+        None => doc.merged_visible_volume(),
+    }
+}
+
+/// Cell under `ray` on the plane through the centers of the cells at
+/// `anchor[axis]`, clamped into `bounds`.
+fn cell_on_plane(ray: &Ray, anchor: IVec3, axis: usize, bounds: BoundSize) -> Option<IVec3> {
+    let point = raycast_face(ray, axis, anchor[axis] as f32 + 0.5)?;
+    let mut cell = point.floor().as_ivec3();
+    cell[axis] = anchor[axis];
+    Some(cell.clamp(IVec3::ZERO, bounds.0.as_ivec3() - IVec3::ONE))
 }
 
 fn is_additive(op: VoxelOp) -> bool {
@@ -222,7 +296,7 @@ impl ToolInput {
             let alive = drag.doc_id == doc_id
                 && (matches!(
                     drag.kind,
-                    DragKind::Resize { .. } | DragKind::PlaneMove { .. }
+                    DragKind::Resize { .. } | DragKind::PlaneMove { .. } | DragKind::Select { .. }
                 ) || state.doc().is_some_and(Document::is_editing));
             if !alive {
                 self.drag = None;
@@ -252,6 +326,8 @@ impl ToolInput {
             if released || !down {
                 self.finish(state);
             }
+        } else if !f.ui.ctx().egui_wants_keyboard_input() {
+            selection_keys(f, state);
         }
 
         let hover = f.response.hover_pos();
@@ -297,10 +373,30 @@ impl ToolInput {
                     let b = state.doc().map(|d| d.data.bounds).unwrap_or_default();
                     format!("Resize: bounds {}×{}×{}", b.x(), b.y(), b.z())
                 }
+                DragKind::Move { offset, target, .. } if offset != target => format!(
+                    "Move: blocked by other voxels at ({}, {}, {}) (enable Overwrite)",
+                    target.x, target.y, target.z
+                ),
                 DragKind::Move { offset, .. } => format!(
                     "Move: offset ({}, {}, {}), {pending} voxels changed",
                     offset.x, offset.y, offset.z
                 ),
+                DragKind::Select {
+                    anchor,
+                    current,
+                    mode,
+                    ..
+                } => {
+                    let s = selection_box(anchor, current).size();
+                    format!("Select ({}): box {}×{}×{}", mode.label(), s.x, s.y, s.z)
+                }
+                DragKind::Shape {
+                    too_large: true, ..
+                } => format!("Shape: too large (over {MAX_FLOOD_CELLS} cells)"),
+                DragKind::Shape { area, .. } => {
+                    let s = area.map_or(IVec3::ONE, |a| a.size());
+                    format!("Shape: {}×{}×{}, {pending} voxels changed", s.x, s.y, s.z)
+                }
                 DragKind::Extrude { depth, .. } => {
                     format!("Extrude: depth {depth}, {pending} voxels changed")
                 }
@@ -336,6 +432,10 @@ impl ToolInput {
         if let Some(doc) = state.doc() {
             work_plane_overlay(f, doc, arrow_at, &mut preview);
         }
+        self.selection_overlay(f, state, &mut preview);
+        if let Some(drag) = &self.drag {
+            drag_marquee(f, drag, &mut preview);
+        }
         preview
     }
 
@@ -366,14 +466,49 @@ impl ToolInput {
                     place_plane(state, hit);
                 }
             }
-            Tool::Brush | Tool::Move | Tool::Extrude => {
+            Tool::Brush | Tool::Move | Tool::Extrude | Tool::Shape => {
                 self.begin_drag(f, state, tool, pos, hit, mods)
             }
-            _ => {
-                state.status_message =
-                    Some(format!("The {} tool arrives in Phase 5b", tool.label()));
-            }
+            Tool::Selection => self.begin_select(state, pos, hit, mods),
+            Tool::FuzzySelect => fuzzy_click(state, hit, mods),
+            Tool::Fill => fill_click(state, hit),
         }
+    }
+
+    /// Selection tool press: starts a box at the pressed voxel. A press off
+    /// the model in Set mode deselects.
+    fn begin_select(
+        &mut self,
+        state: &mut AppState,
+        pos: Pos2,
+        hit: Option<RayHit>,
+        mods: Modifiers,
+    ) {
+        let mode = mask_mode(mods, state.options.selection.mask);
+        let Some(doc) = state.doc_mut() else { return };
+        let Some(hit) = hit.filter(is_voxel) else {
+            if mode == MaskMode::Set && doc.clear_selection() {
+                state.status_message = Some("Selection cleared".to_owned());
+            }
+            return;
+        };
+        self.drag = Some(Drag {
+            doc_id: doc.id(),
+            tool: Tool::Selection,
+            layer: doc.active_layer,
+            start: pos,
+            snapshot: pick_snapshot(doc),
+            plane: doc.plane,
+            // Non-additive: picks report the voxel itself.
+            op: VoxelOp::Paint,
+            kind: DragKind::Select {
+                anchor: hit.voxel,
+                axis: hit.axis(),
+                current: hit.voxel,
+                mode,
+                moved: false,
+            },
+        });
     }
 
     fn begin_drag(
@@ -419,7 +554,23 @@ impl ToolInput {
             Tool::Move => DragKind::Move {
                 pivot: hit.map_or(center, |h| h.voxel.as_vec3() + Vec3::splat(0.5)),
                 offset: IVec3::ZERO,
+                target: IVec3::ZERO,
+                selected: doc.selection().filter(|s| !s.is_empty()).cloned(),
             },
+            Tool::Shape => {
+                let Some(hit) = hit else { return };
+                let (anchor, grow) = if is_additive(op) {
+                    (hit.adjacent(), hit.normal)
+                } else {
+                    (hit.voxel, -hit.normal)
+                };
+                DragKind::Shape {
+                    anchor,
+                    grow,
+                    area: None,
+                    too_large: false,
+                }
+            }
             Tool::Extrude => {
                 let Some(hit) = hit.filter(is_voxel) else {
                     return;
@@ -429,9 +580,16 @@ impl ToolInput {
                 } else {
                     doc.merged_visible_volume()
                 };
-                let region = extrude_region(&colors, &hit, &options.extrude, &doc.data.palette);
+                let selection = doc.selection().filter(|s| !s.is_empty()).cloned();
+                let region = match &selection {
+                    Some(sel) => selection_region(&colors, sel.cells(), hit.normal),
+                    None => extrude_region(&colors, &hit, &options.extrude, &doc.data.palette),
+                };
                 if region.is_empty() {
-                    state.status_message = Some("Nothing to extrude here".to_owned());
+                    state.status_message = Some(match selection {
+                        Some(_) => "The selection has no exposed face this way".to_owned(),
+                        None => "Nothing to extrude here".to_owned(),
+                    });
                     return;
                 }
                 let sign = if mods.shift { -1 } else { 1 };
@@ -442,6 +600,7 @@ impl ToolInput {
                     pivot: hit.adjacent().as_vec3() + Vec3::splat(0.5),
                     base: sign * options.extrude.depth.max(1) as i32,
                     depth: 0,
+                    selection,
                 }
             }
             _ => return,
@@ -449,10 +608,7 @@ impl ToolInput {
         if !resize {
             doc.begin_edit();
         }
-        let snapshot = match doc.view_clip() {
-            Some(clip) => doc.merged_visible_volume().cropped(&clip),
-            None => doc.merged_visible_volume(),
-        };
+        let snapshot = pick_snapshot(doc);
         self.drag = Some(Drag {
             doc_id: doc.id(),
             tool,
@@ -518,7 +674,55 @@ impl ToolInput {
         let delta = Vec2::new(pos.x - drag.start.x, pos.y - drag.start.y);
         let ray = f.ray(pos);
         let (layer, op) = (drag.layer, drag.op);
+        let bounds = drag.snapshot.bounds();
         match &mut drag.kind {
+            DragKind::Select {
+                anchor,
+                axis,
+                current,
+                moved,
+                ..
+            } => {
+                *moved |= delta.length() > 3.0;
+                let on_model = pick_with(&ray, bounds, &drag.plane, true, false, |p| {
+                    drag.snapshot.get(p) != EMPTY_VOXEL
+                })
+                .filter(is_voxel)
+                .map(|h| h.voxel);
+                if let Some(cell) = on_model.or_else(|| cell_on_plane(&ray, *anchor, *axis, bounds))
+                {
+                    *current = cell;
+                }
+            }
+            DragKind::Shape {
+                anchor,
+                grow,
+                area,
+                too_large,
+            } => {
+                let axis = dominant_axis(grow.as_vec3());
+                let Some(cell) = cell_on_plane(&ray, *anchor, axis, bounds) else {
+                    return;
+                };
+                let planar = state.options.shape.planar;
+                let new = shape_box(*anchor, cell, *grow, planar);
+                if *area == Some(new) {
+                    return;
+                }
+                *area = Some(new);
+                let cells = new.size().as_i64vec3().element_product();
+                *too_large = cells > MAX_FLOOD_CELLS as i64;
+                if *too_large {
+                    if let Some(doc) = state.doc_mut() {
+                        doc.revert_pending();
+                    }
+                    return;
+                }
+                rewrite(state, layer, op, |ctx| {
+                    let cells = shape_cells(&new, &ctx.options.shape, ctx.bounds);
+                    apply_op(ctx.volume, cells, ctx.op, ctx.color)
+                });
+            }
             DragKind::Brush { last } => {
                 let Some(hit) = pick_with(
                     &ray,
@@ -560,7 +764,12 @@ impl ToolInput {
                     g[axis] = doc.plane.coord as f32;
                 }
             }
-            DragKind::Move { pivot, offset } => {
+            DragKind::Move {
+                pivot,
+                offset,
+                target,
+                selected,
+            } => {
                 let new = match drag_axis(delta, f.axis_screen(*pivot)) {
                     Some((axis, amount)) => {
                         let mut o = IVec3::ZERO;
@@ -569,11 +778,30 @@ impl ToolInput {
                     }
                     None => IVec3::ZERO,
                 };
-                if new == *offset {
+                if new == *target {
                     return;
                 }
-                *offset = new;
-                rewrite(state, layer, op, |ctx| move_changes(ctx.volume, new));
+                *target = new;
+                let Some(sel) = selected else {
+                    *offset = new;
+                    rewrite(state, layer, op, |ctx| move_changes(ctx.volume, new));
+                    return;
+                };
+                // A blocked selection move stays at the last free offset.
+                let overwrite = state.options.moving.overwrite;
+                let last = *offset;
+                let mut applied = last;
+                rewrite(state, layer, op, |ctx| {
+                    match move_selection_changes(ctx.volume, sel.cells(), new, overwrite) {
+                        Some(changes) => {
+                            applied = new;
+                            changes
+                        }
+                        None => move_selection_changes(ctx.volume, sel.cells(), last, true)
+                            .unwrap_or_default(),
+                    }
+                });
+                *offset = applied;
             }
             DragKind::Resize {
                 pivot,
@@ -597,6 +825,7 @@ impl ToolInput {
                 pivot,
                 base,
                 depth,
+                ..
             } => {
                 let axis = dominant_axis(normal.as_vec3());
                 let mut s = f.axis_screen(*pivot)[axis];
@@ -640,18 +869,60 @@ impl ToolInput {
             }
             return;
         }
+        if let DragKind::Select {
+            anchor,
+            current,
+            mode,
+            moved,
+            ..
+        } = drag.kind
+        {
+            let all = state.options.selection.all_layers;
+            let end = if moved { current } else { anchor };
+            apply_box_selection(state, selection_box(anchor, end), mode, !moved, all);
+            return;
+        }
         if matches!(
             drag.kind,
             DragKind::Resize { .. } | DragKind::PlaneMove { .. }
         ) {
             return;
         }
-        if let Some(doc) = state.doc_mut() {
-            let changed = doc.pending_changes();
-            if doc.commit_edit() {
-                state.status_message =
-                    Some(format!("{}: {changed} voxels changed", drag.tool.label()));
+        let Some(doc) = state.doc_mut() else { return };
+        let bounds = doc.data.bounds;
+        // Move and Extrude take the selection along in the same undo step.
+        let carried = match &drag.kind {
+            DragKind::Move {
+                selected: Some(sel),
+                offset,
+                ..
+            } => Some(sel.translated(*offset, bounds)),
+            DragKind::Extrude {
+                selection: Some(sel),
+                region,
+                normal,
+                depth,
+                ..
+            } => {
+                let cells = extruded_cells(region, *normal, *depth);
+                Some(if *depth > 0 {
+                    let mut grown = sel.clone();
+                    grown.extend(cells);
+                    grown.translated(IVec3::ZERO, bounds)
+                } else {
+                    let carved: Selection = cells.into_iter().collect();
+                    sel.combine(&carved, MaskMode::Subtract)
+                })
             }
+            _ => None,
+        };
+        let changed = doc.pending_changes();
+        let done = match carried {
+            Some(sel) => doc.commit_edit_with_selection(drag.layer, sel),
+            None => doc.commit_edit(),
+        };
+        if done {
+            state.status_message = Some(format!("{}: {changed} voxels changed", drag.tool.label()));
         }
     }
 
@@ -664,6 +935,7 @@ impl ToolInput {
             }
             DragKind::Resize { .. } => {}
             DragKind::PlaneMove { start_coord, .. } => doc.plane.coord = start_coord,
+            DragKind::Select { .. } => {}
             _ => doc.cancel_edit(),
         }
     }
@@ -722,9 +994,17 @@ impl ToolInput {
                 ));
             }
             Tool::Extrude if is_voxel(hit) => {
-                let key = (doc.id(), doc.revision(), hit.voxel, hit.normal);
+                let opts = &state.options.extrude;
+                let selection = doc.selection().filter(|s| !s.is_empty());
+                let key = (
+                    doc.id(),
+                    doc.revision(),
+                    hit.voxel,
+                    hit.normal,
+                    *opts,
+                    selection.map_or(0, Selection::revision),
+                );
                 if self.region_cache.as_ref().is_none_or(|(k, _)| *k != key) {
-                    let opts = &state.options.extrude;
                     let source;
                     let volume = if opts.confine_to_layer {
                         doc.active_layer().map(|l| &l.volume)
@@ -733,7 +1013,10 @@ impl ToolInput {
                         Some(&source)
                     };
                     let region = volume
-                        .map(|v| extrude_region(v, hit, opts, &doc.data.palette))
+                        .map(|v| match selection {
+                            Some(sel) => selection_region(v, sel.cells(), hit.normal),
+                            None => extrude_region(v, hit, opts, &doc.data.palette),
+                        })
                         .unwrap_or_default();
                     self.region_cache = Some((key, region));
                 }
@@ -747,10 +1030,238 @@ impl ToolInput {
                 }
                 face_highlight(f.bmin, hit, ppp, out);
             }
+            Tool::Shape => {
+                let anchor = if is_additive(op) {
+                    hit.adjacent()
+                } else {
+                    hit.voxel
+                };
+                if clip.contains(anchor) {
+                    ghost(f.bmin, &[anchor], ghost_color, out);
+                }
+                face_highlight(f.bmin, hit, ppp, out);
+            }
+            Tool::Fill if state.options.fill.mode == FillMode::Empty => {
+                // The empty cell the flood starts from.
+                let c = hit.adjacent().as_vec3() + f.bmin;
+                box_outline(c, c + Vec3::ONE, paint, 1.5 * ppp, out);
+                face_highlight(f.bmin, hit, ppp, out);
+            }
             Tool::Move => {}
             _ => face_highlight(f.bmin, hit, ppp, out),
         }
     }
+
+    /// Outline of the active layer's selection (translucent faces plus an
+    /// edge outline), shifted by the offset of a selection move in
+    /// progress. Large selections draw only their box.
+    fn selection_overlay(&mut self, f: &Frame, state: &mut AppState, out: &mut Preview) {
+        let Some(doc) = state.doc() else { return };
+        let Some(sel) = doc.selection().filter(|s| !s.is_empty()) else {
+            return;
+        };
+        let ppp = f.pixels_per_point;
+        let key = (
+            doc.id(),
+            doc.active_layer,
+            sel.revision(),
+            sel.len(),
+            f.bmin.to_array(),
+            ppp,
+        );
+        if self
+            .selection_cache
+            .as_ref()
+            .is_none_or(|(k, ..)| *k != key)
+        {
+            let mut geo = Preview::default();
+            let faces = sel.boundary_faces();
+            let boxed = faces.len() > MAX_SELECTION_FACES;
+            if boxed {
+                if let Some((lo, hi)) = sel.bounds() {
+                    let (lo, hi) = (lo.as_vec3() + f.bmin, hi.as_vec3() + f.bmin);
+                    box_outline(lo, hi, theme::ACCENT_LIGHT, 2.0 * ppp, &mut geo);
+                }
+            } else {
+                selection_faces(f.bmin, sel, &faces, ppp, &mut geo);
+            }
+            self.selection_cache = Some((key, geo, boxed));
+        }
+        let Some((_, geo, boxed)) = &self.selection_cache else {
+            return;
+        };
+        let shift = match &self.drag {
+            Some(Drag {
+                kind:
+                    DragKind::Move {
+                        selected: Some(_),
+                        offset,
+                        ..
+                    },
+                ..
+            }) => offset.as_vec3(),
+            _ => Vec3::ZERO,
+        };
+        let moved = |p: [f32; 3]| (Vec3::from_array(p) + shift).to_array();
+        out.fills.extend(geo.fills.iter().map(|v| FillVertex {
+            pos: moved(v.pos),
+            ..*v
+        }));
+        out.lines.extend(geo.lines.iter().map(|l| LineInstance {
+            a: moved(l.a),
+            b: moved(l.b),
+            ..*l
+        }));
+        if *boxed && state.tool_feedback.is_none() {
+            state.tool_feedback = Some(format!(
+                "Selection: {} voxels (too large to outline, showing its box)",
+                sel.len()
+            ));
+        }
+    }
+}
+
+/// `Esc` deselects and `Delete`/`Backspace` deletes the selected voxels of
+/// the active layer (outside a drag).
+fn selection_keys(f: &Frame, state: &mut AppState) {
+    if state.selected_voxels() == 0 {
+        return;
+    }
+    let (esc, del) = f.ui.input_mut(|i| {
+        (
+            i.consume_key(Modifiers::NONE, Key::Escape),
+            i.consume_key(Modifiers::NONE, Key::Delete)
+                || i.consume_key(Modifiers::NONE, Key::Backspace),
+        )
+    });
+    let Some(doc) = state.doc_mut() else { return };
+    if del {
+        let removed = doc.delete_selected();
+        state.status_message = Some(match doc.editable_layer(doc.active_layer) {
+            Err(e) if removed == 0 => e.message().to_owned(),
+            _ => format!("Deleted {removed} selected voxels"),
+        });
+    } else if esc && doc.clear_selection() {
+        state.status_message = Some("Selection cleared".to_owned());
+    }
+}
+
+/// Selection tool release: selects the voxels inside `area` (the active
+/// layer's, or every visible layer's), clipped to the slice view, combined
+/// by `mode`. A click on an already selected voxel in Set mode deselects it.
+fn apply_box_selection(
+    state: &mut AppState,
+    area: VoxelBox,
+    mode: MaskMode,
+    click: bool,
+    all_layers: bool,
+) {
+    let Some(doc) = state.doc_mut() else { return };
+    let mut cells = if all_layers {
+        doc.with_visible_geometry(|vols| select_box(vols, &area))
+    } else {
+        doc.active_layer()
+            .map(|l| select_box(&[&l.volume], &area))
+            .unwrap_or_default()
+    };
+    if let Some(clip) = doc.view_clip() {
+        cells.retain(|p| clip.contains(*p));
+    }
+    let toggle_off = click
+        && mode == MaskMode::Set
+        && cells.len() == 1
+        && doc.selection().is_some_and(|s| s.contains(cells[0]));
+    let mode = if toggle_off { MaskMode::Subtract } else { mode };
+    doc.select(cells, mode);
+    state.status_message = Some(format!("Selected: {} voxels", state.selected_voxels()));
+}
+
+/// Fuzzy Select click: selects the voxels connected to the clicked one
+/// with a similar color. A click off the model in Set mode deselects.
+fn fuzzy_click(state: &mut AppState, hit: Option<RayHit>, mods: Modifiers) {
+    let opts = state.options.fuzzy_select;
+    let mode = mask_mode(mods, opts.mask);
+    let Some(doc) = state.doc_mut() else { return };
+    let Some(hit) = hit.filter(is_voxel) else {
+        if mode == MaskMode::Set && doc.clear_selection() {
+            state.status_message = Some("Selection cleared".to_owned());
+        }
+        return;
+    };
+    let result = if opts.all_layers {
+        fuzzy_select(
+            &doc.merged_visible_volume(),
+            hit.voxel,
+            &doc.data.palette,
+            &opts,
+        )
+    } else {
+        match doc.active_layer() {
+            Some(l) => fuzzy_select(&l.volume, hit.voxel, &doc.data.palette, &opts),
+            None => Ok(Vec::new()),
+        }
+    };
+    let mut cells = match result {
+        Ok(cells) => cells,
+        Err(capped) => {
+            state.status_message = Some(capped.message());
+            return;
+        }
+    };
+    if let Some(clip) = doc.view_clip() {
+        cells.retain(|p| clip.contains(*p));
+    }
+    if cells.is_empty() && mode != MaskMode::Set {
+        state.status_message = Some("No voxel of the active layer here".to_owned());
+        return;
+    }
+    doc.select(cells, mode);
+    state.status_message = Some(format!("Selected: {} voxels", state.selected_voxels()));
+}
+
+/// Fill click: floods from the clicked face (inside the selection, when
+/// there is one) and writes the active color into the active layer as one
+/// undo step.
+fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
+    let opts = state.options.fill;
+    let Some(doc) = state.doc_mut() else { return };
+    let layer = doc.active_layer;
+    if let Err(e) = doc.editable_layer(layer) {
+        state.status_message = Some(e.message().to_owned());
+        return;
+    }
+    let Some(hit) = hit else { return };
+    let limit = doc
+        .view_clip()
+        .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
+    let allowed = doc
+        .selection()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.cells().clone());
+    let merged;
+    let source = if opts.current_layer_only {
+        &doc.data.layers[layer].volume
+    } else {
+        merged = doc.merged_visible_volume();
+        &merged
+    };
+    let color = doc.selected_color as Voxel;
+    let changes = match fill_cells(
+        source,
+        &hit,
+        &doc.data.palette,
+        &opts,
+        &limit,
+        allowed.as_ref(),
+    ) {
+        Ok(cells) => apply_op(&doc.data.layers[layer].volume, cells, VoxelOp::Add, color),
+        Err(e) => {
+            state.status_message = Some(e.message());
+            return;
+        }
+    };
+    let n = doc.edit_voxels(layer, &changes);
+    state.status_message = Some(format!("Fill: {n} voxels changed"));
 }
 
 /// Runs `make` against the drag layer and writes its changes on top of
@@ -926,6 +1437,75 @@ fn ghost(bmin: Vec3, cells: &[IVec3], color: Color32, out: &mut Preview) {
         for n in NORMALS {
             if !set.contains(&(c + n)) {
                 quad(out, face_corners(bmin, c, n), color);
+            }
+        }
+    }
+}
+
+/// The 12 edges of the box `lo..hi` (world space).
+fn box_outline(lo: Vec3, hi: Vec3, color: Color32, width: f32, out: &mut Preview) {
+    let c = |x: bool, y: bool, z: bool| {
+        Vec3::new(
+            if x { hi.x } else { lo.x },
+            if y { hi.y } else { lo.y },
+            if z { hi.z } else { lo.z },
+        )
+    };
+    for a in [false, true] {
+        for b in [false, true] {
+            out.lines.extend([
+                LineInstance::new(c(false, a, b), c(true, a, b), color, width),
+                LineInstance::new(c(a, false, b), c(a, true, b), color, width),
+                LineInstance::new(c(a, b, false), c(a, b, true), color, width),
+            ]);
+        }
+    }
+}
+
+/// Marquee of a Selection or Shape drag: the 3D box being dragged out.
+fn drag_marquee(f: &Frame, drag: &Drag, out: &mut Preview) {
+    let area = match drag.kind {
+        DragKind::Select {
+            anchor, current, ..
+        } => selection_box(anchor, current),
+        DragKind::Shape {
+            area: Some(area), ..
+        } => area,
+        _ => return,
+    };
+    let (lo, hi) = (area.min.as_vec3() + f.bmin, area.max.as_vec3() + f.bmin);
+    box_outline(lo, hi, theme::ACCENT_LIGHT, 1.5 * f.pixels_per_point, out);
+}
+
+/// Selection faces: a translucent accent quad per boundary face and an
+/// outline along the edges where the outline's surface ends or bends.
+fn selection_faces(
+    bmin: Vec3,
+    sel: &Selection,
+    faces: &[(IVec3, IVec3)],
+    ppp: f32,
+    out: &mut Preview,
+) {
+    let fill = theme::ACCENT_LIGHT.gamma_multiply(0.22);
+    for &(cell, n) in faces {
+        let q = face_corners(bmin, cell, n);
+        quad(out, q, fill);
+        let axis = dominant_axis(n.as_vec3());
+        let (mut du, mut dv) = (IVec3::ZERO, IVec3::ZERO);
+        du[(axis + 1) % 3] = 1;
+        dv[(axis + 2) % 3] = 1;
+        // Edge i runs from q[i] to q[i + 1]; `across` is the neighbour on
+        // the other side of it within the same plane.
+        for (i, across) in [-dv, du, dv, -du].into_iter().enumerate() {
+            let next = cell + across;
+            let continues = sel.contains(next) && !sel.contains(next + n);
+            if !continues {
+                out.lines.push(LineInstance::new(
+                    q[i],
+                    q[(i + 1) % 4],
+                    theme::ACCENT_LIGHT,
+                    ppp,
+                ));
             }
         }
     }
@@ -1201,6 +1781,48 @@ mod tests {
             hit.adjacent(),
             IVec3::new(-1, 3, 3),
             "outside: filtered later"
+        );
+    }
+
+    #[test]
+    fn selection_outline_skips_inner_edges() {
+        // Two selected cells side by side on the floor: 10 boundary faces;
+        // the shared edge on each long side is not outlined.
+        let sel: Selection = [IVec3::ZERO, IVec3::X].into_iter().collect();
+        let faces = sel.boundary_faces();
+        assert_eq!(faces.len(), 10);
+        let mut out = Preview::default();
+        selection_faces(Vec3::ZERO, &sel, &faces, 1.0, &mut out);
+        assert_eq!(out.fills.len(), 10 * 6);
+        // The 2×1×1 box has 16 edge segments, each drawn by both faces
+        // meeting there; the edges between the two cells are skipped.
+        assert_eq!(out.lines.len(), 32);
+    }
+
+    #[test]
+    fn mask_modifiers_override_the_option() {
+        let shift = Modifiers::SHIFT;
+        assert_eq!(mask_mode(shift, MaskMode::Set), MaskMode::Add);
+        assert_eq!(
+            mask_mode(Modifiers::COMMAND, MaskMode::Add),
+            MaskMode::Subtract
+        );
+        assert_eq!(mask_mode(Modifiers::NONE, MaskMode::Add), MaskMode::Add);
+    }
+
+    #[test]
+    fn plane_projection_keeps_the_anchor_layer() {
+        let b = BoundSize::new(8, 8, 8);
+        let down = Ray::new(Vec3::new(5.5, 20.0, 2.5), Vec3::NEG_Y);
+        assert_eq!(
+            cell_on_plane(&down, IVec3::new(1, 3, 1), 1, b),
+            Some(IVec3::new(5, 3, 2))
+        );
+        let far = Ray::new(Vec3::new(50.5, 20.0, 2.5), Vec3::NEG_Y);
+        assert_eq!(
+            cell_on_plane(&far, IVec3::new(1, 3, 1), 1, b),
+            Some(IVec3::new(7, 3, 2)),
+            "clamped into the bounds"
         );
     }
 

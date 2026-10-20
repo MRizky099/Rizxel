@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::IVec3;
 use rizxel_engine::tools::slice_layers;
-use rizxel_engine::{greedy_mesh, rasterize_shape, Mesh, SliceRequest, WorkPlane};
+use rizxel_engine::{
+    greedy_mesh, rasterize_shape, MaskMode, Mesh, SliceRequest, TileMeshCache, WorkPlane,
+};
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
     BoundSize, LayerId, LayerKind, Material, Palette, Rgba8, ShapeKind, Voxel, VoxelBox,
@@ -14,6 +16,7 @@ use rizxel_math::{
 };
 
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
+use crate::selection::Selection;
 
 /// Layer properties other than name, visibility, lock and voxels. Changed as
 /// one undoable unit through [`Document::set_layer_props`].
@@ -53,6 +56,10 @@ pub struct Layer {
     pub locked: bool,
     pub props: LayerProps,
     pub volume: VoxelVolume,
+    /// Selected cells (Selection tools). Travels with the layer through
+    /// reorders and undo, changes only through [`Edit::SetSelection`] and is
+    /// never saved to `.rzxl`.
+    pub selection: Selection,
 }
 
 impl Layer {
@@ -65,6 +72,7 @@ impl Layer {
             locked: false,
             props: LayerProps::default(),
             volume: VoxelVolume::new(bounds),
+            selection: Selection::default(),
         }
     }
 
@@ -222,6 +230,9 @@ pub struct Document {
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
+    /// Per-tile meshes of the last [`Document::view_mesh`], so a drag
+    /// re-meshes only the tiles it touched.
+    view_tiles: RefCell<TileMeshCache>,
 }
 
 impl Document {
@@ -265,6 +276,7 @@ impl Document {
             revision: 0,
             saved_revision: 0,
             geometry: RefCell::new(None),
+            view_tiles: RefCell::new(TileMeshCache::default()),
         }
     }
 
@@ -334,15 +346,31 @@ impl Document {
 
     /// Viewport mesh: like [`Document::visible_mesh`] but clipped to
     /// [`Document::view_clip`]. The mesher closes the cut, so the sliced
-    /// model shows a solid cut face.
+    /// model shows a solid cut face. Incremental: only tiles that changed
+    /// since the previous call are re-meshed (same output as a full mesh).
     pub fn view_mesh(&self) -> Mesh {
-        let Some(clip) = self.view_clip() else {
-            return self.visible_mesh();
-        };
+        let clip = self.view_clip();
         self.with_visible_geometry(|volumes| {
-            let cropped: Vec<VoxelVolume> = volumes.iter().map(|v| v.cropped(&clip)).collect();
-            let layers: Vec<(&VoxelVolume, bool)> = cropped.iter().map(|v| (v, true)).collect();
-            greedy_mesh(&layers, &self.data.palette)
+            let palette = &self.data.palette;
+            let mut tiles = self.view_tiles.borrow_mut();
+            let merged;
+            let volume = match (volumes, clip) {
+                ([], _) => return Mesh::default(),
+                ([single], None) => *single,
+                _ => {
+                    let mut out = VoxelVolume::new(self.data.bounds);
+                    for v in volumes {
+                        for (pos, value) in v.iter() {
+                            if clip.is_none_or(|c| c.contains(pos)) {
+                                out.set(pos, value);
+                            }
+                        }
+                    }
+                    merged = out;
+                    &merged
+                }
+            };
+            tiles.mesh(volume, palette)
         })
     }
 
@@ -499,6 +527,30 @@ impl Document {
         done
     }
 
+    /// Closes the transaction as one undo step that also replaces layer
+    /// `layer`'s selection with `selection` (Move and Extrude carry the
+    /// selection along). Returns `false` when nothing changed.
+    pub fn commit_edit_with_selection(&mut self, layer: usize, selection: Selection) -> bool {
+        if !self.is_editing() {
+            return false;
+        }
+        let extra = match self.data.layers.get(layer) {
+            Some(l) if l.selection != selection => {
+                let edit = Edit::SetSelection {
+                    layer,
+                    old: l.selection.clone(),
+                    new: selection,
+                };
+                edit.apply(&mut self.data);
+                vec![edit]
+            }
+            _ => Vec::new(),
+        };
+        let done = self.history.commit_transaction_with(extra);
+        self.touch();
+        done
+    }
+
     /// Closes the transaction and restores every voxel it changed.
     pub fn cancel_edit(&mut self) {
         if self.is_editing() {
@@ -604,6 +656,76 @@ impl Document {
             self.selected_color = index;
         }
         ok
+    }
+
+    // ----------------------------------------------------------- selection
+
+    /// Selection of the active layer.
+    pub fn selection(&self) -> Option<&Selection> {
+        self.active_layer().map(|l| &l.selection)
+    }
+
+    /// Replaces layer `layer`'s selection as one undo step. Returns `false`
+    /// (recording nothing) when it would not change.
+    pub fn set_selection(&mut self, layer: usize, new: Selection) -> bool {
+        let Some(l) = self.data.layers.get(layer) else {
+            return false;
+        };
+        if l.selection == new {
+            return false;
+        }
+        let old = l.selection.clone();
+        self.apply(Edit::SetSelection { layer, old, new }, false);
+        true
+    }
+
+    /// Combines `cells` with the active layer's selection by `mode`.
+    pub fn select(&mut self, cells: impl IntoIterator<Item = IVec3>, mode: MaskMode) -> bool {
+        let Some(current) = self.selection() else {
+            return false;
+        };
+        let fresh: Selection = cells.into_iter().collect();
+        let new = current.combine(&fresh, mode);
+        self.set_selection(self.active_layer, new)
+    }
+
+    /// Deselects everything on the active layer (`Esc`).
+    pub fn clear_selection(&mut self) -> bool {
+        self.set_selection(self.active_layer, Selection::default())
+    }
+
+    /// Deletes the selected voxels of the active layer and clears the
+    /// selection, as one undo step. Returns the number of voxels removed.
+    pub fn delete_selected(&mut self) -> usize {
+        let layer = self.active_layer;
+        if self
+            .editable_layer(layer)
+            .is_err_and(|e| e != EditBlock::Hidden)
+        {
+            return 0;
+        }
+        let Some(l) = self.data.layers.get(layer) else {
+            return 0;
+        };
+        let changes: Vec<VoxelChange> = l
+            .selection
+            .iter()
+            .filter_map(|pos| {
+                let old = l.volume.get(pos);
+                (old != EMPTY_VOXEL).then_some(VoxelChange {
+                    pos,
+                    old,
+                    new: EMPTY_VOXEL,
+                })
+            })
+            .collect();
+        if changes.is_empty() {
+            return 0;
+        }
+        self.begin_edit();
+        let removed = self.edit_voxels(layer, &changes);
+        self.commit_edit_with_selection(layer, Selection::default());
+        removed
     }
 
     // ------------------------------------------------------ voxel helpers
@@ -958,6 +1080,7 @@ impl Document {
             return false;
         };
         let mut layer = source.clone();
+        layer.selection = Selection::default();
         layer.name = self.unique_name_from(&format!("{} copy", source.name));
         layer.id = self.next_layer_id();
         let index = self.active_layer + 1;
@@ -1260,6 +1383,7 @@ impl Document {
                         crop: l.crop,
                         kind: l.kind,
                     },
+                    selection: Selection::default(),
                 })
             })
             .collect::<Result<Vec<_>, RzxlError>>()?;

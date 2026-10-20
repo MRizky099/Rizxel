@@ -184,9 +184,21 @@ pub struct PlaneOptions {
     pub cap: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveOptions {
     pub drag_mode: DragMode,
+    /// Moving a selection onto other voxels overwrites them; otherwise a
+    /// move that would collide is refused.
+    pub overwrite: bool,
+}
+
+impl Default for MoveOptions {
+    fn default() -> Self {
+        Self {
+            drag_mode: DragMode::Move,
+            overwrite: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -198,6 +210,9 @@ pub struct ColorPickerOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SelectionOptions {
     pub mask: MaskMode,
+    /// Select voxels of every visible layer inside the box, not only the
+    /// active layer's. The selection itself always belongs to the active layer.
+    pub all_layers: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +223,8 @@ pub struct FuzzySelectOptions {
     pub use_color: bool,
     pub threshold: u8,
     pub mask: MaskMode,
+    /// Flood through the voxels of every visible layer, not only the active one.
+    pub all_layers: bool,
 }
 
 impl Default for FuzzySelectOptions {
@@ -217,6 +234,7 @@ impl Default for FuzzySelectOptions {
             use_color: true,
             threshold: 0,
             mask: MaskMode::Set,
+            all_layers: false,
         }
     }
 }
@@ -247,15 +265,47 @@ impl Default for ExtrudeOptions {
     }
 }
 
+/// What the Fill tool floods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum FillMode {
+    /// Recolor the clicked voxel and its same-colored neighbours (paint bucket).
+    #[default]
+    Recolor,
+    /// Fill the empty space in front of the clicked face, bounded by the
+    /// model's box (closed rooms, cups, the inside of a shell).
+    Empty,
+}
+
+impl FillMode {
+    pub const ALL: [FillMode; 2] = [FillMode::Recolor, FillMode::Empty];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            FillMode::Recolor => "Recolor",
+            FillMode::Empty => "Fill empty",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FillOptions {
+    pub mode: FillMode,
+    /// Flood connected cells only; otherwise (Recolor) every matching voxel
+    /// of the layer.
+    pub connected: bool,
+    /// Find the region in the active layer only (otherwise in every visible
+    /// layer). Writes always go to the active layer.
     pub current_layer_only: bool,
+    /// Largest per-channel color difference that still counts as the same
+    /// color (Recolor).
     pub threshold: u8,
 }
 
 impl Default for FillOptions {
     fn default() -> Self {
         Self {
+            mode: FillMode::Recolor,
+            connected: true,
             current_layer_only: true,
             threshold: 0,
         }
