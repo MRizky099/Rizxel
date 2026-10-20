@@ -7,6 +7,7 @@ use glam::IVec3;
 use rizxel_math::{BoundSize, Material, Rgba8, Voxel};
 
 use crate::document::{DocData, Layer, LayerProps};
+use crate::selection::Selection;
 
 /// Voxel diffs are produced by the engine's tool algorithms.
 pub use rizxel_engine::VoxelChange;
@@ -85,6 +86,12 @@ pub enum Edit {
         old: Vec<Material>,
         new: Vec<Material>,
     },
+    /// Replaces the selection of one layer.
+    SetSelection {
+        layer: usize,
+        old: Selection,
+        new: Selection,
+    },
 }
 
 impl Edit {
@@ -126,6 +133,11 @@ impl Edit {
                 }
             }
             Edit::SetMaterials { new, .. } => data.materials = new.clone(),
+            Edit::SetSelection { layer, new, .. } => {
+                if let Some(l) = data.layers.get_mut(*layer) {
+                    l.selection = new.clone();
+                }
+            }
         }
     }
 
@@ -164,6 +176,11 @@ impl Edit {
                 }
             }
             Edit::SetMaterials { old, .. } => data.materials = old.clone(),
+            Edit::SetSelection { layer, old, .. } => {
+                if let Some(l) = data.layers.get_mut(*layer) {
+                    l.selection = old.clone();
+                }
+            }
         }
     }
 
@@ -339,6 +356,14 @@ impl History {
     /// (`Edit::Voxels`, or a `Batch` of them for several layers). Returns
     /// `false` when it changed nothing, in which case no step is recorded.
     pub fn commit_transaction(&mut self) -> bool {
+        self.commit_transaction_with(Vec::new())
+    }
+
+    /// Like [`History::commit_transaction`], with `extra` already-applied
+    /// edits (e.g. the selection following a move) joining the same undo
+    /// step after the voxel changes. A transaction that changed no voxels
+    /// still records `extra`. Returns `false` when nothing was recorded.
+    pub fn commit_transaction_with(&mut self, extra: Vec<Edit>) -> bool {
         let Some(t) = self.transaction.take() else {
             return false;
         };
@@ -350,6 +375,7 @@ impl History {
                     p.changes.into_iter().filter(|c| c.old != c.new).collect();
                 (!changes.is_empty()).then_some(Edit::Voxels { layer, changes })
             })
+            .chain(extra)
             .collect();
         let edit = match edits.len() {
             0 => return false,
@@ -454,6 +480,15 @@ mod tests {
             layer: 0,
             changes: vec![change(0, 0, 3), change(1, 0, 4)],
         };
+        let sel = Edit::SetSelection {
+            layer: 0,
+            old: Selection::default(),
+            new: [IVec3::ZERO].into_iter().collect(),
+        };
+        sel.apply(&mut d);
+        assert_eq!(d.layers[0].selection.len(), 1);
+        sel.revert(&mut d);
+        assert!(d.layers[0].selection.is_empty());
         e.apply(&mut d);
         assert_eq!(d.layers[0].volume.voxel_count(), 2);
         assert_eq!(d.layers[0].volume.get(IVec3::X), 4);

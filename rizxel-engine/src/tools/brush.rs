@@ -50,6 +50,11 @@ pub fn stamp_shape(
     shape: BrushShape,
 ) -> impl Iterator<Item = IVec3> {
     let (lo, hi) = stamp_box(center, size);
+    box_shape(lo, hi, shape)
+}
+
+/// Cells of `shape` inscribed in the box `lo..hi` (max exclusive).
+pub(super) fn box_shape(lo: IVec3, hi: IVec3, shape: BrushShape) -> impl Iterator<Item = IVec3> {
     (lo.z..hi.z).flat_map(move |z| {
         (lo.y..hi.y).flat_map(move |y| {
             (lo.x..hi.x).filter_map(move |x| {
@@ -76,18 +81,29 @@ fn hash01(p: IVec3) -> f32 {
 /// edge looks soft; it never drops the center.
 pub fn brush_positions(center: IVec3, opts: &BrushOptions, bounds: BoundSize) -> Vec<IVec3> {
     let (lo, hi) = stamp_box(center, opts.size);
+    let cells = soft_box_shape(lo, hi, opts.shape, opts.antialiasing);
+    apply_symmetry(cells, bounds, opts.symmetry)
+}
+
+/// [`box_shape`] with the dithered antialiasing band of `antialiasing`
+/// voxels (shared by Brush and Shape).
+pub(super) fn soft_box_shape(
+    lo: IVec3,
+    hi: IVec3,
+    shape: BrushShape,
+    antialiasing: u32,
+) -> Vec<IVec3> {
     let min_half = ((hi - lo).min_element() as f32 * 0.5).max(0.5);
-    let band = (opts.antialiasing as f32 / min_half).min(1.0);
-    let cells: Vec<IVec3> = stamp_shape(center, opts.size, opts.shape)
+    let band = (antialiasing as f32 / min_half).min(1.0);
+    box_shape(lo, hi, shape)
         .filter(|&p| {
             if band <= 0.0 {
                 return true;
             }
-            let d = stamp_distance(p, lo, hi, opts.shape);
+            let d = stamp_distance(p, lo, hi, shape);
             d <= 1.0 - band || hash01(p) < (1.0 - d) / band
         })
-        .collect();
-    apply_symmetry(cells, bounds, opts.symmetry)
+        .collect()
 }
 
 /// Cells on the 3D line from `a` to `b` (both included), one per step of

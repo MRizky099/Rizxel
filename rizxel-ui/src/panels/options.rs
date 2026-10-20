@@ -8,7 +8,8 @@
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
 use rizxel_app::{AppState, ViewMode};
 use rizxel_engine::{
-    BrushShape, DragMode, ExtrudeOptions, MaskMode, NamesMode, Symmetry, Tool, VoxelOp, WorkPlane,
+    BrushShape, DragMode, ExtrudeOptions, FillMode, MaskMode, NamesMode, Symmetry, Tool, VoxelOp,
+    WorkPlane,
 };
 
 use crate::icons::{self, Icon, Icons};
@@ -160,15 +161,6 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
             .color(theme::TEXT_STRONG),
     );
     ui.add_space(6.0);
-
-    // Selection-driven tools arrive in Phase 5b: their rows stay visible but
-    // disabled.
-    if !state.tool.is_available() {
-        ui.add_enabled_ui(false, |ui| tool_rows(ui, state))
-            .response
-            .on_disabled_hover_text("Arrives in Phase 5b");
-        return;
-    }
     tool_rows(ui, state);
 }
 
@@ -209,9 +201,17 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::Plane => plane_rows(ui, state),
         Tool::Move => {
+            let m = &mut opts.moving;
             caption(ui, "Drag mode");
             let modes = DragMode::ALL.map(|m| (m, m.label()));
-            segmented(ui, "move_drag", &mut opts.moving.drag_mode, &modes);
+            segmented(ui, "move_drag", &mut m.drag_mode, &modes);
+            gap(ui);
+            ui.add_enabled_ui(m.drag_mode == DragMode::Move, |ui| {
+                ui.checkbox(&mut m.overwrite, "Overwrite").on_hover_text(
+                    "A moved selection replaces the voxels it lands on; \
+                         otherwise the move stops before them",
+                );
+            });
         }
         Tool::ColorPicker => {
             ui.checkbox(
@@ -221,7 +221,12 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             .on_hover_text("Pick the topmost visible voxel instead of the active layer's");
         }
         Tool::Selection => {
-            mask_mode(ui, "sel_mask", &mut opts.selection.mask);
+            let s = &mut opts.selection;
+            mask_mode(ui, "sel_mask", &mut s.mask);
+            gap(ui);
+            ui.checkbox(&mut s.all_layers, "All layers")
+                .on_hover_text("Select the voxels of every visible layer inside the box");
+            selection_actions(ui, state);
         }
         Tool::FuzzySelect => {
             let f = &mut opts.fuzzy_select;
@@ -232,7 +237,11 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             gap(ui);
             color_threshold(ui, &mut f.use_color, &mut f.threshold);
             gap(ui);
+            ui.checkbox(&mut f.all_layers, "All layers")
+                .on_hover_text("Flood through the voxels of every visible layer");
+            gap(ui);
             mask_mode(ui, "fuzzy_mask", &mut f.mask);
+            selection_actions(ui, state);
         }
         Tool::Extrude => {
             let e = &mut opts.extrude;
@@ -251,13 +260,77 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::Fill => {
             let f = &mut opts.fill;
-            ui.checkbox(&mut f.current_layer_only, "Current layer only")
-                .on_hover_text("Restrict the flood fill to voxels of the active layer");
+            let modes = FillMode::ALL.map(|m| (m, m.label()));
+            segmented(ui, "fill_mode", &mut f.mode, &modes);
             gap(ui);
-            caption(ui, "Threshold");
-            ui.add(egui::DragValue::new(&mut f.threshold).range(0..=255))
-                .on_hover_text("How close colors must be to be filled");
+            let recolor = f.mode == FillMode::Recolor;
+            ui.add_enabled_ui(recolor, |ui| {
+                ui.checkbox(&mut f.connected, "Connected").on_hover_text(
+                    "Only voxels connected to the clicked one (off: the whole layer)",
+                );
+            });
+            gap(ui);
+            ui.checkbox(&mut f.current_layer_only, "Current layer only")
+                .on_hover_text("Find the region in the active layer only");
+            gap(ui);
+            ui.add_enabled_ui(recolor, |ui| {
+                caption(ui, "Threshold");
+                ui.add(egui::DragValue::new(&mut f.threshold).range(0..=255))
+                    .on_hover_text("How close colors must be to be filled");
+            });
+            gap(ui);
+            caption(ui, "Color");
+            if let Some(doc) = state.doc() {
+                let c = doc.selected_rgba();
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, theme::RADIUS, Color32::from_rgb(c.r, c.g, c.b));
+                ui.painter().rect_stroke(
+                    rect,
+                    theme::RADIUS,
+                    Stroke::new(1.0, theme::BORDER),
+                    StrokeKind::Inside,
+                );
+                response.on_hover_text(format!(
+                    "Fills with palette color {} ({})",
+                    doc.selected_color,
+                    c.to_hex_string()
+                ));
+            }
         }
+    }
+}
+
+/// Deselect / Delete buttons of the selection tools.
+fn selection_actions(ui: &mut Ui, state: &mut AppState) {
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    let count = state.selected_voxels();
+    let mut message = None;
+    ui.add_enabled_ui(count > 0, |ui| {
+        let Some(doc) = state.doc_mut() else { return };
+        if ui
+            .button("Deselect")
+            .on_hover_text("Clear the active layer's selection (Esc)")
+            .clicked()
+            && doc.clear_selection()
+        {
+            message = Some("Selection cleared".to_owned());
+        }
+        if ui
+            .button("Delete")
+            .on_hover_text("Delete the selected voxels (Del)")
+            .clicked()
+        {
+            let removed = doc.delete_selected();
+            message = Some(match doc.editable_layer(doc.active_layer) {
+                Err(e) if removed == 0 => e.message().to_owned(),
+                _ => format!("Deleted {removed} selected voxels"),
+            });
+        }
+    });
+    if message.is_some() {
+        state.status_message = message;
     }
 }
 

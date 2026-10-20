@@ -8,12 +8,12 @@ pub mod raycast;
 pub mod shapes;
 pub mod tools;
 
-pub use mesher::{greedy_mesh, mesh_volume, Mesh};
+pub use mesher::{greedy_mesh, mesh_tile, mesh_volume, Mesh, TileMeshCache};
 pub use raycast::{Ray, RayHit};
 pub use shapes::rasterize_shape;
 pub use tools::{
     BrushOptions, BrushShape, ColorPickerOptions, CursorOptions, DragMode, ExtrudeOptions,
-    FillOptions, FuzzySelectOptions, KeepSide, MaskMode, MoveOptions, NamesMode, PlaneOptions,
-    SelectionOptions, ShapeOptions, SliceRequest, Symmetry, Tool, ToolContext, ToolOptions,
-    VoxelChange, VoxelOp, WorkPlane,
+    FillMode, FillOptions, FuzzySelectOptions, KeepSide, MaskMode, MoveOptions, NamesMode,
+    PlaneOptions, SelectionOptions, ShapeOptions, SliceRequest, Symmetry, Tool, ToolContext,
+    ToolOptions, VoxelChange, VoxelOp, WorkPlane,
 };

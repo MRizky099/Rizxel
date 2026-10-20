@@ -1,18 +1,21 @@
-//! Tool, operation and tool-option definitions, plus the Phase 5a tool
-//! algorithms.
+//! Tool, operation and tool-option definitions, plus the tool algorithms.
 //!
 //! Every algorithm is a pure function from a read-only view of the volume
-//! (and the pick result) to a list of [`VoxelChange`]s. The application
-//! layer applies those changes inside an undo transaction, so one drag is
-//! one undo step. Selection-driven tools (Selection, Fuzzy Select, Fill,
-//! Shape) arrive in Phase 5b.
+//! (and the pick result) to a list of [`VoxelChange`]s or of cells. The
+//! application layer applies those changes inside an undo transaction, so
+//! one drag is one undo step. Selection tools (Selection, Fuzzy Select)
+//! return cells; the selection type lives in the application layer.
 
 mod brush;
 mod extrude;
+mod fill;
+mod fuzzy;
 mod moving;
 mod options;
 mod pick;
 mod quality;
+mod select;
+mod shape;
 mod slice;
 mod symmetry;
 mod work_plane;
@@ -22,11 +25,18 @@ use rizxel_math::{BoundSize, Voxel, VoxelVolume};
 use serde::{Deserialize, Serialize};
 
 pub use brush::{brush_center, brush_positions, brush_stroke, line_cells, stamp_shape};
-pub use extrude::{extrude_changes, extrude_region};
-pub use moving::{drag_axis, move_changes, resize_bounds};
+pub use extrude::{extrude_changes, extrude_region, extruded_cells, selection_region};
+pub use fill::{fill_cells, FillError};
+pub use fuzzy::fuzzy_select;
+pub use moving::{drag_axis, move_changes, move_selection_changes, resize_bounds};
 pub use options::*;
 pub use pick::pick_voxel;
-pub use quality::{apply_op, filter_placeable};
+pub use quality::{
+    apply_op, color_distance, colors_match, filter_placeable, flood, FloodCapped, MAX_FLOOD_CELLS,
+    NEIGHBORS_6,
+};
+pub use select::{select_box, selection_box};
+pub use shape::{shape_box, shape_cells};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
 pub use symmetry::{apply_symmetry, mirror};
 pub use work_plane::WorkPlane;
@@ -136,18 +146,28 @@ impl Tool {
         match self {
             Tool::Cursor => "Hover to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
             Tool::Brush => "Click and drag to paint. Shift: erase, Alt: pick color, Esc: cancel.",
-            Tool::Shape => "Click and drag to draw a box-shaped volume of voxels (Phase 5b).",
+            Tool::Shape => {
+                "Drag on a face to draw a cube, sphere or cylinder. Shift: carve, Esc: cancel."
+            }
             Tool::Plane => "Click a face to place the work plane; other tools then draw on it.",
-            Tool::Move => "Drag to move the active layer (Resize: drag to grow the bounds).",
+            Tool::Move => {
+                "Drag to move the selection (or the whole layer). Resize: drag to grow the bounds."
+            }
             Tool::ColorPicker => {
                 "Click a voxel to pick its color. Ctrl+click: copy it into the swatch."
             }
-            Tool::Selection => "Click and drag to select a box region (Phase 5b).",
-            Tool::FuzzySelect => "Click to select connected voxels of the same color (Phase 5b).",
-            Tool::Extrude => {
-                "Click or drag a face to extrude it. Shift: carve inward, Esc: cancel."
+            Tool::Selection => {
+                "Drag a box to select. Shift: add, Ctrl: subtract, Esc: deselect, Del: delete."
             }
-            Tool::Fill => "Click to flood-fill connected voxels with the active color (Phase 5b).",
+            Tool::FuzzySelect => {
+                "Click to select connected voxels of a similar color. Shift: add, Ctrl: subtract."
+            }
+            Tool::Extrude => {
+                "Click or drag a face (or the selection) to extrude it. Shift: carve inward."
+            }
+            Tool::Fill => {
+                "Click to flood-fill with the active color (inside the selection if any)."
+            }
         }
     }
 
@@ -163,12 +183,9 @@ impl Tool {
         }
     }
 
-    /// True for the tools implemented in Phase 5a.
-    pub const fn is_available(self) -> bool {
-        !matches!(
-            self,
-            Tool::Shape | Tool::Selection | Tool::FuzzySelect | Tool::Fill
-        )
+    /// Tools that build a selection and use the mask modifiers.
+    pub const fn selects(self) -> bool {
+        matches!(self, Tool::Selection | Tool::FuzzySelect)
     }
 }
 
