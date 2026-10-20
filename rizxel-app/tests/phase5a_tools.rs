@@ -259,12 +259,13 @@ fn slice_edits_merge_back_when_slice_is_unticked() {
     d.plane.axis = 0;
     d.plane.slice = true;
     let bounds = d.data.bounds;
-    d.plane.set_slice_layer(2, bounds);
-    let edit = d.edit_clip().unwrap();
-    // Paint over an existing voxel and add a new one in the slice layer;
-    // a write outside the slice layer is what tools filter away.
+    // Slice layer 1: layers 0..=2 visible, x = 3 hidden.
+    d.plane.set_slice_layer(1, bounds);
+    let edit = d.view_clip().unwrap();
+    // Paint over a voxel in the slice layer and add one on the visible layer
+    // beyond it; a write on the hidden side is what tools filter away.
     let writes = [
-        set(IVec3::new(2, 0, 0), 7),
+        set(IVec3::new(1, 0, 0), 7),
         set(IVec3::new(2, 6, 0), 7),
         set(IVec3::new(3, 0, 0), 7),
     ];
@@ -278,7 +279,7 @@ fn slice_edits_merge_back_when_slice_is_unticked() {
     d.plane.slice = false;
     assert_eq!(d.view_clip(), None);
     let v = &d.data.layers[0].volume;
-    assert_eq!(v.get(IVec3::new(2, 0, 0)), 7, "latest edit wins");
+    assert_eq!(v.get(IVec3::new(1, 0, 0)), 7, "latest edit wins");
     assert_eq!(v.get(IVec3::new(2, 6, 0)), 7);
     assert_eq!(v.get(IVec3::new(3, 0, 0)), 2, "hidden side untouched");
     assert_eq!(v.voxel_count(), 65);

@@ -99,6 +99,38 @@ impl Tool {
         }
     }
 
+    /// Every tool, in toolbar order.
+    pub const ALL: [Tool; 10] = [
+        Tool::Cursor,
+        Tool::Brush,
+        Tool::Shape,
+        Tool::Plane,
+        Tool::Move,
+        Tool::ColorPicker,
+        Tool::Selection,
+        Tool::FuzzySelect,
+        Tool::Extrude,
+        Tool::Fill,
+    ];
+
+    /// Single-letter keyboard shortcut (Goxel / Photoshop conventions:
+    /// B brush, S shape, P plane, M move, C color picker, R rectangle
+    /// select, W magic wand, E extrude, F fill, V cursor).
+    pub const fn shortcut(self) -> char {
+        match self {
+            Tool::Cursor => 'V',
+            Tool::Brush => 'B',
+            Tool::Shape => 'S',
+            Tool::Plane => 'P',
+            Tool::Move => 'M',
+            Tool::ColorPicker => 'C',
+            Tool::Selection => 'R',
+            Tool::FuzzySelect => 'W',
+            Tool::Extrude => 'E',
+            Tool::Fill => 'F',
+        }
+    }
+
     /// Short usage hint displayed in the status bar.
     pub const fn hint(self) -> &'static str {
         match self {
@@ -171,6 +203,22 @@ impl VoxelOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcuts_are_unique_letters() {
+        for (i, a) in Tool::ALL.iter().enumerate() {
+            assert!(a.shortcut().is_ascii_uppercase());
+            for b in &Tool::ALL[i + 1..] {
+                assert_ne!(a.shortcut(), b.shortcut(), "{a:?} / {b:?}");
+            }
+        }
+        let toolbar: Vec<Tool> = Tool::PRIMARY
+            .iter()
+            .chain(&Tool::SECONDARY)
+            .copied()
+            .collect();
+        assert_eq!(toolbar, Tool::ALL);
+    }
 
     #[test]
     fn toolbar_lists_every_tool_once() {

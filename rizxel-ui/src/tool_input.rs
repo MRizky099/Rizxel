@@ -144,10 +144,11 @@ impl Frame<'_> {
     }
 }
 
-/// Shared pick: the first solid cell inside the visible region, the work
-/// plane (when active) if it is nearer, then the floor. While slicing,
-/// drawing tools pick the slice slab only, so they reach the slice layer
-/// from either side even through other voxels (Qubicle's 2D slice mode).
+/// Shared pick: the nearest of the first solid cell inside the visible
+/// region and the work plane (when active; while slicing, the slice slab,
+/// reachable from either side), then the floor. So while slicing, drawing
+/// tools edit visible voxels on both sides of the plane as well as the
+/// slice layer itself.
 fn pick_with(
     ray: &Ray,
     bounds: BoundSize,
@@ -156,9 +157,6 @@ fn pick_with(
     additive: bool,
     solid: impl FnMut(IVec3) -> bool,
 ) -> Option<RayHit> {
-    if use_plane && plane.slice {
-        return plane.pick(ray, bounds, additive);
-    }
     let clip = plane.clip_box(bounds);
     let area = clip.unwrap_or(VoxelBox::from_bounds(bounds));
     let voxel = raycast_grid(ray, &area, solid);
@@ -683,7 +681,7 @@ impl ToolInput {
         let Some(doc) = state.doc() else { return };
         let ppp = f.pixels_per_point;
         let bounds = doc.data.bounds;
-        let clip = doc.edit_clip().unwrap_or(VoxelBox::from_bounds(bounds));
+        let clip = doc.view_clip().unwrap_or(VoxelBox::from_bounds(bounds));
         let tool = if mods.alt {
             Tool::ColorPicker
         } else {
@@ -763,19 +761,6 @@ fn write(
     op: VoxelOp,
     make: impl FnOnce(&ToolContext) -> Vec<VoxelChange>,
 ) {
-    write_in(state, layer, op, true, make);
-}
-
-/// [`write`] with a choice of confinement while slicing: drawing
-/// (`slice_layer_only`) stays in the slice layer like Qubicle's 2D slice
-/// mode; Move and Extrude may use the whole visible side.
-fn write_in(
-    state: &mut AppState,
-    layer: usize,
-    op: VoxelOp,
-    slice_layer_only: bool,
-    make: impl FnOnce(&ToolContext) -> Vec<VoxelChange>,
-) {
     let options = state.options;
     let Some(doc) = state.doc_mut() else { return };
     let Some(volume) = doc.data.layers.get(layer).map(|l| &l.volume) else {
@@ -789,13 +774,9 @@ fn write_in(
         options: &options,
         hit: None,
     });
-    // While slicing, the plane bounds the editable region.
-    let clip = if slice_layer_only {
-        doc.edit_clip()
-    } else {
-        doc.view_clip()
-    };
-    if let Some(clip) = clip {
+    // While slicing, edits stay in the visible part (hidden voxels are
+    // never touched); overlaps follow the operation, e.g. Add overwrites.
+    if let Some(clip) = doc.view_clip() {
         changes.retain(|c| clip.contains(c.pos));
     }
     doc.edit_voxels(layer, &changes);
@@ -812,7 +793,7 @@ fn rewrite(
     if let Some(doc) = state.doc_mut() {
         doc.revert_pending();
     }
-    write_in(state, layer, op, false, make);
+    write(state, layer, op, make);
 }
 
 // ------------------------------------------------------------------ clicks
@@ -1176,12 +1157,8 @@ mod tests {
     }
 
     #[test]
-    fn slice_slab_is_drawable_from_both_sides_through_voxels() {
+    fn slicing_edits_the_slab_and_visible_voxels_on_both_sides() {
         let bounds = BoundSize::new(8, 8, 8);
-        let mut solid = VoxelVolume::new(bounds);
-        for x in 0..8 {
-            solid.set(IVec3::new(x, 3, 3), 1);
-        }
         let mut plane = WorkPlane {
             axis: 0,
             slice: true,
@@ -1192,25 +1169,38 @@ mod tests {
         assert_eq!(plane.clip_box(bounds).unwrap().max.x, 4);
         let from_right = Ray::new(Vec3::new(20.0, 3.5, 3.5), Vec3::NEG_X);
         let from_left = Ray::new(Vec3::new(-20.0, 3.5, 3.5), Vec3::X);
+        let target = |hit: RayHit, additive: bool| {
+            if additive {
+                hit.adjacent()
+            } else {
+                hit.voxel
+            }
+        };
+
+        // Empty row: the slab is reachable from both sides.
         for ray in [from_right, from_left] {
             for additive in [true, false] {
-                let hit = pick_with(&ray, bounds, &plane, true, additive, |p| {
-                    solid.get(p) != EMPTY_VOXEL
-                })
-                .unwrap();
-                let target = if additive { hit.adjacent() } else { hit.voxel };
-                assert_eq!(target, IVec3::new(2, 3, 3));
+                let hit = pick_with(&ray, bounds, &plane, true, additive, |_| false).unwrap();
+                assert_eq!(target(hit, additive), IVec3::new(2, 3, 3));
             }
         }
-        // Tools that do not draw on the plane still hit the first voxel.
-        let hit = pick_with(&from_right, bounds, &plane, false, false, |p| {
-            solid.get(p) != EMPTY_VOXEL
-        })
-        .unwrap();
+
+        // Voxels at x = 0 (behind the plane) and x = 3 (one layer beyond):
+        // both are visible and editable from their side.
+        let mut solid = VoxelVolume::new(bounds);
+        for x in [0, 3, 6] {
+            solid.set(IVec3::new(x, 3, 3), 1);
+        }
+        let is_solid = |p: IVec3| solid.get(p) != EMPTY_VOXEL;
+        let hit = pick_with(&from_right, bounds, &plane, true, false, is_solid).unwrap();
+        assert_eq!(hit.voxel, IVec3::new(3, 3, 3), "x = 6 is hidden");
+        let hit = pick_with(&from_left, bounds, &plane, true, false, is_solid).unwrap();
+        assert_eq!(hit.voxel, IVec3::new(0, 3, 3));
+        let hit = pick_with(&from_left, bounds, &plane, true, true, is_solid).unwrap();
         assert_eq!(
-            hit.voxel,
-            IVec3::new(3, 3, 3),
-            "hidden voxels are not picked"
+            hit.adjacent(),
+            IVec3::new(-1, 3, 3),
+            "outside: filtered later"
         );
     }
 

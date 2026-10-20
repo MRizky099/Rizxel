@@ -332,11 +332,6 @@ impl Document {
         self.plane.clip_box(self.data.bounds)
     }
 
-    /// Region drawing tools may write while slicing: the slice layer only.
-    pub fn edit_clip(&self) -> Option<VoxelBox> {
-        self.plane.edit_box(self.data.bounds)
-    }
-
     /// Viewport mesh: like [`Document::visible_mesh`] but clipped to
     /// [`Document::view_clip`]. The mesher closes the cut, so the sliced
     /// model shows a solid cut face.

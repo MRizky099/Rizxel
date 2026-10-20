@@ -46,11 +46,12 @@ All notable changes to Rizxel are documented here. Format follows
   work plane on the clicked face and shows it; while visible, Brush (and the
   Cursor readout) snap onto it so voxels can be drawn in empty space. Slice
   works like Qubicle's 2D slice mode: it selects one slice layer that
-  drawing tools pick from either side (even through other voxels) and only
-  write into; edits merge into the model (latest edit wins). The view keeps
+  drawing tools pick from either side; they also edit the visible voxels on
+  both sides of the plane (nearest hit wins), never the hidden ones, and
+  edits merge into the model (latest edit wins). The view keeps
   the slice layer, the side behind it and one more layer beyond it; the
   rest is hidden (view only, Flip hides the other side, Cut deletes it).
-  Move/Extrude are confined to the visible part. The option bar shows a
+  The option bar shows a
   Layer counter with -/+ while slicing. Hovering the plane's edge or corner
   shows the 3D arrow there as a drag hint; dragging it moves the plane
   (with or without Slice). Non-slice
@@ -71,6 +72,9 @@ All notable changes to Rizxel are documented here. Format follows
 - Option bar: Plane rows (see above), extrude depth;
   Shape/Selection/Fuzzy Select/Fill rows are disabled until Phase 5b.
   Status bar shows live tool feedback (slice plane, pending change count).
+- Tool shortcuts (plain letters, ignored while a text field has focus):
+  V Cursor, B Brush, S Shape, P Plane, M Move, C Color Picker, R Selection,
+  W Fuzzy Select, E Extrude, F Fill. Toolbar tooltips show them.
 - Tests: raycast cases, brush counts per shape, plane rectangles, slice
   counts/axes/offset/cap/holes, move, extrude, symmetry, and
   `rizxel-app/tests/phase5a_tools.rs` (transactions, random undo/redo,

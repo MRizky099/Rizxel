@@ -47,7 +47,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 fn tool_button(ui: &mut Ui, state: &mut AppState, icons: &Icons, tool: Tool) {
     let active = state.tool == tool;
     if textured_button(ui, icons.get(tool), active)
-        .on_hover_text(tool.label())
+        .on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()))
         .clicked()
     {
         state.tool = tool;
