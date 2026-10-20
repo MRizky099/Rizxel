@@ -3,7 +3,7 @@
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
 use egui_phosphor::regular as icon;
-use rizxel_app::AppState;
+use rizxel_app::{AppState, FileFormat};
 
 use super::UiState;
 use crate::dock::{self, Workspace};
@@ -83,16 +83,44 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 actions::save_as(state);
             }
             ui.separator();
-            // Exports the visible layers; disabled while they hold no voxels.
-            if menu_item(
-                ui,
-                icon::EXPORT,
-                "Export OBJ...",
-                "",
-                state.can_export_obj(),
-            ) {
-                actions::export_obj(state);
-            }
+            ui.menu_button(
+                icon_label(ui, icon::DOWNLOAD_SIMPLE, "Import", None),
+                |ui| {
+                    ui.set_min_width(240.0);
+                    for format in FileFormat::IMPORTS {
+                        let label = format!("{} (.{})...", format.label(), format.extension());
+                        let hint = if format == FileFormat::Mtl {
+                            "Replaces the palette and materials of the active document"
+                        } else {
+                            "Opens in a new tab"
+                        };
+                        if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
+                            actions::import(state, format);
+                        }
+                        ui.label(egui::RichText::new(hint).size(10.0).color(theme::TEXT_DIM));
+                    }
+                },
+            );
+            ui.menu_button(icon_label(ui, icon::EXPORT, "Export", None), |ui| {
+                ui.set_min_width(260.0);
+                for format in FileFormat::EXPORTS {
+                    let label = format!("{} (.{})...", format.label(), format.extension());
+                    if menu_item(
+                        ui,
+                        icon::FILE_ARROW_UP,
+                        &label,
+                        "",
+                        state.can_export(format),
+                    ) {
+                        actions::export(state, format);
+                    }
+                    ui.label(
+                        egui::RichText::new(format.export_note())
+                            .size(10.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
+            });
             ui.separator();
             if menu_item(ui, icon::SIGN_OUT, "Exit", "Alt+F4", true) {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);

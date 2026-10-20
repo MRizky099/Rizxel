@@ -2685,6 +2685,8 @@ dependencies = [
 name = "rizxel-io"
 version = "0.1.0"
 dependencies = [
+ "glam",
+ "png",
  "rizxel-engine",
  "rizxel-math",
  "serde",

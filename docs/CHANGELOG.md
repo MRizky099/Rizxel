@@ -3,6 +3,68 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Import & Export: MagicaVoxel, Goxel, OBJ/MTL, STL (2026-10-20)
+
+### Added
+- **File ▸ Import** and **File ▸ Export** submenus. **Open…** and the
+  command line also accept `.vox`, `.gox`, `.obj` and `.stl`. Imported
+  models open in a new tab marked unsaved. Spec:
+  `docs/interchange_formats.md`.
+- **MagicaVoxel `.vox`** (`rizxel-io/src/format_vox.rs`):
+  - Import reads the 0.99 scene graph (translations, rotations, groups,
+    hidden nodes and layers).
+  - Repeated instances of a model become linked clones.
+  - The palette maps one to one; files without an `RGBA` chunk use
+    MagicaVoxel's default palette, rebuilt exactly.
+  - Export writes one model per layer, with names and hidden flags.
+- **Goxel `.gox`** (`format_gox.rs`):
+  - Reads 64×64 PNG blocks and layer dicts.
+  - Groups are inferred from `parent_id`; a group's own voxels move to a
+    child layer.
+  - Shapes, materials, opacity and lock are kept. Whole-voxel clones stay
+    linked; other transforms are baked.
+  - Export writes shapes, clones, groups and materials natively; crops are
+    baked.
+- **OBJ + MTL in MagicaVoxel's layout** (`format_obj.rs`, `format_mtl.rs`):
+  - Writes the `.obj`, a `palette` `.mtl` and a 256×1 palette `.png`.
+  - Header, sections, CRLF, `%g` numbers, six shared normals and one `vt`
+    per color, matching `chr_knight.obj`.
+  - The 0.1 scale, axis conversion and centering are MagicaVoxel's.
+  - Vertices are shared and sorted per normal group, and the triangle split
+    matches MagicaVoxel's.
+  - Re-exporting `chr_knight.vox` covers exactly the same surface as
+    MagicaVoxel's own OBJ, with fewer triangles (1012 vs 1124) and a
+    pixel-identical palette.
+- **OBJ import**:
+  - Reads polygons, negative indices, vertex colors, `Kd` and `map_Kd`
+    textures.
+  - A 256×1 palette texture becomes the palette.
+- **MTL import** replaces the active palette and materials as one undo step
+  (new `Edit::SetPalette`). **MTL export** writes the library and palette
+  texture.
+- **STL** (`format_stl.rs`): binary export (Z-up, 1 voxel = 1 mm); binary
+  and ASCII import.
+- Engine helpers:
+  - `greedy_quads`: whole-volume export faces.
+  - `build_color_map`: median-cut reduction to 255 colors.
+  - `voxelize`: grid detection makes voxel-editor meshes import exactly;
+    other meshes use parity fill plus surface rasterization and
+    nearest-face colors.
+- `rizxel-app`:
+  - `FileFormat`, `AppState::import`, `can_export` and `export_active`.
+  - Document helpers `export_scene`, `replace_palette_and_materials` and
+    `mark_unsaved`.
+- `cargo run -p rizxel-app --example convert -- in.vox out.obj` converts
+  between formats headless.
+- Tests: round trips for every format, hostile inputs, and comparisons with
+  the MagicaVoxel samples and your files when present (`chr_knight.vox`,
+  `chr_knight.obj`, `coba_goxel.gox`).
+
+### Changed
+- File ▸ Export OBJ now writes the MagicaVoxel-style OBJ + MTL + PNG
+  instead of vertex-colored OBJ (`export_obj` remains for generic meshes).
+- `rizxel-io` depends on `png` (already in the build via `image`).
+
 ## [Unreleased] — Phase 5b: Selection, Fill, Shape & Polish (2026-10-20)
 
 ### Added

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use glam::IVec3;
-use rizxel_math::{BoundSize, Material, Rgba8, Voxel};
+use rizxel_math::{BoundSize, Material, Palette, Rgba8, Voxel};
 
 use crate::document::{DocData, Layer, LayerProps};
 use crate::selection::Selection;
@@ -86,6 +86,11 @@ pub enum Edit {
         old: Vec<Material>,
         new: Vec<Material>,
     },
+    /// Replaces the whole palette (e.g. importing one from an MTL file).
+    SetPalette {
+        old: Palette,
+        new: Palette,
+    },
     /// Replaces the selection of one layer.
     SetSelection {
         layer: usize,
@@ -133,6 +138,7 @@ impl Edit {
                 }
             }
             Edit::SetMaterials { new, .. } => data.materials = new.clone(),
+            Edit::SetPalette { new, .. } => data.palette = new.clone(),
             Edit::SetSelection { layer, new, .. } => {
                 if let Some(l) = data.layers.get_mut(*layer) {
                     l.selection = new.clone();
@@ -176,6 +182,7 @@ impl Edit {
                 }
             }
             Edit::SetMaterials { old, .. } => data.materials = old.clone(),
+            Edit::SetPalette { old, .. } => data.palette = old.clone(),
             Edit::SetSelection { layer, old, .. } => {
                 if let Some(l) = data.layers.get_mut(*layer) {
                     l.selection = old.clone();

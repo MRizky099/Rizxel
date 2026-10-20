@@ -950,6 +950,85 @@ impl Document {
         self.data.layers.iter().any(|l| l.props.parent == Some(id))
     }
 
+    /// Replaces the palette and material list as one undo step (MTL import).
+    /// A shorter palette keeps the old colors in the slots it does not
+    /// cover, so existing voxels never lose their color.
+    pub fn replace_palette_and_materials(&mut self, palette: Palette, materials: Vec<Material>) {
+        let mut colors = palette.colors().to_vec();
+        colors.extend(self.data.palette.colors().iter().skip(colors.len()));
+        let new = Palette::new(colors);
+        let mut edits = Vec::new();
+        if new != self.data.palette {
+            edits.push(Edit::SetPalette {
+                old: self.data.palette.clone(),
+                new,
+            });
+        }
+        let materials: Vec<Material> = materials
+            .into_iter()
+            .take(rizxel_io::MAX_MATERIALS)
+            .collect();
+        if materials != self.data.materials {
+            // Layers pointing past the new list fall back to the default.
+            edits.extend(
+                self.data
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| {
+                        l.props
+                            .material
+                            .is_some_and(|m| m as usize >= materials.len())
+                    })
+                    .map(|(index, l)| Edit::SetLayerProps {
+                        index,
+                        old: l.props.clone(),
+                        new: LayerProps {
+                            material: None,
+                            ..l.props.clone()
+                        },
+                    }),
+            );
+            edits.push(Edit::SetMaterials {
+                old: self.data.materials.clone(),
+                new: materials,
+            });
+        }
+        if !edits.is_empty() {
+            self.apply(Edit::Batch(edits), false);
+        }
+    }
+
+    /// Everything exporters need: every non-group layer's final geometry
+    /// (shapes rasterized, clones resolved, crops applied) with its
+    /// effective visibility.
+    pub fn export_scene(&self) -> rizxel_io::ExportScene {
+        let layers = (0..self.data.layers.len())
+            .filter_map(|i| {
+                let geometry = match self.data.evaluate(i)? {
+                    Derived::Own => self.data.layers[i].volume.clone(),
+                    Derived::Owned(v) => v,
+                };
+                Some(rizxel_io::ExportLayer {
+                    name: self.data.layers[i].name.clone(),
+                    visible: self.data.effectively_visible(i),
+                    volume: geometry,
+                })
+            })
+            .collect();
+        rizxel_io::ExportScene {
+            name: self.name.clone(),
+            bounds: self.data.bounds,
+            palette: self.data.palette.clone(),
+            layers,
+        }
+    }
+
+    /// Flags the document as unsaved (imports have no `.rzxl` yet).
+    pub fn mark_unsaved(&mut self) {
+        self.saved_revision = u64::MAX;
+    }
+
     /// Replaces the material list. Layers whose material index no longer
     /// exists fall back to the default material in the same undo step.
     pub fn set_materials(&mut self, new: Vec<Material>) -> bool {

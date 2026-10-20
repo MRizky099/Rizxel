@@ -13,6 +13,8 @@ rizxel-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zstd.workspace = true
+png.workspace = true
+glam.workspace = true
 thiserror.workspace = true
 
 [lints]
