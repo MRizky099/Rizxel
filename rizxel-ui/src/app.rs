@@ -93,6 +93,16 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::F)) {
             self.ui.zen_mode = !self.ui.zen_mode;
         }
+        // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
+        // the commands above and to the tools' own modifiers).
+        for tool in rizxel_engine::Tool::ALL {
+            let Some(key) = Key::from_name(&tool.shortcut().to_string()) else {
+                continue;
+            };
+            if pressed(KeyboardShortcut::new(Modifiers::NONE, key)) {
+                self.state.tool = tool;
+            }
+        }
     }
 }
 

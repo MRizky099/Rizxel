@@ -4,10 +4,11 @@
 //! axis-aligned plane on it; while the plane is visible, drawing tools snap
 //! onto it, so voxels can be placed in empty space. With Slice enabled the
 //! plane works like Qubicle's 2D slice mode: it selects one *slice layer*
-//! that drawing tools reach from either side and are confined to. The view
-//! keeps the slice layer, everything behind it and one more layer beyond it
-//! for context; the rest is hidden (view only). Edits write straight into
-//! the layer, so unticking Slice shows them merged (latest edit wins). The
+//! that drawing tools reach from either side, as well as the visible voxels
+//! on both sides of it. The view keeps the slice layer, everything behind
+//! it and one more layer beyond it for context; the rest is hidden (view
+//! only) and never edited. Edits write straight into the layer, so
+//! unticking Slice shows them merged (latest edit wins). The
 //! destructive "Cut" removes the hidden part through
 //! [`super::slice_layers`].
 
@@ -89,18 +90,6 @@ impl WorkPlane {
         let layer = self.slice_layer(bounds);
         self.flip = !self.flip;
         self.set_slice_layer(layer, bounds);
-    }
-
-    /// Region drawing tools may write while slicing: the slice layer only.
-    pub fn edit_box(&self, bounds: BoundSize) -> Option<VoxelBox> {
-        if !self.slice {
-            return None;
-        }
-        let layer = self.slice_layer(bounds);
-        let mut b = VoxelBox::from_bounds(bounds);
-        b.min[self.axis.min(2)] = layer;
-        b.max[self.axis.min(2)] = layer + 1;
-        Some(b)
     }
 
     /// Places the plane on the hit face (the face's own plane).
@@ -317,9 +306,6 @@ mod tests {
         assert_eq!(p.slice_layer(b()), 3);
         let view = p.clip_box(b()).unwrap();
         assert_eq!((view.min.x, view.max.x), (0, 5), "layer 4 stays visible");
-        let edit = p.edit_box(b()).unwrap();
-        assert_eq!((edit.min.x, edit.max.x), (3, 4));
-        assert_eq!(edit.size(), IVec3::new(1, 8, 8));
 
         // Flipping keeps the same slice layer and shows the other side.
         p.flip_side(b());
@@ -334,6 +320,6 @@ mod tests {
         p.set_slice_layer(-5, b());
         assert_eq!(p.slice_layer(b()), 0);
         assert!(p.clip_box(b()).unwrap().is_valid());
-        assert_eq!(WorkPlane::default().edit_box(b()), None);
+        assert_eq!(WorkPlane::default().clip_box(b()), None);
     }
 }
