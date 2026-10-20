@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{PlaneMode, Tool};
+use super::Tool;
 
 /// Brush / shape primitive (Goxel `shape_cube`, `shape_sphere`, `shape_cylinder`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -140,22 +140,48 @@ pub struct ShapeOptions {
     pub symmetry: Symmetry,
 }
 
-/// Options for the Plane tool (the HTML prototype's option bar).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlaneOptions {
-    pub slice: bool,
-    pub mode: PlaneMode,
-    pub offset: i32,
+/// Which half of the model survives a Slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum KeepSide {
+    /// Keep voxels with `coord >= cut`.
+    #[default]
+    Positive,
+    /// Keep voxels with `coord < cut`.
+    Negative,
 }
 
-impl Default for PlaneOptions {
-    fn default() -> Self {
-        Self {
-            slice: false,
-            mode: PlaneMode::Relative,
-            offset: 1,
+impl KeepSide {
+    pub const ALL: [KeepSide; 2] = [KeepSide::Positive, KeepSide::Negative];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            KeepSide::Positive => "+ side",
+            KeepSide::Negative => "- side",
         }
     }
+
+    pub const fn flipped(self) -> Self {
+        match self {
+            KeepSide::Positive => KeepSide::Negative,
+            KeepSide::Negative => KeepSide::Positive,
+        }
+    }
+
+    /// True when a voxel at `coord` survives a cut at `cut`.
+    pub const fn keeps(self, coord: i32, cut: i32) -> bool {
+        match self {
+            KeepSide::Positive => coord >= cut,
+            KeepSide::Negative => coord < cut,
+        }
+    }
+}
+
+/// Options for the Plane tool. The plane itself (axis, position,
+/// visibility, slice) is per-document view state: see `WorkPlane`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PlaneOptions {
+    /// Close the opening left by "Cut" with the current color.
+    pub cap: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -195,11 +221,30 @@ impl Default for FuzzySelectOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtrudeOptions {
+    /// Find the face region in the active layer only (otherwise in every
+    /// visible layer). Writes always go to the active layer.
     pub confine_to_layer: bool,
     pub use_color: bool,
     pub threshold: u8,
+    /// Depth of a click without drag; dragging adds to it.
+    pub depth: u32,
+}
+
+impl ExtrudeOptions {
+    pub const MAX_DEPTH: u32 = 256;
+}
+
+impl Default for ExtrudeOptions {
+    fn default() -> Self {
+        Self {
+            confine_to_layer: false,
+            use_color: false,
+            threshold: 0,
+            depth: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,7 +280,7 @@ pub struct ToolOptions {
 impl Tool {
     /// Whether the Add/Subtract/Join/Paint operation applies to this tool.
     pub const fn uses_voxel_op(self) -> bool {
-        matches!(self, Tool::Brush | Tool::Shape | Tool::Plane)
+        matches!(self, Tool::Brush | Tool::Shape)
     }
 }
 
@@ -248,13 +293,13 @@ mod tests {
         let mut opts = ToolOptions::default();
         opts.brush.shape = BrushShape::Sphere;
         assert_eq!(opts.shape.shape, BrushShape::Cube);
-        assert_eq!(opts.plane.offset, 1);
+        assert!(!opts.plane.cap);
     }
 
     #[test]
     fn only_drawing_tools_use_voxel_op() {
         assert!(Tool::Brush.uses_voxel_op());
-        assert!(Tool::Plane.uses_voxel_op());
+        assert!(!Tool::Plane.uses_voxel_op());
         assert!(!Tool::Fill.uses_voxel_op());
         assert!(!Tool::Selection.uses_voxel_op());
     }

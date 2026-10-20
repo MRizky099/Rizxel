@@ -3,6 +3,85 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Phase 5a: Interaction & Core Tools (2026-10-20)
+
+### Added
+- Voxel picking (`rizxel-engine/src/raycast.rs`): `RayHit { voxel, normal, t }`,
+  Amanatides–Woo DDA `raycast_grid` / `raycast_volume` clipped against an
+  integer box first, `raycast_face` for plane picks and `raycast_floor`
+  (hits on the floor report the virtual row `y = -1`, so `hit.adjacent()`
+  is the floor cell). Zero direction components and loop bounds are guarded.
+- Tool algorithms as pure functions in `rizxel-engine/src/tools`, all
+  returning `VoxelChange` lists (the type moved from `rizxel-app`, which
+  re-exports it):
+  - `brush.rs`: cube/sphere/cylinder stamps with per-axis size,
+    deterministic dithered antialiasing, surface paint, and a gapless line
+    walk between drag samples.
+  - `work_plane.rs`: the Plane tool's `WorkPlane` (Goxel / Qubicle
+    behaviour): axis, position, visible, slice, flip; `clip_box` for the
+    slice view and `pick` so drawing tools snap onto the plane.
+  - `slice.rs`: `slice_volume` / `slice_layers` for the destructive Cut.
+    Cuts on voxel boundaries, keeps the `+`/`-` side, and the optional cap
+    puts a lid in the current color on the first discarded layer
+    (cross-section with enclosed holes filled).
+  - `moving.rs`: layer move, bounds resize and `drag_axis` (screen drag to
+    whole voxels along the best-aligned world axis).
+  - `pick.rs`, `extrude.rs` (contiguous exposed-face region, optional color
+    threshold, extrude out or carve in), `symmetry.rs`, `quality.rs`
+    (`apply_op` and the bounds/no-op `filter_placeable`).
+- `ToolContext`, `KeepSide`, `SliceRequest`, `WorkPlane`; `PlaneOptions` is
+  now just `cap` (the plane itself is per-document view state,
+  `Document::plane`); `ExtrudeOptions` gains `depth`.
+- Undo transactions: `History::begin_transaction/record/revert_pending/
+  commit_transaction/cancel_transaction` and `Document::begin_edit/
+  edit_voxels/revert_pending/commit_edit/cancel_edit`. One drag is one undo
+  step; cancel restores the grid exactly; an empty drag records nothing.
+  Other edits, undo, redo and save commit an open transaction first; tab
+  switches and opening files cancel it.
+- `Document::slice` / `cut_hidden_side` (visible, unlocked voxel layers, one
+  undo step), `view_clip`, `view_mesh` (slice-clipped, closed cut face),
+  `editable_layer`, `merged_visible_volume`.
+- Plane tool (reference: Goxel `tools/plane.c`, Qubicle slice mode,
+  `docs/Slice panel feature.png`): it never writes voxels. A click places the
+  work plane on the clicked face and shows it; while visible, Brush (and the
+  Cursor readout) snap onto it so voxels can be drawn in empty space. Slice
+  works like Qubicle's 2D slice mode: it selects one slice layer that
+  drawing tools pick from either side (even through other voxels) and only
+  write into; edits merge into the model (latest edit wins). The view keeps
+  the slice layer, the side behind it and one more layer beyond it; the
+  rest is hidden (view only, Flip hides the other side, Cut deletes it).
+  Move/Extrude are confined to the visible part. The option bar shows a
+  Layer counter with -/+ while slicing. Hovering the plane's edge or corner
+  shows the 3D arrow there as a drag hint; dragging it moves the plane
+  (with or without Slice). Non-slice
+  plane picks target the cell on the camera's side for add and erase alike.
+  It also draws the yellow bounds with thick lines and the plane as a grey
+  quad with a thick outline in the axis color (X red, Y green, Z blue) plus
+  a shaded 3D arrow gizmo (`docs/gizmo arrow.jpg`) of constant screen size,
+  shown only while an edge is hovered or dragged. With Slice on, dragging moves the plane along its normal and a
+  click jumps it to a face. Option bar: Visible, Axis, Position, Slice,
+  Flip, Reset, Cut (+ Cap).
+- Viewport tool input (`rizxel-ui/src/tool_input.rs`): left-drag state
+  machine for Brush, Move (Move/Resize), Extrude and the slice plane, plus
+  Color Picker. `Shift` subtracts, `Alt` picks a color with any tool, `Ctrl`
+  copies the picked color into the swatch, `Esc` or losing focus cancels.
+  Drags pick against a snapshot taken at press time.
+- Previews: hovered face highlight, translucent brush ghosts (capped at
+  4096 cells), extrude region highlight, work plane overlay.
+- Option bar: Plane rows (see above), extrude depth;
+  Shape/Selection/Fuzzy Select/Fill rows are disabled until Phase 5b.
+  Status bar shows live tool feedback (slice plane, pending change count).
+- Tests: raycast cases, brush counts per shape, plane rectangles, slice
+  counts/axes/offset/cap/holes, move, extrude, symmetry, and
+  `rizxel-app/tests/phase5a_tools.rs` (transactions, random undo/redo,
+  multi-layer slice with hidden/locked layers).
+
+### Changed
+- Tool hints describe the modifier keys; Plane has a separate hint while
+  slicing (`Tool::hint_with`). Plane no longer uses Add/Subtract/Join/Paint.
+- `VoxelOp::Join` adds into empty cells only (existing colors win);
+  `Add` overwrites.
+
 ## [Unreleased] — `.rzxl` v3: Layer Data (2026-10-19)
 
 ### Added

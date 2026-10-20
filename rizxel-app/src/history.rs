@@ -1,22 +1,18 @@
-//! Undo/redo history based on reversible edit commands.
+//! Undo/redo history based on reversible edit commands, with transactions
+//! that fold a whole tool drag into one undo step.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use glam::IVec3;
 use rizxel_math::{BoundSize, Material, Rgba8, Voxel};
 
 use crate::document::{DocData, Layer, LayerProps};
 
+/// Voxel diffs are produced by the engine's tool algorithms.
+pub use rizxel_engine::VoxelChange;
+
 /// Maximum number of undo steps kept per document.
 const MAX_UNDO: usize = 512;
-
-/// One voxel write inside a layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VoxelChange {
-    pub pos: IVec3,
-    pub old: Voxel,
-    pub new: Voxel,
-}
 
 /// A voxel removed from a layer when the bounds shrank, kept so the shrink
 /// can be undone.
@@ -249,16 +245,141 @@ pub fn merge_voxel_changes(acc: &mut Vec<VoxelChange>, next: &[VoxelChange]) {
     acc.retain(|c| c.old != c.new);
 }
 
+/// Tentative voxel changes of one layer inside a transaction: each position
+/// once, with its value before the transaction and its latest value.
+#[derive(Debug, Default)]
+struct PendingLayer {
+    changes: Vec<VoxelChange>,
+    index: HashMap<IVec3, usize>,
+}
+
+impl PendingLayer {
+    fn record(&mut self, c: VoxelChange) {
+        match self.index.get(&c.pos) {
+            Some(&i) => self.changes[i].new = c.new,
+            None => {
+                self.index.insert(c.pos, self.changes.len());
+                self.changes.push(c);
+            }
+        }
+    }
+}
+
+/// An open transaction: already-applied voxel changes, per layer.
+#[derive(Debug, Default)]
+struct Transaction {
+    layers: BTreeMap<usize, PendingLayer>,
+}
+
 /// Linear undo/redo stack.
 #[derive(Debug, Default)]
 pub struct History {
     undo: Vec<Edit>,
     redo: Vec<Edit>,
+    transaction: Option<Transaction>,
 }
 
 impl History {
-    /// Records an already-applied edit. Clears the redo stack.
+    /// Opens a transaction: voxel edits recorded until
+    /// [`History::commit_transaction`] become a single undo step. Does
+    /// nothing when one is already open.
+    pub fn begin_transaction(&mut self) {
+        self.transaction.get_or_insert_with(Transaction::default);
+    }
+
+    pub fn in_transaction(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    /// Records already-applied voxel changes into the open transaction,
+    /// keeping the earliest `old` and the latest `new` per `(layer, pos)`.
+    /// Returns `false` (and records nothing) when no transaction is open.
+    pub fn record(&mut self, layer: usize, changes: &[VoxelChange]) -> bool {
+        let Some(t) = &mut self.transaction else {
+            return false;
+        };
+        let pending = t.layers.entry(layer).or_default();
+        for c in changes {
+            pending.record(*c);
+        }
+        true
+    }
+
+    /// Number of positions the open transaction actually changes.
+    pub fn pending_count(&self) -> usize {
+        self.transaction.as_ref().map_or(0, |t| {
+            t.layers
+                .values()
+                .map(|l| l.changes.iter().filter(|c| c.old != c.new).count())
+                .sum()
+        })
+    }
+
+    /// Restores every tentative change of the open transaction and empties
+    /// it, keeping it open (tools that recompute from the drag anchor).
+    /// Returns whether anything was reverted.
+    pub fn revert_pending(&mut self, data: &mut DocData) -> bool {
+        let Some(t) = &mut self.transaction else {
+            return false;
+        };
+        let pending = std::mem::take(&mut t.layers);
+        let mut any = false;
+        for (layer, p) in pending {
+            if let Some(l) = data.layers.get_mut(layer) {
+                for c in p.changes.iter().filter(|c| c.old != c.new) {
+                    l.volume.set(c.pos, c.old);
+                    any = true;
+                }
+            }
+        }
+        any
+    }
+
+    /// Closes the transaction and pushes its changes as one undo step
+    /// (`Edit::Voxels`, or a `Batch` of them for several layers). Returns
+    /// `false` when it changed nothing, in which case no step is recorded.
+    pub fn commit_transaction(&mut self) -> bool {
+        let Some(t) = self.transaction.take() else {
+            return false;
+        };
+        let mut edits: Vec<Edit> = t
+            .layers
+            .into_iter()
+            .filter_map(|(layer, p)| {
+                let changes: Vec<VoxelChange> =
+                    p.changes.into_iter().filter(|c| c.old != c.new).collect();
+                (!changes.is_empty()).then_some(Edit::Voxels { layer, changes })
+            })
+            .collect();
+        let edit = match edits.len() {
+            0 => return false,
+            1 => edits.pop().unwrap_or(Edit::Batch(Vec::new())),
+            _ => Edit::Batch(edits),
+        };
+        self.push(edit, false);
+        true
+    }
+
+    /// Closes the transaction and restores the data it changed. Returns
+    /// whether anything was reverted.
+    pub fn cancel_transaction(&mut self, data: &mut DocData) -> bool {
+        let any = self.revert_pending(data);
+        self.transaction = None;
+        any
+    }
+
+    /// Records an already-applied edit. Clears the redo stack. While a
+    /// transaction is open, voxel edits join it; any other edit commits the
+    /// transaction first so history order matches the order of changes.
     pub fn push(&mut self, edit: Edit, merge: bool) {
+        if self.transaction.is_some() {
+            if let Edit::Voxels { layer, changes } = &edit {
+                self.record(*layer, changes);
+                self.redo.clear();
+                return;
+            }
+            self.commit_transaction();
+        }
         self.redo.clear();
         if merge {
             if let Some(last) = self.undo.last_mut() {
@@ -281,7 +402,10 @@ impl History {
         !self.redo.is_empty()
     }
 
+    /// Undoes the last step. An open transaction is committed first, so the
+    /// drag in progress is what gets undone.
     pub fn undo(&mut self, data: &mut DocData) -> bool {
+        self.commit_transaction();
         let Some(edit) = self.undo.pop() else {
             return false;
         };
@@ -291,6 +415,7 @@ impl History {
     }
 
     pub fn redo(&mut self, data: &mut DocData) -> bool {
+        self.commit_transaction();
         let Some(edit) = self.redo.pop() else {
             return false;
         };
