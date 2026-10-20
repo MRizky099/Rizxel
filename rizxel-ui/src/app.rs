@@ -48,15 +48,10 @@ impl RizxelApp {
         }
     }
 
-    /// Opens a project passed on the command line; failures go to the status bar.
+    /// Opens a project or model passed on the command line (`.rzxl`,
+    /// `.vox`, `.gox`, `.obj`, `.stl`); failures go to the status bar.
     pub fn open_at_startup(&mut self, path: &std::path::Path) {
-        match self.state.open(path) {
-            Ok(()) => self.state.status_message = Some(format!("Opened {}", path.display())),
-            Err(e) => {
-                log::error!("open {}: {e}", path.display());
-                self.state.status_message = Some(format!("Failed to open: {e}"));
-            }
-        }
+        actions::open_path(&mut self.state, path);
     }
 
     /// Global keyboard shortcuts. Skipped while a text field has focus so
