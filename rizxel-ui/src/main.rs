@@ -11,6 +11,7 @@ mod panels;
 mod render;
 mod resize;
 mod theme;
+mod tool_input;
 mod viewport;
 mod widgets;
 

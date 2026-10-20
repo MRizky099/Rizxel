@@ -1,13 +1,58 @@
-//! Tool, operation and tool-option definitions.
+//! Tool, operation and tool-option definitions, plus the Phase 5a tool
+//! algorithms.
 //!
-//! Only metadata lives here for Phase 2. Algorithms (plane slicing, extrude,
-//! fill) are implemented in Phase 5.
+//! Every algorithm is a pure function from a read-only view of the volume
+//! (and the pick result) to a list of [`VoxelChange`]s. The application
+//! layer applies those changes inside an undo transaction, so one drag is
+//! one undo step. Selection-driven tools (Selection, Fuzzy Select, Fill,
+//! Shape) arrive in Phase 5b.
 
+mod brush;
+mod extrude;
+mod moving;
 mod options;
+mod pick;
+mod quality;
+mod slice;
+mod symmetry;
+mod work_plane;
 
+use glam::IVec3;
+use rizxel_math::{BoundSize, Voxel, VoxelVolume};
 use serde::{Deserialize, Serialize};
 
+pub use brush::{brush_center, brush_positions, brush_stroke, line_cells, stamp_shape};
+pub use extrude::{extrude_changes, extrude_region};
+pub use moving::{drag_axis, move_changes, resize_bounds};
 pub use options::*;
+pub use pick::pick_voxel;
+pub use quality::{apply_op, filter_placeable};
+pub use slice::{slice_layers, slice_volume, SliceRequest};
+pub use symmetry::{apply_symmetry, mirror};
+pub use work_plane::WorkPlane;
+
+use crate::raycast::RayHit;
+
+/// One voxel write: `old` is the value before, `new` the value after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoxelChange {
+    pub pos: IVec3,
+    pub old: Voxel,
+    pub new: Voxel,
+}
+
+/// Inputs shared by the drawing tools.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolContext<'a> {
+    /// Layer being edited (read-only; changes are returned, not applied).
+    pub volume: &'a VoxelVolume,
+    pub bounds: BoundSize,
+    /// Palette index written by add/paint operations.
+    pub color: Voxel,
+    pub op: VoxelOp,
+    pub options: &'a ToolOptions,
+    pub hit: Option<RayHit>,
+}
 
 /// Editing tools shown in the left toolbar, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -57,17 +102,41 @@ impl Tool {
     /// Short usage hint displayed in the status bar.
     pub const fn hint(self) -> &'static str {
         match self {
-            Tool::Cursor => "Click to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
-            Tool::Brush => "Click and drag to paint voxels one by one.",
-            Tool::Shape => "Click and drag to draw a box-shaped volume of voxels.",
-            Tool::Plane => "Click and drag to create a flat plane of voxels.",
-            Tool::Move => "Drag to move the selected voxels.",
-            Tool::ColorPicker => "Click a voxel to pick its color.",
-            Tool::Selection => "Click and drag to select a box region.",
-            Tool::FuzzySelect => "Click to select connected voxels of the same color.",
-            Tool::Extrude => "Drag a face to extrude it along its normal.",
-            Tool::Fill => "Click to flood-fill connected voxels with the active color.",
+            Tool::Cursor => "Hover to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
+            Tool::Brush => "Click and drag to paint. Shift: erase, Alt: pick color, Esc: cancel.",
+            Tool::Shape => "Click and drag to draw a box-shaped volume of voxels (Phase 5b).",
+            Tool::Plane => "Click a face to place the work plane; other tools then draw on it.",
+            Tool::Move => "Drag to move the active layer (Resize: drag to grow the bounds).",
+            Tool::ColorPicker => {
+                "Click a voxel to pick its color. Ctrl+click: copy it into the swatch."
+            }
+            Tool::Selection => "Click and drag to select a box region (Phase 5b).",
+            Tool::FuzzySelect => "Click to select connected voxels of the same color (Phase 5b).",
+            Tool::Extrude => {
+                "Click or drag a face to extrude it. Shift: carve inward, Esc: cancel."
+            }
+            Tool::Fill => "Click to flood-fill connected voxels with the active color (Phase 5b).",
         }
+    }
+
+    /// Hint for the Plane tool while Slice is on.
+    pub const PLANE_SLICE_HINT: &'static str =
+        "Drag to move the slice plane along its normal. Click a face to move it there.";
+
+    /// Status bar hint taking the slice state into account.
+    pub fn hint_with(self, slicing: bool) -> &'static str {
+        match self {
+            Tool::Plane if slicing => Self::PLANE_SLICE_HINT,
+            _ => self.hint(),
+        }
+    }
+
+    /// True for the tools implemented in Phase 5a.
+    pub const fn is_available(self) -> bool {
+        !matches!(
+            self,
+            Tool::Shape | Tool::Selection | Tool::FuzzySelect | Tool::Fill
+        )
     }
 }
 
@@ -99,27 +168,6 @@ impl VoxelOp {
     }
 }
 
-/// Reference frame for the plane offset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum PlaneMode {
-    /// Offset is relative to the clicked face.
-    #[default]
-    Relative,
-    /// Offset is an absolute coordinate on the plane axis.
-    Absolute,
-}
-
-impl PlaneMode {
-    pub const ALL: [PlaneMode; 2] = [PlaneMode::Relative, PlaneMode::Absolute];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            PlaneMode::Relative => "Relative",
-            PlaneMode::Absolute => "Absolute",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,9 +188,8 @@ mod tests {
     #[test]
     fn plane_is_default_with_prototype_hint() {
         assert_eq!(Tool::default(), Tool::Plane);
-        assert_eq!(
-            Tool::Plane.hint(),
-            "Click and drag to create a flat plane of voxels."
-        );
+        assert_eq!(Tool::Plane.hint_with(false), Tool::Plane.hint());
+        assert_eq!(Tool::Plane.hint_with(true), Tool::PLANE_SLICE_HINT);
+        assert_eq!(Tool::Brush.hint_with(true), Tool::Brush.hint());
     }
 }

@@ -8,7 +8,7 @@
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
 use rizxel_app::{AppState, ViewMode};
 use rizxel_engine::{
-    BrushShape, DragMode, MaskMode, NamesMode, PlaneMode, Symmetry, Tool, VoxelOp,
+    BrushShape, DragMode, ExtrudeOptions, MaskMode, NamesMode, Symmetry, Tool, VoxelOp, WorkPlane,
 };
 
 use crate::icons::{self, Icon, Icons};
@@ -161,6 +161,18 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
     );
     ui.add_space(6.0);
 
+    // Selection-driven tools arrive in Phase 5b: their rows stay visible but
+    // disabled.
+    if !state.tool.is_available() {
+        ui.add_enabled_ui(false, |ui| tool_rows(ui, state))
+            .response
+            .on_disabled_hover_text("Arrives in Phase 5b");
+        return;
+    }
+    tool_rows(ui, state);
+}
+
+fn tool_rows(ui: &mut Ui, state: &mut AppState) {
     let opts = &mut state.options;
     match state.tool {
         Tool::Cursor => {
@@ -195,26 +207,7 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
             gap(ui);
             symmetry(ui, "shape_sym", &mut s.symmetry);
         }
-        Tool::Plane => {
-            let p = &mut opts.plane;
-            ui.checkbox(&mut p.slice, "Slice");
-            gap(ui);
-            egui::ComboBox::from_id_salt("plane_mode")
-                .width(88.0)
-                .selected_text(p.mode.label())
-                .show_ui(ui, |ui| {
-                    for mode in PlaneMode::ALL {
-                        ui.selectable_value(&mut p.mode, mode, mode.label());
-                    }
-                });
-            gap(ui);
-            caption(ui, "Offset");
-            ui.add(
-                egui::DragValue::new(&mut p.offset)
-                    .speed(0.1)
-                    .range(-256..=256),
-            );
-        }
+        Tool::Plane => plane_rows(ui, state),
         Tool::Move => {
             caption(ui, "Drag mode");
             let modes = DragMode::ALL.map(|m| (m, m.label()));
@@ -243,7 +236,16 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::Extrude => {
             let e = &mut opts.extrude;
-            ui.checkbox(&mut e.confine_to_layer, "Confine to layer");
+            caption(ui, "Depth");
+            ui.add(
+                egui::DragValue::new(&mut e.depth)
+                    .speed(0.1)
+                    .range(1..=ExtrudeOptions::MAX_DEPTH),
+            )
+            .on_hover_text("Depth of a click; dragging adds to it");
+            gap(ui);
+            ui.checkbox(&mut e.confine_to_layer, "Confine to layer")
+                .on_hover_text("Find the face region in the active layer only");
             gap(ui);
             color_threshold(ui, &mut e.use_color, &mut e.threshold);
         }
@@ -256,6 +258,104 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
             ui.add(egui::DragValue::new(&mut f.threshold).range(0..=255))
                 .on_hover_text("How close colors must be to be filled");
         }
+    }
+}
+
+/// Plane tool: the document's work plane (Goxel's plane panel, Qubicle's
+/// slice mode) plus the destructive Cut.
+fn plane_rows(ui: &mut Ui, state: &mut AppState) {
+    let mut cap_value = state.options.plane.cap;
+    let mut message = None;
+    if let Some(doc) = state.doc_mut() {
+        let bounds = doc.data.bounds;
+        let mut p = doc.plane.clamped(bounds);
+        ui.checkbox(&mut p.visible, "Visible")
+            .on_hover_text("Show the plane; drawing tools snap onto it");
+        gap(ui);
+        caption(ui, "Axis");
+        let axes = [(0usize, "X"), (1, "Y"), (2, "Z")];
+        segmented(ui, "plane_axis", &mut p.axis, &axes);
+        gap(ui);
+        if p.slice {
+            // Qubicle's slice counter: the visible, editable layer.
+            caption(ui, "Layer");
+            let mut layer = p.slice_layer(bounds);
+            if ui.small_button("-").clicked() {
+                layer -= 1;
+            }
+            ui.add(
+                egui::DragValue::new(&mut layer)
+                    .speed(0.1)
+                    .range(0..=bounds.0[p.axis] as i32 - 1),
+            )
+            .on_hover_text("Slice layer: shown and editable; layers beyond it are hidden");
+            if ui.small_button("+").clicked() {
+                layer += 1;
+            }
+            if layer != p.slice_layer(bounds) {
+                p.set_slice_layer(layer, bounds);
+            }
+        } else {
+            caption(ui, "Position");
+            ui.add(
+                egui::DragValue::new(&mut p.coord)
+                    .speed(0.1)
+                    .range(0..=bounds.0[p.axis] as i32),
+            )
+            .on_hover_text("Plane coordinate along its axis");
+        }
+        vertical_divider(ui, DIVIDER_HEIGHT);
+        ui.checkbox(&mut p.slice, "Slice")
+            .on_hover_text("Hide the model beyond the plane (view only) and edit up to it");
+        ui.add_enabled_ui(p.slice, |ui| {
+            if ui
+                .button("Flip")
+                .on_hover_text("Hide the other side instead")
+                .clicked()
+            {
+                p.flip_side(bounds);
+            }
+        });
+        if ui
+            .button("Reset")
+            .on_hover_text("Hide the plane and turn Slice off")
+            .clicked()
+        {
+            p = WorkPlane::default();
+        }
+        vertical_divider(ui, DIVIDER_HEIGHT);
+        ui.add_enabled_ui(p.slice, |ui| {
+            if ui
+                .button("Cut")
+                .on_hover_text("Delete the hidden side from every visible, unlocked layer")
+                .clicked()
+            {
+                let out = doc.cut_hidden_side(cap_value, doc.selected_color as rizxel_math::Voxel);
+                message = Some(if out.layers == 0 {
+                    "Cut: nothing on the hidden side".to_owned()
+                } else {
+                    let mut m = format!(
+                        "Cut: removed {} voxels in {} layer(s)",
+                        out.removed, out.layers
+                    );
+                    if out.capped > 0 {
+                        m.push_str(&format!(", capped {}", out.capped));
+                    }
+                    if out.locked_skipped > 0 {
+                        m.push_str(&format!(", {} locked layer(s) skipped", out.locked_skipped));
+                    }
+                    m
+                });
+            }
+            ui.checkbox(&mut cap_value, "Cap")
+                .on_hover_text("Close the cut with the current color");
+        });
+        // Switching axis keeps the plane inside the bounds.
+        doc.plane = p.clamped(bounds);
+    }
+    state.options.plane.cap = cap_value;
+    if message.is_some() {
+        state.status_message = message;
     }
 }
 

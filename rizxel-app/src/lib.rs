@@ -13,7 +13,7 @@ use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::{Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
-pub use document::{DocData, Document, Layer, LayerProps};
+pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
@@ -331,6 +331,9 @@ pub struct AppState {
     pub selected_voxels: usize,
     /// Transient message shown in the status bar (e.g. save errors).
     pub status_message: Option<String>,
+    /// Live feedback of the active tool (hovered slice plane, pending
+    /// change count while dragging). Set by the viewport every frame.
+    pub tool_feedback: Option<String>,
     untitled_counter: u32,
 }
 
@@ -347,6 +350,7 @@ impl Default for AppState {
             cursor_voxel: None,
             selected_voxels: 0,
             status_message: None,
+            tool_feedback: None,
             untitled_counter: 0,
         };
         state.new_document();
@@ -373,12 +377,14 @@ impl AppState {
     }
 
     pub fn push_document(&mut self, doc: Document) {
+        self.cancel_active_edit();
         self.documents.push(doc);
         self.active_doc = self.documents.len() - 1;
     }
 
     pub fn activate(&mut self, index: usize) {
-        if index < self.documents.len() {
+        if index < self.documents.len() && index != self.active_doc {
+            self.cancel_active_edit();
             self.active_doc = index;
         }
     }
@@ -407,6 +413,7 @@ impl AppState {
             return Ok(());
         }
         let doc = Document::load(path)?;
+        self.cancel_active_edit();
         // Replace a pristine untitled tab instead of adding another one.
         let replace_pristine = self.documents.len() == 1
             && self.documents[0].path.is_none()
@@ -447,6 +454,14 @@ impl AppState {
         Ok(mesh.triangle_count())
     }
 
+    /// Cancels a tool drag in progress on the active document (tab switch,
+    /// open, new document).
+    pub fn cancel_active_edit(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.cancel_edit();
+        }
+    }
+
     // ----------------------------------------------------------- history
 
     pub fn undo(&mut self) {
@@ -473,7 +488,12 @@ impl AppState {
 
     /// Hint text for the status bar.
     pub fn hint(&self) -> String {
-        format!("{} Tool: {}", self.tool.label(), self.tool.hint())
+        format!(
+            "{} Tool: {}",
+            self.tool.label(),
+            self.tool
+                .hint_with(self.doc().is_some_and(|d| d.plane.slice))
+        )
     }
 }
 
@@ -486,10 +506,9 @@ mod tests {
         let s = AppState::default();
         assert_eq!(s.documents.len(), 1);
         assert_eq!(s.doc().unwrap().title(), "untitled_1.rzxl");
-        assert_eq!(
-            s.hint(),
-            "Plane Tool: Click and drag to create a flat plane of voxels."
-        );
+        assert!(s
+            .hint()
+            .starts_with("Plane Tool: Click a face to place the work plane"));
     }
 
     #[test]

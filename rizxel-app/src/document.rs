@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::IVec3;
-use rizxel_engine::{greedy_mesh, rasterize_shape, Mesh};
+use rizxel_engine::tools::slice_layers;
+use rizxel_engine::{greedy_mesh, rasterize_shape, Mesh, SliceRequest, WorkPlane};
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
     BoundSize, LayerId, LayerKind, Material, Palette, Rgba8, ShapeKind, Voxel, VoxelBox,
-    VoxelVolume, FIRST_COLOR_INDEX,
+    VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
 };
 
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
@@ -148,6 +149,42 @@ impl DocData {
     }
 }
 
+/// Why a layer cannot take voxel edits from a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditBlock {
+    NoLayer,
+    Locked,
+    Hidden,
+    /// Groups, shapes and linked clones do not store voxels.
+    NotVoxels,
+}
+
+impl EditBlock {
+    pub const fn message(self) -> &'static str {
+        match self {
+            EditBlock::NoLayer => "No active layer",
+            EditBlock::Locked => "The active layer is locked",
+            EditBlock::Hidden => "The active layer is hidden",
+            EditBlock::NotVoxels => {
+                "The active layer has no editable voxels (group, shape or clone)"
+            }
+        }
+    }
+}
+
+/// Summary of a [`Document::slice`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SliceOutcome {
+    /// Voxels cleared.
+    pub removed: usize,
+    /// Cap voxels written.
+    pub capped: usize,
+    /// Layers that changed.
+    pub layers: usize,
+    /// Visible, non-empty voxel layers skipped because they are locked.
+    pub locked_skipped: usize,
+}
+
 /// Result of [`DocData::evaluate`]: the layer's own volume or a computed one.
 #[derive(Debug)]
 enum Derived {
@@ -176,6 +213,8 @@ pub struct Document {
     pub active_layer: usize,
     /// Index into `data.palette`. Not part of undo history.
     pub selected_color: usize,
+    /// Plane tool work plane / slice view. Not part of undo history.
+    pub plane: WorkPlane,
     history: History,
     /// Incremented on every data change; compared with `saved_revision`.
     revision: u64,
@@ -221,6 +260,7 @@ impl Document {
             },
             active_layer: 0,
             selected_color: Palette::DEFAULT_SELECTED,
+            plane: WorkPlane::default(),
             history: History::default(),
             revision: 0,
             saved_revision: 0,
@@ -286,6 +326,31 @@ impl Document {
         })
     }
 
+    /// Region shown in the viewport: the kept side of the slice plane, or
+    /// `None` (everything) when not slicing.
+    pub fn view_clip(&self) -> Option<VoxelBox> {
+        self.plane.clip_box(self.data.bounds)
+    }
+
+    /// Region drawing tools may write while slicing: the slice layer only.
+    pub fn edit_clip(&self) -> Option<VoxelBox> {
+        self.plane.edit_box(self.data.bounds)
+    }
+
+    /// Viewport mesh: like [`Document::visible_mesh`] but clipped to
+    /// [`Document::view_clip`]. The mesher closes the cut, so the sliced
+    /// model shows a solid cut face.
+    pub fn view_mesh(&self) -> Mesh {
+        let Some(clip) = self.view_clip() else {
+            return self.visible_mesh();
+        };
+        self.with_visible_geometry(|volumes| {
+            let cropped: Vec<VoxelVolume> = volumes.iter().map(|v| v.cropped(&clip)).collect();
+            let layers: Vec<(&VoxelVolume, bool)> = cropped.iter().map(|v| (v, true)).collect();
+            greedy_mesh(&layers, &self.data.palette)
+        })
+    }
+
     /// Voxel count summed over visible layers (overlaps count once per layer).
     pub fn visible_voxel_count(&self) -> usize {
         self.with_visible_geometry(|volumes| volumes.iter().map(|v| v.voxel_count()).sum())
@@ -342,6 +407,8 @@ impl Document {
         self.history.can_redo()
     }
 
+    /// Undoes the last step (an edit in progress is committed first, so it
+    /// is what gets undone).
     pub fn undo(&mut self) -> bool {
         let done = self.history.undo(&mut self.data);
         if done {
@@ -356,6 +423,170 @@ impl Document {
             self.touch();
         }
         done
+    }
+
+    // ---------------------------------------------------------- transactions
+
+    /// Opens an edit transaction: every voxel change until
+    /// [`Document::commit_edit`] becomes one undo step (one tool drag).
+    pub fn begin_edit(&mut self) {
+        self.history.begin_transaction();
+    }
+
+    /// True while a transaction is open.
+    pub fn is_editing(&self) -> bool {
+        self.history.in_transaction()
+    }
+
+    /// Number of voxels the open transaction changes so far.
+    pub fn pending_changes(&self) -> usize {
+        self.history.pending_count()
+    }
+
+    /// Writes `changes` (their `new` values; `old` is re-read from the layer)
+    /// into a voxel layer. Inside a transaction they are tentative; without
+    /// one they form their own undo step. Locked layers, non-voxel layers and
+    /// out-of-bounds positions are refused. Returns the number of voxels that
+    /// actually changed.
+    pub fn edit_voxels(&mut self, layer: usize, changes: &[VoxelChange]) -> usize {
+        if self
+            .editable_layer(layer)
+            .is_err_and(|e| e != EditBlock::Hidden)
+        {
+            return 0;
+        }
+        let auto = !self.is_editing();
+        if auto {
+            self.begin_edit();
+        }
+        let mut applied = Vec::with_capacity(changes.len());
+        if let Some(l) = self.data.layers.get_mut(layer) {
+            for c in changes {
+                if !l.volume.in_bounds(c.pos) {
+                    continue;
+                }
+                let old = l.volume.set(c.pos, c.new);
+                if old != c.new {
+                    applied.push(VoxelChange {
+                        pos: c.pos,
+                        old,
+                        new: c.new,
+                    });
+                }
+            }
+        }
+        self.history.record(layer, &applied);
+        if !applied.is_empty() {
+            self.touch();
+        }
+        if auto {
+            self.commit_edit();
+        }
+        applied.len()
+    }
+
+    /// Restores everything the open transaction changed but keeps it open,
+    /// for tools that recompute their result from the drag anchor.
+    pub fn revert_pending(&mut self) {
+        if self.history.revert_pending(&mut self.data) {
+            self.touch();
+        }
+    }
+
+    /// Closes the transaction as one undo step. Returns `false` when it
+    /// changed nothing (no undo entry is recorded then).
+    pub fn commit_edit(&mut self) -> bool {
+        if !self.is_editing() {
+            return false;
+        }
+        let done = self.history.commit_transaction();
+        self.touch();
+        done
+    }
+
+    /// Closes the transaction and restores every voxel it changed.
+    pub fn cancel_edit(&mut self) {
+        if self.is_editing() {
+            self.history.cancel_transaction(&mut self.data);
+            self.touch();
+        }
+    }
+
+    /// Whether tools may write into layer `index`. Hidden layers are
+    /// reported so the UI can warn; [`Document::edit_voxels`] still allows
+    /// them.
+    pub fn editable_layer(&self, index: usize) -> Result<(), EditBlock> {
+        let layer = self.data.layers.get(index).ok_or(EditBlock::NoLayer)?;
+        if !layer.kind().stores_voxels() {
+            Err(EditBlock::NotVoxels)
+        } else if layer.locked {
+            Err(EditBlock::Locked)
+        } else if !self.data.effectively_visible(index) {
+            Err(EditBlock::Hidden)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Union of the visible geometry in one volume (upper layers win), used
+    /// as the pick target while a drag modifies the document.
+    pub fn merged_visible_volume(&self) -> VoxelVolume {
+        self.with_visible_geometry(|volumes| {
+            let mut out = VoxelVolume::new(self.data.bounds);
+            for v in volumes {
+                for (pos, value) in v.iter() {
+                    out.set(pos, value);
+                }
+            }
+            out
+        })
+    }
+
+    /// Plane tool, Slice mode: cuts every visible, unlocked voxel layer at
+    /// `req` as one undo step. Hidden layers are skipped silently; locked
+    /// ones are counted in the outcome.
+    pub fn slice(&mut self, req: &SliceRequest, cap_color: Voxel) -> SliceOutcome {
+        let mut outcome = SliceOutcome::default();
+        let mut targets: Vec<(usize, &VoxelVolume)> = Vec::new();
+        for (i, l) in self.data.layers.iter().enumerate() {
+            if !l.kind().stores_voxels() || !self.data.effectively_visible(i) {
+                continue;
+            }
+            if l.locked {
+                outcome.locked_skipped += usize::from(!l.volume.is_empty());
+                continue;
+            }
+            targets.push((i, &l.volume));
+        }
+        let per_layer = slice_layers(&targets, self.data.bounds, req, cap_color);
+        if per_layer.is_empty() {
+            return outcome;
+        }
+        outcome.layers = per_layer.len();
+        for c in per_layer.iter().flat_map(|(_, changes)| changes) {
+            if c.new == EMPTY_VOXEL {
+                outcome.removed += 1;
+            } else {
+                outcome.capped += 1;
+            }
+        }
+        let mut edits: Vec<Edit> = per_layer
+            .into_iter()
+            .map(|(layer, changes)| Edit::Voxels { layer, changes })
+            .collect();
+        let edit = match edits.len() {
+            1 => edits.pop().unwrap_or(Edit::Batch(Vec::new())),
+            _ => Edit::Batch(edits),
+        };
+        self.apply(edit, false);
+        outcome
+    }
+
+    /// Destructive "Cut" of the Plane tool: deletes the side hidden by the
+    /// slice plane from every visible, unlocked voxel layer (one undo step).
+    pub fn cut_hidden_side(&mut self, cap: bool, cap_color: Voxel) -> SliceOutcome {
+        let req = self.plane.cut_request(self.data.bounds, cap);
+        self.slice(&req, cap_color)
     }
 
     fn touch(&mut self) {
@@ -1055,6 +1286,8 @@ impl Document {
 
     /// Saves to `path` and makes it the document's path.
     pub fn save_to(&mut self, path: &Path) -> Result<(), RzxlError> {
+        // Never save the tentative data of a drag in progress.
+        self.commit_edit();
         rizxel_io::save_rzxl(path, &self.to_project())?;
         self.path = Some(path.to_path_buf());
         if let Some(stem) = path.file_stem() {

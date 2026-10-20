@@ -6,11 +6,14 @@
 //! Picking runs on the CPU with the same matrices as the GPU.
 //!
 //! Phase 4: the visible layers are greedy-meshed once per document revision
-//! ([`MeshCache`]) and drawn as opaque voxels. Picking is still ground-plane
-//! only; voxel picking arrives with the Phase 5a tools.
+//! ([`MeshCache`]) and drawn as opaque voxels.
 //!
-//! Controls: wheel = zoom, right drag = orbit, middle drag = pan,
-//! middle double-click = reset camera.
+//! Phase 5a: voxel picking and the editing tools run in
+//! [`crate::tool_input`]; their hover highlights and ghosts are drawn with
+//! the same fill/line paths as the rest of the overlays.
+//!
+//! Controls: left drag = active tool, wheel = zoom, right drag = orbit,
+//! middle drag = pan, middle double-click = reset camera.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,35 +24,44 @@ use glam::{IVec3, Mat3, Mat4, Vec3};
 use rizxel_app::{
     AppState, Document, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget,
 };
-use rizxel_math::BoundSize;
+use rizxel_math::{BoundSize, VoxelBox};
 
-use crate::render::{FillVertex, GpuMesh, LineInstance, SceneFrame, ViewportCallback};
+use crate::render::{GpuMesh, LineInstance, SceneFrame, ViewportCallback};
 use crate::theme;
+use crate::tool_input::{self, ToolInput};
 
 /// Viewport meshes per open document, rebuilt only when the document's
-/// revision changes (edits, undo/redo, load, visibility, palette, bounds).
-/// Switching tabs therefore never re-meshes.
+/// revision changes (edits, undo/redo, load, visibility, palette, bounds)
+/// or its slice clip moves. Switching tabs therefore never re-meshes.
 #[derive(Default)]
 pub struct MeshCache {
-    entries: HashMap<u64, Arc<GpuMesh>>,
+    /// Per document: `(revision, slice clip, mesh)` the mesh was built for.
+    entries: HashMap<u64, (u64, Option<VoxelBox>, Arc<GpuMesh>)>,
+    /// Source of unique [`GpuMesh::key`]s. The renderer re-uploads only
+    /// when the key changes, so every rebuild needs a fresh one: a moved
+    /// slice plane changes the mesh without changing the revision.
+    next_build: u64,
 }
 
 impl MeshCache {
-    /// Mesh of `doc`'s visible layers in world space.
+    /// Mesh of `doc`'s visible (slice-clipped) layers in world space.
     pub fn get(&mut self, doc: &Document) -> Arc<GpuMesh> {
-        let key = (doc.id(), doc.revision());
+        let revision = doc.revision();
+        let clip = doc.view_clip();
         match self.entries.get(&doc.id()) {
-            Some(m) if m.key == key => m.clone(),
+            Some((r, c, m)) if *r == revision && *c == clip => m.clone(),
             _ => {
+                self.next_build += 1;
+                let key = (doc.id(), self.next_build);
                 let (bmin, _) = bounds_box(doc.data.bounds);
-                let mesh = Arc::new(GpuMesh::from_mesh(key, &doc.visible_mesh(), bmin));
+                let mesh = Arc::new(GpuMesh::from_mesh(key, &doc.view_mesh(), bmin));
                 log::debug!(
-                    "meshed {} rev {}: {} triangles",
+                    "meshed {} rev {revision}: {} triangles",
                     doc.title(),
-                    key.1,
                     mesh.triangle_count()
                 );
-                self.entries.insert(doc.id(), mesh.clone());
+                self.entries
+                    .insert(doc.id(), (revision, clip, mesh.clone()));
                 mesh
             }
         }
@@ -68,12 +80,16 @@ const ORBIT_SPEED: f32 = 0.4;
 const ZOOM_SPEED: f32 = 0.002;
 /// Width of the yellow bounds wireframe, in logical points.
 const BOUNDS_WIDTH: f32 = 1.5;
+/// Width of the bounds wireframe while slicing, in logical points.
+const SLICE_BOUNDS_WIDTH: f32 = 4.0;
 
 /// Camera matrices for the current frame.
-struct Projection {
+pub struct Projection {
     view_proj: Mat4,
     rect: Rect,
     eye: Vec3,
+    /// Unit view direction.
+    forward: Vec3,
 }
 
 impl Projection {
@@ -83,23 +99,54 @@ impl Projection {
             view_proj: camera.view_proj(target, aspect),
             rect,
             eye: camera.eye(target),
+            forward: -camera.eye_direction(),
         }
     }
 
-    /// Intersects the mouse ray with the ground plane `y = 0`.
-    fn ground_hit(&self, screen: Pos2) -> Option<Vec3> {
+    /// Camera position in world space.
+    pub fn eye(&self) -> Vec3 {
+        self.eye
+    }
+
+    /// On-screen size (logical points) of one world unit at `world`.
+    pub fn points_per_unit(&self, world: Vec3) -> f32 {
+        let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
+        self.rect.height() / (2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan())
+    }
+
+    /// World-space mouse ray `(origin, unit direction)` through `screen`.
+    pub fn world_ray(&self, screen: Pos2) -> (Vec3, Vec3) {
         let ndc = glam::Vec2::new(
             (screen.x - self.rect.center().x) / (self.rect.width() * 0.5),
             -(screen.y - self.rect.center().y) / (self.rect.height() * 0.5),
         );
         let inv = self.view_proj.inverse();
         let far = inv.project_point3(ndc.extend(1.0));
-        let dir = (far - self.eye).normalize_or_zero();
+        (self.eye, (far - self.eye).normalize_or_zero())
+    }
+
+    /// Screen position of a world point (`None` behind the camera).
+    pub fn to_screen(&self, world: Vec3) -> Option<Pos2> {
+        let clip = self.view_proj * world.extend(1.0);
+        if clip.w <= 1e-6 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        Some(Pos2::new(
+            self.rect.center().x + ndc.x * self.rect.width() * 0.5,
+            self.rect.center().y - ndc.y * self.rect.height() * 0.5,
+        ))
+    }
+
+    /// Intersects the mouse ray with the ground plane `y = 0`.
+    #[cfg(test)]
+    fn ground_hit(&self, screen: Pos2) -> Option<Vec3> {
+        let (eye, dir) = self.world_ray(screen);
         if dir.y.abs() < 1e-6 {
             return None;
         }
-        let t = -self.eye.y / dir.y;
-        (t > 0.0).then(|| self.eye + dir * t)
+        let t = -eye.y / dir.y;
+        (t > 0.0).then(|| eye + dir * t)
     }
 }
 
@@ -124,6 +171,7 @@ pub fn show(
     state: &mut AppState,
     target_format: Option<egui_wgpu::wgpu::TextureFormat>,
     meshes: &mut MeshCache,
+    tools: &mut ToolInput,
 ) {
     let rect = ui.max_rect();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -163,34 +211,32 @@ pub fn show(
     let target = Vec3::new(0.0, bmax.y * 0.4, 0.0) + state.camera.pan;
     let proj = Projection::new(&state.camera, target, rect);
 
-    // --- Cursor voxel (ground plane pick) -----------------------------------
-    state.cursor_voxel = response
-        .hover_pos()
-        .and_then(|p| proj.ground_hit(p))
-        .and_then(|hit| {
-            let v = IVec3::new(
-                (hit.x - bmin.x).floor() as i32,
-                0,
-                (hit.z - bmin.z).floor() as i32,
-            );
-            let inside = v.x >= 0 && v.z >= 0 && v.x < bounds.x() as i32 && v.z < bounds.z() as i32;
-            inside.then_some(v)
-        });
+    // --- Tools (picking, drag state machine, previews) ----------------------
+    let cube_rect = Rect::from_min_size(
+        Pos2::new(rect.right() - 100.0, rect.top() + 16.0),
+        Vec2::splat(84.0),
+    );
+    let ppp = ui.ctx().pixels_per_point();
+    let preview = tools.update(
+        &tool_input::Frame {
+            ui,
+            response: &response,
+            proj: &proj,
+            bmin,
+            blocked: cube_rect,
+            pixels_per_point: ppp,
+        },
+        state,
+    );
+    // Tool edits may have changed the document this frame.
+    let voxels = state.doc().map(|d| meshes.get(d)).or(voxels);
 
     // --- Scene (wgpu) -------------------------------------------------------
-    let hover = state
-        .cursor_voxel
-        .map(|v| bmin + Vec3::new(v.x as f32, 0.0, v.z as f32));
-    let ppp = ui.ctx().pixels_per_point();
-    let mut frame = scene_frame(
-        &state.camera,
-        &proj,
-        state.view_mode,
-        bmin,
-        bmax,
-        hover,
-        ppp,
-    );
+    // While slicing, the bounds are drawn one voxel thick (Slice panel look).
+    let bold = state.doc().is_some_and(|d| d.plane.slice);
+    let mut frame = scene_frame(&state.camera, &proj, state.view_mode, bmin, bmax, ppp, bold);
+    frame.fills.extend(preview.fills);
+    frame.lines.extend(preview.lines);
     if let Some((lo, hi)) = occupied {
         let color = theme::BOUND.gamma_multiply(0.45);
         frame.lines.extend(
@@ -229,10 +275,6 @@ pub fn show(
     }
 
     // --- Overlays -----------------------------------------------------------
-    let cube_rect = Rect::from_min_size(
-        Pos2::new(rect.right() - 100.0, rect.top() + 16.0),
-        Vec2::splat(84.0),
-    );
     if let Some(target) = view_cube(ui, &state.camera, cube_rect) {
         state.camera.snap(target);
     }
@@ -248,31 +290,25 @@ fn scene_frame(
     view_mode: ViewMode,
     bmin: Vec3,
     bmax: Vec3,
-    hover: Option<Vec3>,
     pixels_per_point: f32,
+    bold: bool,
 ) -> SceneFrame {
-    let width = BOUNDS_WIDTH * pixels_per_point;
-    let bound_color = theme::BOUND.gamma_multiply(0.9);
-    let mut lines: Vec<LineInstance> = bounds_edges(bmin, bmax)
+    let bound_color = if bold {
+        theme::BOUND
+    } else {
+        theme::BOUND.gamma_multiply(0.9)
+    };
+    let lines: Vec<LineInstance> = bounds_edges(bmin, bmax)
         .into_iter()
-        .map(|(a, b)| LineInstance::new(a, b, bound_color, width))
+        .map(|(a, b)| {
+            let width = if bold {
+                SLICE_BOUNDS_WIDTH
+            } else {
+                BOUNDS_WIDTH
+            } * pixels_per_point;
+            LineInstance::new(a, b, bound_color, width)
+        })
         .collect();
-
-    // Hovered ground cell: translucent fill plus a thin outline.
-    let mut fills = Vec::new();
-    if let Some(origin) = hover {
-        let quad = [Vec3::ZERO, Vec3::X, Vec3::X + Vec3::Z, Vec3::Z].map(|o| origin + o);
-        let fill = theme::ACCENT_LIGHT.gamma_multiply(0.35);
-        fills.extend([0, 1, 2, 0, 2, 3].map(|i| FillVertex::new(quad[i], fill)));
-        for i in 0..4 {
-            lines.push(LineInstance::new(
-                quad[i],
-                quad[(i + 1) % 4],
-                theme::ACCENT_LIGHT,
-                pixels_per_point,
-            ));
-        }
-    }
 
     SceneFrame {
         view_proj: proj.view_proj,
@@ -286,7 +322,7 @@ fn scene_frame(
         axis_x: theme::AXIS_X,
         axis_z: theme::AXIS_Z,
         lines,
-        fills,
+        fills: Vec::new(),
         voxels: None,
     }
 }
@@ -682,6 +718,44 @@ mod tests {
 
         cache.retain_open(&[]);
         assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn moving_the_slice_plane_gives_a_new_upload_key() {
+        // Four voxels along X; slide the plane through them, then untick
+        // Slice. Every step must produce a mesh with a fresh key (the GPU
+        // re-uploads on key change only) and the right extent.
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, (0..4).map(|x| (IVec3::new(x, 0, 0), 5)), false);
+        let mut cache = MeshCache::default();
+        let mut keys = vec![cache.get(&doc).key];
+        doc.plane.axis = 0;
+        doc.plane.slice = true;
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        for coord in (1..=4).rev() {
+            doc.plane.coord = coord;
+            let mesh = cache.get(&doc);
+            let max_x = mesh
+                .vertices
+                .iter()
+                .map(|v| v.pos[0])
+                .fold(f32::MIN, f32::max);
+            // One layer beyond the plane stays visible.
+            let expected = (coord + 1).min(4) as f32;
+            assert_eq!(max_x, bmin.x + expected, "plane at x = {coord}");
+            keys.push(mesh.key);
+        }
+        doc.plane.slice = false;
+        let full = cache.get(&doc);
+        let max_x = full
+            .vertices
+            .iter()
+            .map(|v| v.pos[0])
+            .fold(f32::MIN, f32::max);
+        assert_eq!(max_x, bmin.x + 4.0, "unticking Slice restores the model");
+        keys.push(full.key);
+        let unique: std::collections::HashSet<_> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len());
     }
 
     #[test]

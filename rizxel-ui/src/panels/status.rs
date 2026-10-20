@@ -60,9 +60,11 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Transient messages (save/open results) take precedence over hints.
-            let (text, color) = match &state.status_message {
-                Some(msg) => (msg.clone(), theme::TEXT),
-                None => (state.hint(), theme::BOUND),
+            // Transient messages first, then live tool feedback, then the hint.
+            let (text, color) = match (&state.status_message, &state.tool_feedback) {
+                (Some(msg), _) => (msg.clone(), theme::TEXT),
+                (None, Some(fb)) => (fb.clone(), theme::ACCENT_LIGHT),
+                (None, None) => (state.hint(), theme::BOUND),
             };
             ui.label(RichText::new(text).size(11.0).color(color));
             ui.label(
