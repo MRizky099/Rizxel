@@ -334,8 +334,10 @@ fn selection_actions(ui: &mut Ui, state: &mut AppState) {
     }
 }
 
-/// Plane tool: the document's work plane (Goxel's plane panel, Qubicle's
-/// slice mode) plus the destructive Cut.
+/// Plane tool: the document's work plane (Goxel's plane panel), the Slice
+/// Mode toggle (also `Space` and the Tools panel's `2D` button) and the
+/// destructive Cut. The hidden side follows the camera, so there is no
+/// Flip.
 fn plane_rows(ui: &mut Ui, state: &mut AppState) {
     let mut cap_value = state.options.plane.cap;
     let mut message = None;
@@ -350,23 +352,24 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
         segmented(ui, "plane_axis", &mut p.axis, &axes);
         gap(ui);
         if p.slice {
-            // Qubicle's slice counter: the visible, editable layer.
-            caption(ui, "Layer");
-            let mut layer = p.slice_layer(bounds);
+            // Qubicle's slice counter (1-based): the only editable layer.
+            caption(ui, "Slice");
+            let mut number = p.slice_layer(bounds) + 1;
             if ui.small_button("-").clicked() {
-                layer -= 1;
+                number -= 1;
             }
             ui.add(
-                egui::DragValue::new(&mut layer)
+                egui::DragValue::new(&mut number)
                     .speed(0.1)
-                    .range(0..=bounds.0[p.axis] as i32 - 1),
+                    .range(1..=p.slice_count(bounds))
+                    .suffix(format!(" / {}", p.slice_count(bounds))),
             )
-            .on_hover_text("Slice layer: shown and editable; layers beyond it are hidden");
+            .on_hover_text("Slice: the only editable layer; the camera's side is hidden");
             if ui.small_button("+").clicked() {
-                layer += 1;
+                number += 1;
             }
-            if layer != p.slice_layer(bounds) {
-                p.set_slice_layer(layer, bounds);
+            if number != p.slice_layer(bounds) + 1 {
+                p.set_slice_layer(number - 1, bounds);
             }
         } else {
             caption(ui, "Position");
@@ -378,23 +381,25 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
             .on_hover_text("Plane coordinate along its axis");
         }
         vertical_divider(ui, DIVIDER_HEIGHT);
-        ui.checkbox(&mut p.slice, "Slice")
-            .on_hover_text("Hide the model beyond the plane (view only) and edit up to it");
-        ui.add_enabled_ui(p.slice, |ui| {
-            if ui
-                .button("Flip")
-                .on_hover_text("Hide the other side instead")
-                .clicked()
-            {
-                p.flip_side(bounds);
-            }
-        });
+        let mut slicing = p.slice;
+        if ui
+            .checkbox(&mut slicing, "Slice")
+            .on_hover_text(
+                "Slice Mode (Space): edit one layer; the camera's side is hidden (view only)",
+            )
+            .changed()
+        {
+            p.toggle_slice(None, bounds);
+        }
         if ui
             .button("Reset")
             .on_hover_text("Hide the plane and turn Slice off")
             .clicked()
         {
-            p = WorkPlane::default();
+            p = WorkPlane {
+                last_slice: p.last_slice,
+                ..WorkPlane::default()
+            };
         }
         vertical_divider(ui, DIVIDER_HEIGHT);
         ui.add_enabled_ui(p.slice, |ui| {

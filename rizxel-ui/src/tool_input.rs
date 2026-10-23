@@ -22,9 +22,14 @@
 //! The Plane tool never writes voxels (Goxel / Qubicle behaviour): a click
 //! places the document's [`WorkPlane`] on the clicked face. While the plane
 //! is visible every drawing tool also picks on it, so voxels can be drawn
-//! in empty space. With Slice on, the side beyond the plane is hidden, edits
-//! are confined to the visible side, and dragging with the Plane tool moves
-//! the plane along its normal.
+//! in empty space.
+//!
+//! Slice Mode (Qubicle 3.1.2) is global: `Space` toggles it from any tool,
+//! slicing at the hovered voxel (axis = hovered face normal) or restoring
+//! the last slice. While slicing only the slice layer can be picked and
+//! edited, by every tool; dragging the thick bounds frame (any tool) or
+//! anywhere with the Plane tool moves the slice along its normal. Slice
+//! moves are view state, never undo steps.
 
 use std::collections::HashSet;
 
@@ -34,13 +39,13 @@ use rizxel_app::{AppState, Document, Selection, VoxelChange};
 use rizxel_engine::raycast::{dominant_axis, raycast_face, raycast_floor, raycast_grid};
 use rizxel_engine::tools::{
     apply_op, brush_center, brush_positions, brush_stroke, drag_axis, extrude_changes,
-    extrude_region, extruded_cells, fill_cells, fuzzy_select, move_changes, move_selection_changes,
-    pick_voxel, resize_bounds, select_box, selection_box, selection_region, shape_box, shape_cells,
-    MAX_FLOOD_CELLS,
+    extrude_region, extruded_cells, fill_cells, fuzzy_select, mirror, move_changes,
+    move_selection_changes, pick_voxel, resize_bounds, select_box, selection_box, selection_region,
+    shape_box, shape_cells, MAX_FLOOD_CELLS,
 };
 use rizxel_engine::{
-    DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Tool, ToolContext, VoxelOp,
-    WorkPlane,
+    DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool, ToolContext,
+    VoxelOp, WorkPlane,
 };
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
 
@@ -104,7 +109,8 @@ enum DragKind {
         /// Point of the plane edge that was grabbed (voxel space), where the
         /// arrow hint follows the plane; `None` for a drag started elsewhere.
         grab: Option<Vec3>,
-        start_coord: i32,
+        /// Slice layer (while slicing) or plane coordinate at press time.
+        start: i32,
         moved: bool,
         /// Face under the press; a click without drag moves the plane there.
         click: Option<RayHit>,
@@ -162,8 +168,9 @@ pub struct Frame<'a> {
     pub proj: &'a Projection,
     /// World position of voxel `(0, 0, 0)`'s minimum corner.
     pub bmin: Vec3,
-    /// Screen area owned by overlays (view cube); presses there are ignored.
-    pub blocked: Rect,
+    /// Screen areas owned by overlays (view cube, slice slider); presses
+    /// there are ignored.
+    pub blocked: &'a [Rect],
     pub pixels_per_point: f32,
 }
 
@@ -189,11 +196,11 @@ impl Frame<'_> {
     }
 }
 
-/// Shared pick: the nearest of the first solid cell inside the visible
+/// Shared pick: the nearest of the first solid cell inside the editable
 /// region and the work plane (when active; while slicing, the slice slab,
-/// reachable from either side), then the floor. So while slicing, drawing
-/// tools edit visible voxels on both sides of the plane as well as the
-/// slice layer itself.
+/// reachable from either side), then the floor. While slicing the editable
+/// region is the slice layer alone, so voxels off the slice are never
+/// picked (Qubicle Slice Mode).
 fn pick_with(
     ray: &Ray,
     bounds: BoundSize,
@@ -202,7 +209,7 @@ fn pick_with(
     additive: bool,
     solid: impl FnMut(IVec3) -> bool,
 ) -> Option<RayHit> {
-    let clip = plane.clip_box(bounds);
+    let clip = plane.slice_box(bounds);
     let area = clip.unwrap_or(VoxelBox::from_bounds(bounds));
     let voxel = raycast_grid(ray, &area, solid);
     let on_plane = use_plane
@@ -217,7 +224,20 @@ fn pick_with(
     })
 }
 
-/// Picks against the visible (and slice-clipped) geometry of `doc`.
+/// Plane tool pick: the first visible voxel, on or off the slice (a click
+/// jumps the slice there).
+fn pick_view(doc: &Document, ray: &Ray) -> Option<RayHit> {
+    let area = doc
+        .view_clip()
+        .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
+    doc.with_visible_geometry(|vols| {
+        raycast_grid(ray, &area, |p| vols.iter().any(|v| v.get(p) != EMPTY_VOXEL))
+    })
+    .or_else(|| raycast_floor(ray, doc.data.bounds).filter(|h| area.contains(h.adjacent())))
+}
+
+/// Picks against the visible geometry of `doc` (the slice layer only while
+/// slicing).
 fn pick_doc(doc: &Document, ray: &Ray, use_plane: bool, additive: bool) -> Option<RayHit> {
     let bounds = doc.data.bounds;
     doc.with_visible_geometry(|vols| {
@@ -252,9 +272,10 @@ pub fn mask_mode(mods: Modifiers, option: MaskMode) -> MaskMode {
     }
 }
 
-/// Visible model of `doc` (slice-clipped): the pick target during a drag.
+/// Pickable model of `doc` (the slice layer while slicing): the pick
+/// target during a drag.
 fn pick_snapshot(doc: &Document) -> VoxelVolume {
-    match doc.view_clip() {
+    match doc.edit_clip() {
         Some(clip) => doc.merged_visible_volume().cropped(&clip),
         None => doc.merged_visible_volume(),
     }
@@ -341,25 +362,44 @@ impl ToolInput {
         } else {
             state.op
         };
-        let hit = match (&self.drag, hover) {
+        let pick = |state: &AppState| match (&self.drag, hover) {
             (Some(d), Some(p)) => pick_drag(d, &f.ray(p)),
+            (None, Some(p)) if tool == Tool::Plane => {
+                state.doc().and_then(|d| pick_view(d, &f.ray(p)))
+            }
             (None, Some(p)) => state
                 .doc()
                 .and_then(|d| pick_doc(d, &f.ray(p), draws_on_plane(tool), is_additive(op))),
             _ => None,
         };
+        let mut hit = pick(state);
+
+        // Space: Slice Mode on at the hovered voxel (or the last slice), or
+        // off again. Works with every tool and keeps it.
+        let space = self.drag.is_none()
+            && !f.ui.ctx().egui_wants_keyboard_input()
+            && f.ui
+                .input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space));
+        if space {
+            state.toggle_slice(hit.filter(is_voxel).as_ref());
+            // The pickable region changed.
+            hit = pick(state);
+        }
         state.cursor_voxel = hit.map(|h| if is_voxel(&h) { h.voxel } else { h.adjacent() });
 
-        // Plane edge under the cursor (Plane tool): grab handle for moving.
+        // Plane edge or (while slicing, any tool) bounds frame under the
+        // cursor: grab handle for moving the plane.
         let edge = match (&self.drag, hover, state.doc()) {
-            (None, Some(p), Some(doc)) if tool == Tool::Plane => plane_edge_at(f, doc, p),
+            (None, Some(p), Some(doc)) if tool == Tool::Plane || doc.plane.slice => {
+                plane_edge_at(f, doc, p)
+            }
             _ => None,
         };
 
         let press = pressed
             && self.drag.is_none()
             && f.response.hovered()
-            && hover.is_some_and(|p| !f.blocked.contains(p));
+            && hover.is_some_and(|p| !f.blocked.iter().any(|r| r.contains(p)));
         if press {
             if let Some(p) = hover {
                 self.press(f, state, p, hit, edge, mods);
@@ -401,12 +441,18 @@ impl ToolInput {
                     format!("Extrude: depth {depth}, {pending} voxels changed")
                 }
                 DragKind::PlaneMove { .. } => state.doc().map_or_else(String::new, |d| {
-                    format!("Slice plane: {}", plane_label(&d.plane, d.data.bounds))
+                    let what = if d.plane.slice { "Slice" } else { "Plane" };
+                    format!("{what} {}", plane_label(&d.plane, d.data.bounds))
                 }),
                 _ => format!("{}: {pending} voxels changed", drag.tool.label()),
             });
         } else if edge.is_some() {
-            state.tool_feedback = Some("Drag the plane edge to move the plane".to_owned());
+            let slicing = state.doc().is_some_and(|d| d.plane.slice);
+            state.tool_feedback = Some(if slicing {
+                "Drag the frame to move the slice".to_owned()
+            } else {
+                "Drag the plane edge to move the plane".to_owned()
+            });
         } else if let Some(hit) = hit {
             self.hover_preview(f, state, &hit, mods, &mut preview);
         }
@@ -455,12 +501,16 @@ impl ToolInput {
         } else {
             state.tool
         };
+        if edge.is_some() {
+            self.begin_plane_move(state, pos, hit, edge);
+            return;
+        }
         match tool {
             Tool::Cursor => {}
             Tool::ColorPicker => pick_color(f, state, pos, mods.command),
             Tool::Plane => {
                 let slicing = state.doc().is_some_and(|d| d.plane.slice);
-                if edge.is_some() || slicing {
+                if slicing {
                     self.begin_plane_move(state, pos, hit, edge);
                 } else {
                     place_plane(state, hit);
@@ -492,6 +542,12 @@ impl ToolInput {
             }
             return;
         };
+        // While slicing, the box is drawn on the slice.
+        let axis = if doc.plane.slice {
+            doc.plane.axis.min(2)
+        } else {
+            hit.axis()
+        };
         self.drag = Some(Drag {
             doc_id: doc.id(),
             tool: Tool::Selection,
@@ -503,7 +559,7 @@ impl ToolInput {
             op: VoxelOp::Paint,
             kind: DragKind::Select {
                 anchor: hit.voxel,
-                axis: hit.axis(),
+                axis,
                 current: hit.voxel,
                 mode,
                 moved: false,
@@ -559,11 +615,19 @@ impl ToolInput {
             },
             Tool::Shape => {
                 let Some(hit) = hit else { return };
-                let (anchor, grow) = if is_additive(op) {
+                let (anchor, mut grow) = if is_additive(op) {
                     (hit.adjacent(), hit.normal)
                 } else {
                     (hit.voxel, -hit.normal)
                 };
+                // While slicing, the shape is drawn on the slice.
+                if doc.plane.slice {
+                    let axis = doc.plane.axis.min(2);
+                    if grow[axis] == 0 {
+                        grow = IVec3::ZERO;
+                        grow[axis] = 1;
+                    }
+                }
                 DragKind::Shape {
                     anchor,
                     grow,
@@ -627,8 +691,9 @@ impl ToolInput {
         self.drag_frame(f, state, pos);
     }
 
-    /// Starts dragging the plane along its normal: from a grabbed edge, or
-    /// from anywhere while slicing.
+    /// Starts dragging the plane along its normal: from a grabbed edge (or
+    /// bounds frame while slicing), or from anywhere with the Plane tool
+    /// while slicing.
     fn begin_plane_move(
         &mut self,
         state: &mut AppState,
@@ -642,9 +707,15 @@ impl ToolInput {
         let p = doc.plane;
         let pivot = grab.unwrap_or_else(|| {
             let mut c = bounds.0.as_vec3() * 0.5;
-            c[p.axis] = p.coord as f32;
+            c[p.axis] = p.sheet_coord(bounds) as f32;
             c
         });
+        // Slices move by layer (the hidden side may flip on the way).
+        let start = if p.slice {
+            p.slice_layer(bounds)
+        } else {
+            p.coord
+        };
         self.drag = Some(Drag {
             doc_id: doc.id(),
             tool: Tool::Plane,
@@ -656,7 +727,7 @@ impl ToolInput {
             kind: DragKind::PlaneMove {
                 pivot,
                 grab,
-                start_coord: p.coord,
+                start,
                 moved: false,
                 // A click on the edge is not a "jump to this face" click.
                 click: hit.filter(is_voxel).filter(|_| grab.is_none()),
@@ -746,7 +817,7 @@ impl ToolInput {
             DragKind::PlaneMove {
                 pivot,
                 grab,
-                start_coord,
+                start,
                 moved,
                 ..
             } => {
@@ -758,10 +829,15 @@ impl ToolInput {
                 }
                 let amount = (delta.dot(s) / s.length_squared()).round() as i32;
                 let Some(doc) = state.doc_mut() else { return };
-                doc.plane.coord = *start_coord + amount;
-                doc.plane = doc.plane.clamped(doc.data.bounds);
+                let bounds = doc.data.bounds;
+                if doc.plane.slice {
+                    doc.plane.set_slice_layer(*start + amount, bounds);
+                } else {
+                    doc.plane.coord = *start + amount;
+                    doc.plane = doc.plane.clamped(bounds);
+                }
                 if let Some(g) = grab {
-                    g[axis] = doc.plane.coord as f32;
+                    g[axis] = doc.plane.sheet_coord(bounds) as f32;
                 }
             }
             DragKind::Move {
@@ -863,9 +939,10 @@ impl ToolInput {
             ..
         } = drag.kind
         {
-            // A click without drag moves the slice plane onto that face.
+            // A click without drag slices at that voxel.
             if let Some(doc) = state.doc_mut() {
-                doc.plane.set_from_hit(&hit);
+                let bounds = doc.data.bounds;
+                doc.plane.slice_at(&hit, bounds);
             }
             return;
         }
@@ -934,7 +1011,14 @@ impl ToolInput {
                 doc.undo();
             }
             DragKind::Resize { .. } => {}
-            DragKind::PlaneMove { start_coord, .. } => doc.plane.coord = start_coord,
+            DragKind::PlaneMove { start, .. } => {
+                let bounds = doc.data.bounds;
+                if drag.plane.slice {
+                    doc.plane.set_slice_layer(start, bounds);
+                } else {
+                    doc.plane.coord = start;
+                }
+            }
             DragKind::Select { .. } => {}
             _ => doc.cancel_edit(),
         }
@@ -953,7 +1037,7 @@ impl ToolInput {
         let Some(doc) = state.doc() else { return };
         let ppp = f.pixels_per_point;
         let bounds = doc.data.bounds;
-        let clip = doc.view_clip().unwrap_or(VoxelBox::from_bounds(bounds));
+        let clip = doc.edit_clip().unwrap_or(VoxelBox::from_bounds(bounds));
         let tool = if mods.alt {
             Tool::ColorPicker
         } else {
@@ -979,8 +1063,9 @@ impl ToolInput {
                 face_highlight(f.bmin, hit, ppp, out);
             }
             Tool::Plane if doc.plane.slice => {
+                face_highlight(f.bmin, hit, ppp, out);
                 state.tool_feedback = Some(format!(
-                    "Slice plane: {} — drag to move it, click a face to jump there",
+                    "Slice {} — drag to move it, click a voxel to slice there",
                     plane_label(&doc.plane, doc.data.bounds)
                 ));
             }
@@ -1147,8 +1232,8 @@ fn selection_keys(f: &Frame, state: &mut AppState) {
 }
 
 /// Selection tool release: selects the voxels inside `area` (the active
-/// layer's, or every visible layer's), clipped to the slice view, combined
-/// by `mode`. A click on an already selected voxel in Set mode deselects it.
+/// layer's, or every visible layer's), clipped to the slice layer while
+/// slicing, combined by `mode`. A click on an already selected voxel in Set mode deselects it.
 fn apply_box_selection(
     state: &mut AppState,
     area: VoxelBox,
@@ -1164,7 +1249,7 @@ fn apply_box_selection(
             .map(|l| select_box(&[&l.volume], &area))
             .unwrap_or_default()
     };
-    if let Some(clip) = doc.view_clip() {
+    if let Some(clip) = doc.edit_clip() {
         cells.retain(|p| clip.contains(*p));
     }
     let toggle_off = click
@@ -1188,29 +1273,29 @@ fn fuzzy_click(state: &mut AppState, hit: Option<RayHit>, mods: Modifiers) {
         }
         return;
     };
-    let result = if opts.all_layers {
-        fuzzy_select(
-            &doc.merged_visible_volume(),
-            hit.voxel,
-            &doc.data.palette,
-            &opts,
-        )
+    // While slicing the search runs on the slice layer alone, so neither
+    // a connected nor a global match reaches other slices (Qubicle's Magic
+    // Wand).
+    let clip = doc.edit_clip();
+    let source = if opts.all_layers {
+        Some(doc.merged_visible_volume())
     } else {
-        match doc.active_layer() {
-            Some(l) => fuzzy_select(&l.volume, hit.voxel, &doc.data.palette, &opts),
-            None => Ok(Vec::new()),
-        }
+        doc.active_layer().map(|l| l.volume.clone())
     };
-    let mut cells = match result {
+    let result = match source.map(|v| match clip {
+        Some(c) => v.cropped(&c),
+        None => v,
+    }) {
+        Some(v) => fuzzy_select(&v, hit.voxel, &doc.data.palette, &opts),
+        None => Ok(Vec::new()),
+    };
+    let cells = match result {
         Ok(cells) => cells,
         Err(capped) => {
             state.status_message = Some(capped.message());
             return;
         }
     };
-    if let Some(clip) = doc.view_clip() {
-        cells.retain(|p| clip.contains(*p));
-    }
     if cells.is_empty() && mode != MaskMode::Set {
         state.status_message = Some("No voxel of the active layer here".to_owned());
         return;
@@ -1231,8 +1316,9 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
         return;
     }
     let Some(hit) = hit else { return };
+    // While slicing the flood stays on the slice layer.
     let limit = doc
-        .view_clip()
+        .edit_clip()
         .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
     let allowed = doc
         .selection()
@@ -1273,6 +1359,11 @@ fn write(
     make: impl FnOnce(&ToolContext) -> Vec<VoxelChange>,
 ) {
     let options = state.options;
+    let symmetry = match state.tool {
+        Tool::Brush => options.brush.symmetry,
+        Tool::Shape => options.shape.symmetry,
+        _ => Symmetry::default(),
+    };
     let Some(doc) = state.doc_mut() else { return };
     let Some(volume) = doc.data.layers.get(layer).map(|l| &l.volume) else {
         return;
@@ -1285,12 +1376,32 @@ fn write(
         options: &options,
         hit: None,
     });
-    // While slicing, edits stay in the visible part (hidden voxels are
-    // never touched); overlaps follow the operation, e.g. Add overwrites.
-    if let Some(clip) = doc.view_clip() {
-        changes.retain(|c| clip.contains(c.pos));
+    // While slicing, edits stay on the slice layer; overlaps follow the
+    // operation, e.g. Add overwrites. A mirror axis along the slice normal
+    // still writes its copy onto the mirrored slice (as Qubicle does).
+    if let Some(slab) = doc.edit_clip() {
+        let mirrored = mirrored_slab(&doc.plane, slab, doc.data.bounds, symmetry);
+        changes.retain(|c| slab.contains(c.pos) || mirrored.is_some_and(|m| m.contains(c.pos)));
     }
     doc.edit_voxels(layer, &changes);
+}
+
+/// Mirror image of the slice slab when `symmetry` mirrors along the slice
+/// normal.
+fn mirrored_slab(
+    plane: &WorkPlane,
+    slab: VoxelBox,
+    bounds: BoundSize,
+    symmetry: Symmetry,
+) -> Option<VoxelBox> {
+    let axis = plane.axis.min(2);
+    if ![symmetry.x, symmetry.y, symmetry.z][axis] {
+        return None;
+    }
+    let mut m = slab;
+    m.min[axis] = mirror(slab.min, bounds, axis)[axis];
+    m.max[axis] = m.min[axis] + 1;
+    Some(m)
 }
 
 /// Like [`write`] but reverts the drag's previous result first (tools that
@@ -1362,11 +1473,16 @@ fn place_plane(state: &mut AppState, hit: Option<RayHit>) {
     ));
 }
 
-/// `X = 4` style label of the plane position.
+/// `X = 4` style label of the plane position; while slicing `X 3 / 16`
+/// (1-based, like Qubicle's slice counter).
 pub fn plane_label(p: &WorkPlane, bounds: BoundSize) -> String {
     let axis = AXIS_NAMES[p.axis.min(2)];
     if p.slice {
-        format!("{axis} layer {}", p.slice_layer(bounds))
+        format!(
+            "{axis} {} / {}",
+            p.slice_layer(bounds) + 1,
+            p.slice_count(bounds)
+        )
     } else {
         format!("{axis} = {}", p.coord)
     }
@@ -1536,19 +1652,37 @@ fn plane_corners(p: &WorkPlane, bounds: BoundSize, at: f32) -> [Vec3; 4] {
     ]
 }
 
-/// Point (voxel space) of the active plane's outline within
-/// [`EDGE_GRAB`] points of the cursor, nearest first.
+/// Point (voxel space) of the active plane's outline, or while slicing of
+/// the bounds frame (Qubicle's Slice Selector), within [`EDGE_GRAB`] points
+/// of the cursor, nearest first.
 fn plane_edge_at(f: &Frame, doc: &Document, pos: Pos2) -> Option<Vec3> {
     let bounds = doc.data.bounds;
     let p = doc.plane.clamped(bounds);
     if !p.active() {
         return None;
     }
-    let q = plane_corners(&p, bounds, p.coord as f32);
+    let q = plane_corners(&p, bounds, p.sheet_coord(bounds) as f32);
+    let mut edges: Vec<(Vec3, Vec3)> = (0..4).map(|i| (q[i], q[(i + 1) % 4])).collect();
+    if p.slice {
+        let size = bounds.0.as_vec3();
+        let corner = |i: usize| {
+            Vec3::new(
+                if i & 1 == 0 { 0.0 } else { size.x },
+                if i & 2 == 0 { 0.0 } else { size.y },
+                if i & 4 == 0 { 0.0 } else { size.z },
+            )
+        };
+        for i in 0..8 {
+            for bit in [1, 2, 4] {
+                if i & bit == 0 {
+                    edges.push((corner(i), corner(i | bit)));
+                }
+            }
+        }
+    }
     let cursor = Vec2::new(pos.x, pos.y);
     let mut best: Option<(f32, Vec3)> = None;
-    for i in 0..4 {
-        let (a, b) = (q[i], q[(i + 1) % 4]);
+    for (a, b) in edges {
         let (Some(sa), Some(sb)) = (f.screen(a), f.screen(b)) else {
             continue;
         };
@@ -1575,14 +1709,15 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
     }
     let axis = p.axis;
     let color = axis_color(axis);
-    // While slicing, lift toward the hidden side so the quad never fights
-    // the voxel faces at the plane.
+    // While slicing, the sheet sits on the slice layer's far face, lifted
+    // toward the camera so it never fights the far side's voxel faces.
     let lift = if p.slice {
         p.hidden_sign() as f32 * 0.02
     } else {
         0.0
     };
-    let q = plane_corners(&p, bounds, p.coord as f32 + lift).map(|c| c + f.bmin);
+    let sheet = p.sheet_coord(bounds) as f32;
+    let q = plane_corners(&p, bounds, sheet + lift).map(|c| c + f.bmin);
     let (fill, width) = if p.slice {
         (
             Color32::from_rgba_unmultiplied(170, 170, 170, 70),
@@ -1601,7 +1736,7 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
         // Gizmo arrow (`docs/gizmo arrow.jpg`) pointing where a positive
         // drag moves the plane.
         let mut base = point;
-        base[axis] = p.coord as f32;
+        base[axis] = sheet;
         let base = base + f.bmin;
         let mut dir = Vec3::ZERO;
         dir[axis] = p.hidden_sign() as f32;
@@ -1737,7 +1872,7 @@ mod tests {
     }
 
     #[test]
-    fn slicing_edits_the_slab_and_visible_voxels_on_both_sides() {
+    fn slicing_picks_the_slice_layer_only() {
         let bounds = BoundSize::new(8, 8, 8);
         let mut plane = WorkPlane {
             axis: 0,
@@ -1745,8 +1880,6 @@ mod tests {
             ..WorkPlane::default()
         };
         plane.set_slice_layer(2, bounds);
-        // Slice layer 2 plus layer 3 beyond it stay visible.
-        assert_eq!(plane.clip_box(bounds).unwrap().max.x, 4);
         let from_right = Ray::new(Vec3::new(20.0, 3.5, 3.5), Vec3::NEG_X);
         let from_left = Ray::new(Vec3::new(-20.0, 3.5, 3.5), Vec3::X);
         let target = |hit: RayHit, additive: bool| {
@@ -1765,22 +1898,55 @@ mod tests {
             }
         }
 
-        // Voxels at x = 0 (behind the plane) and x = 3 (one layer beyond):
-        // both are visible and editable from their side.
+        // Voxels at x = 0 (far side) and x = 3, 6 (off the slice) are
+        // never picked: the ray goes through to the slice cell.
         let mut solid = VoxelVolume::new(bounds);
         for x in [0, 3, 6] {
             solid.set(IVec3::new(x, 3, 3), 1);
         }
         let is_solid = |p: IVec3| solid.get(p) != EMPTY_VOXEL;
+        for ray in [from_right, from_left] {
+            let hit = pick_with(&ray, bounds, &plane, true, false, is_solid).unwrap();
+            assert_eq!(hit.voxel, IVec3::new(2, 3, 3));
+            let hit = pick_with(&ray, bounds, &plane, false, false, is_solid);
+            assert_eq!(hit, None, "nothing pickable off the slice");
+        }
+
+        // A slice voxel is hit on its face; a side face adds within the
+        // slice.
+        solid.set(IVec3::new(2, 3, 3), 1);
+        let is_solid = |p: IVec3| solid.get(p) != EMPTY_VOXEL;
         let hit = pick_with(&from_right, bounds, &plane, true, false, is_solid).unwrap();
-        assert_eq!(hit.voxel, IVec3::new(3, 3, 3), "x = 6 is hidden");
-        let hit = pick_with(&from_left, bounds, &plane, true, false, is_solid).unwrap();
-        assert_eq!(hit.voxel, IVec3::new(0, 3, 3));
-        let hit = pick_with(&from_left, bounds, &plane, true, true, is_solid).unwrap();
+        assert_eq!((hit.voxel, hit.normal), (IVec3::new(2, 3, 3), IVec3::X));
+        let down = Ray::new(Vec3::new(2.5, 20.0, 3.5), Vec3::NEG_Y);
+        let hit = pick_with(&down, bounds, &plane, true, true, is_solid).unwrap();
+        assert_eq!(hit.adjacent(), IVec3::new(2, 4, 3));
+    }
+
+    #[test]
+    fn normal_axis_mirror_reaches_the_mirrored_slice() {
+        let bounds = BoundSize::new(17, 8, 9);
+        let mut plane = WorkPlane {
+            axis: 2,
+            slice: true,
+            ..WorkPlane::default()
+        };
+        plane.set_slice_layer(8, bounds);
+        let slab = plane.slice_box(bounds).unwrap();
+        let z = Symmetry {
+            z: true,
+            ..Symmetry::default()
+        };
+        let m = mirrored_slab(&plane, slab, bounds, z).unwrap();
+        assert_eq!((m.min.z, m.max.z), (0, 1), "z = 8 mirrors onto z = 0");
+        let x = Symmetry {
+            x: true,
+            ..Symmetry::default()
+        };
         assert_eq!(
-            hit.adjacent(),
-            IVec3::new(-1, 3, 3),
-            "outside: filtered later"
+            mirrored_slab(&plane, slab, bounds, x),
+            None,
+            "in-plane axis"
         );
     }
 

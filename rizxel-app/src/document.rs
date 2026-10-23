@@ -338,10 +338,16 @@ impl Document {
         })
     }
 
-    /// Region shown in the viewport: the kept side of the slice plane, or
-    /// `None` (everything) when not slicing.
+    /// Region shown in the viewport: the slice layer and the far side of
+    /// it, or `None` (everything) when not slicing.
     pub fn view_clip(&self) -> Option<VoxelBox> {
         self.plane.clip_box(self.data.bounds)
+    }
+
+    /// Region tools may pick and edit: the slice layer while slicing, or
+    /// `None` (everything) otherwise.
+    pub fn edit_clip(&self) -> Option<VoxelBox> {
+        self.plane.slice_box(self.data.bounds)
     }
 
     /// Viewport mesh: like [`Document::visible_mesh`] but clipped to
@@ -417,6 +423,7 @@ impl Document {
     /// target (e.g. continuous drag of a bound value), the two are combined
     /// into a single undo step.
     pub fn apply(&mut self, edit: Edit, merge: bool) {
+        self.tag_history();
         edit.apply(&mut self.data);
         self.history.push(edit, merge);
         self.touch();
@@ -432,10 +439,14 @@ impl Document {
 
     /// Undoes the last step (an edit in progress is committed first, so it
     /// is what gets undone).
+    /// While slicing, the slice moves back to the one the step was made on.
     pub fn undo(&mut self) -> bool {
         let done = self.history.undo(&mut self.data);
         if done {
             self.touch();
+            if let Some(p) = self.history.undone_plane() {
+                self.plane.restore_slice(&p, self.data.bounds);
+            }
         }
         done
     }
@@ -444,8 +455,16 @@ impl Document {
         let done = self.history.redo(&mut self.data);
         if done {
             self.touch();
+            if let Some(p) = self.history.redone_plane() {
+                self.plane.restore_slice(&p, self.data.bounds);
+            }
         }
         done
+    }
+
+    /// Records the current slice with the next undo steps.
+    fn tag_history(&mut self) {
+        self.history.tag = self.plane.slice.then_some(self.plane);
     }
 
     // ---------------------------------------------------------- transactions
@@ -453,6 +472,9 @@ impl Document {
     /// Opens an edit transaction: every voxel change until
     /// [`Document::commit_edit`] becomes one undo step (one tool drag).
     pub fn begin_edit(&mut self) {
+        if !self.is_editing() {
+            self.tag_history();
+        }
         self.history.begin_transaction();
     }
 

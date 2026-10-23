@@ -240,34 +240,35 @@ fn slice_view_clips_the_mesh_and_cut_removes_the_hidden_side() {
     d.plane.axis = 0;
     d.plane.coord = 2;
     d.plane.slice = true;
-    // Slice layer 1 plus layer 2 beyond it: a 3x4x4 box, still a closed
-    // box of 6 greedy quads.
-    assert_eq!(d.view_clip().unwrap().max.x, 3);
+    // Slice layer 1 and the far side behind it: a 2x4x4 box, still a
+    // closed box of 6 greedy quads.
+    assert_eq!(d.view_clip().unwrap().max.x, 2);
     assert_eq!(d.view_mesh().triangle_count(), full);
     assert_eq!(d.visible_voxel_count(), 64, "slicing is view-only");
 
     let out = d.cut_hidden_side(false, 9);
-    assert_eq!(out.removed, 16);
-    assert!(d.data.layers[0].volume.iter().all(|(p, _)| p.x < 3));
+    assert_eq!(out.removed, 32);
+    assert!(d.data.layers[0].volume.iter().all(|(p, _)| p.x < 2));
     assert!(d.undo());
     assert_eq!(d.visible_voxel_count(), 64);
 }
 
 #[test]
-fn slice_edits_merge_back_when_slice_is_unticked() {
+fn slice_edits_merge_back_when_slice_is_turned_off() {
     let mut d = Document::with_layers("t", vec![solid_layer("A", 2)]);
     d.plane.axis = 0;
     d.plane.slice = true;
     let bounds = d.data.bounds;
-    // Slice layer 1: layers 0..=2 visible, x = 3 hidden.
+    // Slice layer 1: only x = 1 is editable.
     d.plane.set_slice_layer(1, bounds);
-    let edit = d.view_clip().unwrap();
-    // Paint over a voxel in the slice layer and add one on the visible layer
-    // beyond it; a write on the hidden side is what tools filter away.
+    let edit = d.edit_clip().unwrap();
+    assert_eq!((edit.min.x, edit.max.x), (1, 2));
+    // Paint over a voxel and add one in the slice layer; a write off the
+    // slice is what tools filter away.
     let writes = [
         set(IVec3::new(1, 0, 0), 7),
-        set(IVec3::new(2, 6, 0), 7),
-        set(IVec3::new(3, 0, 0), 7),
+        set(IVec3::new(1, 6, 0), 7),
+        set(IVec3::new(0, 0, 0), 7),
     ];
     let inside: Vec<VoxelChange> = writes
         .into_iter()
@@ -278,9 +279,36 @@ fn slice_edits_merge_back_when_slice_is_unticked() {
 
     d.plane.slice = false;
     assert_eq!(d.view_clip(), None);
+    assert_eq!(d.edit_clip(), None);
     let v = &d.data.layers[0].volume;
     assert_eq!(v.get(IVec3::new(1, 0, 0)), 7, "latest edit wins");
-    assert_eq!(v.get(IVec3::new(2, 6, 0)), 7);
-    assert_eq!(v.get(IVec3::new(3, 0, 0)), 2, "hidden side untouched");
+    assert_eq!(v.get(IVec3::new(1, 6, 0)), 7);
+    assert_eq!(v.get(IVec3::new(0, 0, 0)), 2, "off-slice voxel untouched");
     assert_eq!(v.voxel_count(), 65);
+}
+
+#[test]
+fn undo_and_redo_move_the_slice_back_to_the_edit() {
+    let mut d = Document::new("t");
+    let bounds = d.data.bounds;
+    d.plane.toggle_slice(None, bounds);
+    d.plane.set_slice_layer(9, bounds);
+    d.edit_voxels(0, &[set(IVec3::new(0, 9, 0), 3)]);
+    // Slice moves are not undo steps.
+    d.plane.set_slice_layer(0, bounds);
+    d.plane.axis = 2;
+    assert!(d.undo());
+    assert_eq!((d.plane.axis, d.plane.slice_layer(bounds)), (1, 9));
+    assert_eq!(d.visible_voxel_count(), 0);
+    d.plane.set_slice_layer(2, bounds);
+    assert!(d.redo());
+    assert_eq!(d.plane.slice_layer(bounds), 9);
+    assert_eq!(d.visible_voxel_count(), 1);
+    // A step made without slicing leaves the slice alone.
+    d.plane.toggle_slice(None, bounds);
+    d.edit_voxels(0, &[set(IVec3::new(1, 1, 1), 3)]);
+    d.plane.toggle_slice(None, bounds);
+    d.plane.set_slice_layer(4, bounds);
+    assert!(d.undo());
+    assert_eq!(d.plane.slice_layer(bounds), 4);
 }

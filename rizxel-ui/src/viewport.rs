@@ -12,6 +12,10 @@
 //! [`crate::tool_input`]; their hover highlights and ghosts are drawn with
 //! the same fill/line paths as the rest of the overlays.
 //!
+//! Slice Mode: the side between the slice and the camera is hidden every
+//! frame ([`rizxel_engine::WorkPlane::face_camera`]), and a slice slider runs
+//! along the right edge (Qubicle's Slice Slider).
+//!
 //! Controls: left drag = active tool, wheel = zoom, right drag = orbit,
 //! middle drag = pan, middle double-click = reset camera.
 
@@ -180,14 +184,6 @@ pub fn show(
     let bounds = state.doc().map(|d| d.data.bounds).unwrap_or_default();
     let (bmin, bmax) = bounds_box(bounds);
     meshes.retain_open(&state.documents);
-    let voxels = state.doc().map(|d| meshes.get(d));
-    // Box around the visible voxels, in world space, when it is smaller than
-    // the bounds (shows how much of the editable volume the model uses).
-    let occupied = state
-        .doc()
-        .and_then(Document::occupied_bounds)
-        .filter(|&(lo, hi)| lo != IVec3::ZERO || hi != bounds.0.as_ivec3())
-        .map(|(lo, hi)| (bmin + lo.as_vec3(), bmin + hi.as_vec3()));
 
     // --- Camera input ------------------------------------------------------
     // Right drag: orbit. Middle drag: pan. Wheel: zoom. Left is reserved for tools.
@@ -211,19 +207,37 @@ pub fn show(
     let target = Vec3::new(0.0, bmax.y * 0.4, 0.0) + state.camera.pan;
     let proj = Projection::new(&state.camera, target, rect);
 
+    // --- Slice Mode: hide the camera's side, slider on the right edge -------
+    if let Some(doc) = state.doc_mut() {
+        doc.plane.face_camera(proj.eye() - bmin, bounds);
+    }
+    let slider = slice_slider(ui, state, rect);
+
+    let voxels = state.doc().map(|d| meshes.get(d));
+    // Box around the visible voxels, in world space, when it is smaller than
+    // the bounds (shows how much of the editable volume the model uses).
+    let occupied = state
+        .doc()
+        .and_then(Document::occupied_bounds)
+        .filter(|&(lo, hi)| lo != IVec3::ZERO || hi != bounds.0.as_ivec3())
+        .map(|(lo, hi)| (bmin + lo.as_vec3(), bmin + hi.as_vec3()));
+
     // --- Tools (picking, drag state machine, previews) ----------------------
     let cube_rect = Rect::from_min_size(
         Pos2::new(rect.right() - 100.0, rect.top() + 16.0),
         Vec2::splat(84.0),
     );
     let ppp = ui.ctx().pixels_per_point();
+    let blocked: Vec<Rect> = std::iter::once(cube_rect)
+        .chain(slider.map(|(r, _)| r))
+        .collect();
     let preview = tools.update(
         &tool_input::Frame {
             ui,
             response: &response,
             proj: &proj,
             bmin,
-            blocked: cube_rect,
+            blocked: &blocked,
             pixels_per_point: ppp,
         },
         state,
@@ -275,12 +289,129 @@ pub fn show(
     }
 
     // --- Overlays -----------------------------------------------------------
+    if let Some((track, active)) = slider {
+        paint_slice_slider(&painter, state, track, active);
+    }
     if let Some(target) = view_cube(ui, &state.camera, cube_rect) {
         state.camera.snap(target);
     }
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
+}
+
+/// Width of the slice slider, in logical points.
+const SLIDER_WIDTH: f32 = 12.0;
+
+/// Track of the slice slider inside the viewport `rect`: along the right
+/// edge, between the view cube and the axis gizmo.
+fn slider_track(rect: Rect) -> Rect {
+    let right = rect.right() - 8.0;
+    Rect::from_min_max(
+        Pos2::new(right - SLIDER_WIDTH, rect.top() + 116.0),
+        Pos2::new(right, (rect.bottom() - 104.0).max(rect.top() + 160.0)),
+    )
+}
+
+/// Slider position `t` (0 at the top, 1 at the bottom) of `layer`. Qubicle's
+/// direction: up on the slider is up (Y) or back (X, Z) on screen, so the
+/// bottom end is the first Y slice and the top end the first X or Z slice.
+fn slider_t(axis: usize, layer: i32, count: i32) -> f32 {
+    let count = count.max(1) as f32;
+    let from_top = if axis == 1 {
+        count - 1.0 - layer as f32
+    } else {
+        layer as f32
+    };
+    from_top / count
+}
+
+/// Layer under slider position `t` (inverse of [`slider_t`]).
+fn slider_layer(axis: usize, t: f32, count: i32) -> i32 {
+    let i = ((t * count as f32).floor() as i32).clamp(0, count.max(1) - 1);
+    if axis == 1 {
+        count - 1 - i
+    } else {
+        i
+    }
+}
+
+/// Qubicle's Slice Slider: a thin vertical slider whose thumb is one slice
+/// tall, shown only while slicing. Click or drag sets the slice (no undo
+/// step). Returns the track it owns and whether it is hovered or dragged;
+/// [`paint_slice_slider`] draws it over the scene.
+fn slice_slider(ui: &mut Ui, state: &mut AppState, rect: Rect) -> Option<(Rect, bool)> {
+    let (axis, _, count) = state.slice_counter()?;
+    let track = slider_track(rect);
+    // Driven from the raw pointer: the viewport's own drag-sensing response
+    // covers the track, and tool presses inside it are blocked.
+    let id = ui.id().with("slice_slider");
+    let (pressed, down, pos) = ui.input(|i| {
+        (
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.pointer.primary_down(),
+            i.pointer.latest_pos(),
+        )
+    });
+    let over = pos.is_some_and(|p| track.expand(2.0).contains(p));
+    let mut dragging = ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if pressed && over {
+        dragging = true;
+    }
+    if !down {
+        dragging = false;
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(id, dragging));
+    if let (true, Some(pos)) = (dragging, pos) {
+        let t = (pos.y - track.top()) / track.height().max(1.0);
+        let layer = slider_layer(axis, t, count);
+        if let Some(doc) = state.doc_mut() {
+            let bounds = doc.data.bounds;
+            doc.plane.set_slice_layer(layer, bounds);
+        }
+    }
+    let active = over || dragging;
+    if active {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    Some((track, active))
+}
+
+/// Draws the slice slider (`track` from [`slice_slider`]).
+fn paint_slice_slider(painter: &egui::Painter, state: &AppState, track: Rect, active: bool) {
+    let Some((axis, n, count)) = state.slice_counter() else {
+        return;
+    };
+    let layer = n - 1;
+    painter.rect_filled(track, 3.0, Color32::from_black_alpha(90));
+    let thumb_h = (track.height() / count.max(1) as f32).max(6.0);
+    let t = slider_t(axis, layer, count);
+    let top = (track.top() + t * track.height()).min(track.bottom() - thumb_h);
+    let thumb = Rect::from_min_size(
+        Pos2::new(track.left(), top),
+        Vec2::new(SLIDER_WIDTH, thumb_h),
+    );
+    let color = if active {
+        theme::TEXT_STRONG
+    } else {
+        Color32::from_gray(200)
+    };
+    painter.rect_filled(thumb, 3.0, color);
+    painter.rect_stroke(
+        thumb,
+        3.0,
+        Stroke::new(1.0, tool_input::axis_color(axis)),
+        egui::StrokeKind::Inside,
+    );
+    if active {
+        painter.text(
+            Pos2::new(track.left() - 6.0, thumb.center().y),
+            Align2::RIGHT_CENTER,
+            format!("{} {} / {count}", ["X", "Y", "Z"][axis], layer + 1),
+            theme::semibold(11.0),
+            theme::TEXT_STRONG,
+        );
+    }
 }
 
 /// Builds the GPU scene description for this frame.
@@ -740,8 +871,8 @@ mod tests {
                 .iter()
                 .map(|v| v.pos[0])
                 .fold(f32::MIN, f32::max);
-            // One layer beyond the plane stays visible.
-            let expected = (coord + 1).min(4) as f32;
+            // The slice layer and the far side below it stay visible.
+            let expected = coord as f32;
             assert_eq!(max_x, bmin.x + expected, "plane at x = {coord}");
             keys.push(mesh.key);
         }
@@ -756,6 +887,21 @@ mod tests {
         keys.push(full.key);
         let unique: std::collections::HashSet<_> = keys.iter().collect();
         assert_eq!(unique.len(), keys.len());
+    }
+
+    #[test]
+    fn slider_runs_like_qubicle() {
+        // Y: bottom = first slice; X and Z: top = first slice.
+        assert_eq!(slider_layer(1, 0.99, 16), 0);
+        assert_eq!(slider_layer(1, 0.0, 16), 15);
+        assert_eq!(slider_layer(2, 0.0, 9), 0);
+        assert_eq!(slider_layer(0, 1.0, 9), 8);
+        for axis in 0..3 {
+            for layer in 0..9 {
+                let t = slider_t(axis, layer, 9) + 0.5 / 9.0;
+                assert_eq!(slider_layer(axis, t, 9), layer);
+            }
+        }
     }
 
     #[test]
