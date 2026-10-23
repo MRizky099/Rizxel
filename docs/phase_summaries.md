@@ -199,7 +199,7 @@ Plan: [`rizxel_phase8_implementation_plan.md`](plan/rizxel_phase8_implementation
 
 Plan: [`rizxel_phase9_implementation_plan.md`](plan/rizxel_phase9_implementation_plan.md)
 
-**Delivered** (branch `claude/busy-edison-9d3ab1`, not yet released)
+**Delivered** (PR #4, CI green; release pending)
 - Orthographic camera with `Numpad 5`, a view cube toggle, Auto Ortho on face and corner
   snaps, true isometric corners, parallel picking rays, and Frame Selection, Frame Work
   Area and Home View (`fd7d3a8`).
