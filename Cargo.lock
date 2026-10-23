@@ -1518,6 +1518,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2725,6 +2727,7 @@ name = "rizxel-io"
 version = "0.4.0"
 dependencies = [
  "glam",
+ "image",
  "png",
  "rizxel-engine",
  "rizxel-math",

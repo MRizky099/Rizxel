@@ -2,7 +2,8 @@
 //! Extrude, Fill, Shape, and a randomized undo/redo round trip over all of
 //! them (extended in Phase 8 with copy, cut, paste and the transforms, and in
 //! Phase 10 with the selection operations, Mask Mode and the structure and
-//! palette operations, and in Phase 10b with the layer hierarchy).
+//! palette operations, and in Phase 10b with the layer hierarchy and the
+//! reference images).
 
 use glam::IVec3;
 use rizxel_app::{
@@ -459,13 +460,47 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 }
             }
         }
+        // Phase 10b: reference images.
+        27 => {
+            let n = d.data.references.len();
+            let i = rng.below(n.max(1) as u64) as usize;
+            match rng.below(6) {
+                0 | 1 => {
+                    let plane = rizxel_math::RefPlane::ALL[rng.below(3) as usize];
+                    let image = rizxel_math::ImageData::new(vec![1, 2, 3], 4, 2);
+                    d.add_reference("ref", image, plane);
+                }
+                2 => {
+                    d.remove_reference(i);
+                }
+                3 => {
+                    let z = rng.below(9) as f32;
+                    let merge = rng.below(2) == 0;
+                    d.update_reference(i, merge, |r| {
+                        r.offset.z = z;
+                        r.opacity = z / 8.0;
+                        r.rotation = (r.rotation + 1) % 4;
+                    });
+                }
+                4 => {
+                    d.move_reference(i, rng.below(n.max(1) as u64) as usize);
+                }
+                _ => {
+                    if rng.below(2) == 0 {
+                        d.toggle_all_references();
+                    } else {
+                        d.duplicate_reference(i);
+                    }
+                }
+            }
+        }
         _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 27;
+const OPS: usize = 28;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {

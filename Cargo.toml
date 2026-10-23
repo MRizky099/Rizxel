@@ -36,7 +36,7 @@ thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
 rfd = "0.17"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 winresource = "0.1"
 # egui-phosphor 0.14 targets egui 0.36, so eframe/egui are pinned to 0.36.
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "x11", "wayland"] }

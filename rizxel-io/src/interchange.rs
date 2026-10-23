@@ -144,6 +144,7 @@ pub fn build_project(
         active_layer: layers.len() - 1,
         layers,
         bounds,
+        references: Vec::new(),
     };
     project.validate()?;
     Ok(project)

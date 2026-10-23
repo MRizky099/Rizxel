@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use glam::IVec3;
-use rizxel_math::{BoundSize, Material, Palette, Rgba8, Voxel};
+use rizxel_math::{BoundSize, Material, Palette, ReferenceImage, Rgba8, Voxel};
 
 use crate::document::{DocData, Layer, LayerProps};
 use crate::selection::Selection;
@@ -98,6 +98,25 @@ pub enum Edit {
         old: Selection,
         new: Selection,
     },
+    InsertReference {
+        index: usize,
+        reference: ReferenceImage,
+    },
+    RemoveReference {
+        index: usize,
+        reference: ReferenceImage,
+    },
+    /// Any property of one reference image (placement, visibility, ...).
+    SetReference {
+        index: usize,
+        old: ReferenceImage,
+        new: ReferenceImage,
+    },
+    /// Reorders the reference images (draw order).
+    MoveReference {
+        from: usize,
+        to: usize,
+    },
 }
 
 impl Edit {
@@ -145,6 +164,17 @@ impl Edit {
                     l.selection = new.clone();
                 }
             }
+            Edit::InsertReference { index, reference } => {
+                data.references.insert(*index, reference.clone());
+            }
+            Edit::RemoveReference { index, .. } => {
+                data.references.remove(*index);
+            }
+            Edit::SetReference { index, new, .. } => data.references[*index] = new.clone(),
+            Edit::MoveReference { from, to } => {
+                let r = data.references.remove(*from);
+                data.references.insert(*to, r);
+            }
         }
     }
 
@@ -189,6 +219,17 @@ impl Edit {
                     l.selection = old.clone();
                 }
             }
+            Edit::InsertReference { index, .. } => {
+                data.references.remove(*index);
+            }
+            Edit::RemoveReference { index, reference } => {
+                data.references.insert(*index, reference.clone());
+            }
+            Edit::SetReference { index, old, .. } => data.references[*index] = old.clone(),
+            Edit::MoveReference { from, to } => {
+                let r = data.references.remove(*to);
+                data.references.insert(*from, r);
+            }
         }
     }
 
@@ -221,6 +262,20 @@ impl Edit {
             Edit::SetPalette { .. } => "Palette".to_owned(),
             Edit::SetSelection { new, .. } if new.is_empty() => "Deselect".to_owned(),
             Edit::SetSelection { new, .. } => format!("Select {} Voxels", new.len()),
+            Edit::InsertReference { reference, .. } => {
+                format!("Add Reference \"{}\"", reference.name)
+            }
+            Edit::RemoveReference { reference, .. } => {
+                format!("Delete Reference \"{}\"", reference.name)
+            }
+            Edit::SetReference { old, new, .. } if old.visible != new.visible => if new.visible {
+                "Show Reference"
+            } else {
+                "Hide Reference"
+            }
+            .to_owned(),
+            Edit::SetReference { new, .. } => format!("Reference \"{}\"", new.name),
+            Edit::MoveReference { .. } => "Move Reference".to_owned(),
         }
     }
 
@@ -261,6 +316,16 @@ impl Edit {
             (Edit::SetMaterials { new, .. }, Edit::SetMaterials { new: n, .. })
                 if new.len() == n.len() =>
             {
+                *new = n.clone();
+                true
+            }
+            // Reference drags (offset, size, opacity) become one step.
+            (
+                Edit::SetReference { index, new, .. },
+                Edit::SetReference {
+                    index: i, new: n, ..
+                },
+            ) if index == i => {
                 *new = n.clone();
                 true
             }
@@ -573,6 +638,7 @@ mod tests {
             layers: vec![Layer::new("A", BoundSize::default())],
             bounds: BoundSize::default(),
             materials: Vec::new(),
+            references: Vec::new(),
         }
     }
 

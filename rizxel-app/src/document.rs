@@ -17,8 +17,9 @@ use rizxel_engine::{
 };
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
-    BoundSize, LayerId, LayerKind, Material, Palette, Rgba8, ShapeKind, Voxel, VoxelBox,
-    VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX, MAX_PALETTE_COLORS,
+    BoundSize, ImageData, LayerId, LayerKind, Material, Palette, RefPlane, ReferenceId,
+    ReferenceImage, Rgba8, ShapeKind, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
+    MAX_PALETTE_COLORS,
 };
 
 use crate::clipboard::Clipboard;
@@ -101,6 +102,8 @@ pub struct DocData {
     pub bounds: BoundSize,
     /// Materials referenced by [`LayerProps::material`].
     pub materials: Vec<Material>,
+    /// Reference images, in draw order.
+    pub references: Vec<ReferenceImage>,
 }
 
 impl DocData {
@@ -430,6 +433,9 @@ pub struct Document {
     pub data: DocData,
     /// Index into `data.layers`. Not part of undo history.
     pub active_layer: usize,
+    /// Index into `data.references` (the References panel's selected row).
+    /// Not part of undo history.
+    pub active_reference: usize,
     /// Index into `data.palette`. Not part of undo history.
     pub selected_color: usize,
     /// Plane tool work plane / slice view. Not part of undo history.
@@ -486,8 +492,10 @@ impl Document {
                 layers,
                 bounds,
                 materials: Vec::new(),
+                references: Vec::new(),
             },
             active_layer: 0,
+            active_reference: 0,
             selected_color: Palette::DEFAULT_SELECTED,
             plane: WorkPlane::default(),
             history: History::default(),
@@ -3131,6 +3139,171 @@ impl Document {
             .expect("infinite iterator")
     }
 
+    // ------------------------------------------------------- references
+
+    /// Next free reference id.
+    fn next_reference_id(&self) -> ReferenceId {
+        self.data
+            .references
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    /// Adds a reference image on `plane`, fitted into the bounds face and
+    /// drawn above the others, and selects it. Refused at
+    /// [`rizxel_io::MAX_REFERENCES`].
+    pub fn add_reference(
+        &mut self,
+        name: impl Into<String>,
+        image: ImageData,
+        plane: RefPlane,
+    ) -> Option<ReferenceId> {
+        if self.data.references.len() >= rizxel_io::MAX_REFERENCES {
+            return None;
+        }
+        let id = self.next_reference_id();
+        let reference = ReferenceImage::fitted(id, name, image, plane, self.data.bounds);
+        let index = self.data.references.len();
+        self.apply(Edit::InsertReference { index, reference }, false);
+        self.active_reference = index;
+        Some(id)
+    }
+
+    pub fn remove_reference(&mut self, index: usize) -> bool {
+        let Some(reference) = self.data.references.get(index).cloned() else {
+            return false;
+        };
+        self.apply(Edit::RemoveReference { index, reference }, false);
+        self.active_reference = index.saturating_sub(1);
+        true
+    }
+
+    /// Replaces reference `index` with `new` (same id) as one undo step;
+    /// `merge` folds slider and field drags. Refused for invalid values.
+    pub fn set_reference(&mut self, index: usize, new: ReferenceImage, merge: bool) -> bool {
+        let Some(old) = self.data.references.get(index).cloned() else {
+            return false;
+        };
+        if old == new || old.id != new.id || !new.is_valid() {
+            return false;
+        }
+        self.apply(Edit::SetReference { index, old, new }, merge);
+        true
+    }
+
+    /// Changes reference `index` through `f` (see [`Document::set_reference`]).
+    pub fn update_reference(
+        &mut self,
+        index: usize,
+        merge: bool,
+        f: impl FnOnce(&mut ReferenceImage),
+    ) -> bool {
+        let Some(mut new) = self.data.references.get(index).cloned() else {
+            return false;
+        };
+        f(&mut new);
+        self.set_reference(index, new, merge)
+    }
+
+    /// Moves a reference in the draw order; the selection follows it.
+    pub fn move_reference(&mut self, from: usize, to: usize) -> bool {
+        let len = self.data.references.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        self.apply(Edit::MoveReference { from, to }, false);
+        self.active_reference = to;
+        true
+    }
+
+    /// Copies reference `index` just above itself (the image bytes are
+    /// shared) and selects the copy.
+    pub fn duplicate_reference(&mut self, index: usize) -> bool {
+        let Some(source) = self.data.references.get(index) else {
+            return false;
+        };
+        if self.data.references.len() >= rizxel_io::MAX_REFERENCES {
+            return false;
+        }
+        let reference = ReferenceImage {
+            id: self.next_reference_id(),
+            name: format!("{} copy", source.name),
+            ..source.clone()
+        };
+        self.apply(
+            Edit::InsertReference {
+                index: index + 1,
+                reference,
+            },
+            false,
+        );
+        self.active_reference = index + 1;
+        true
+    }
+
+    /// Gives reference `index` a new image, keeping its placement and
+    /// width (the height follows the new aspect ratio).
+    pub fn replace_reference_image(&mut self, index: usize, image: ImageData) -> bool {
+        self.update_reference(index, false, |r| {
+            let aspect = image.height.max(1) as f32 / image.width.max(1) as f32;
+            r.size.y = r.size.x * aspect;
+            r.image = image;
+        })
+    }
+
+    /// Shows or hides every reference image as one undo step.
+    pub fn set_all_references_visible(&mut self, visible: bool) -> bool {
+        let edits: Vec<Edit> = self
+            .data
+            .references
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.visible != visible)
+            .map(|(index, r)| Edit::SetReference {
+                index,
+                old: r.clone(),
+                new: ReferenceImage {
+                    visible,
+                    ..r.clone()
+                },
+            })
+            .collect();
+        if edits.is_empty() {
+            return false;
+        }
+        let label = if visible {
+            "Show All References"
+        } else {
+            "Hide All References"
+        };
+        self.labeled(label, |d| d.apply(Edit::Batch(edits), false));
+        true
+    }
+
+    /// *Show All / Hide All* (`Alt+R`): hides every reference when any is
+    /// visible, otherwise shows them all.
+    pub fn toggle_all_references(&mut self) -> bool {
+        let any = self.data.references.iter().any(|r| r.visible);
+        self.set_all_references_visible(!any)
+    }
+
+    /// Puts the work plane on reference `index`'s plane and position, so
+    /// the Plane tool draws straight onto it.
+    pub fn align_work_plane_to_reference(&mut self, index: usize) -> bool {
+        let Some(r) = self.data.references.get(index) else {
+            return false;
+        };
+        let axis = r.plane.normal_axis();
+        let max = self.data.bounds.0[axis] as i32;
+        self.plane.axis = axis;
+        self.plane.coord = (r.offset[axis].round() as i32).clamp(0, max);
+        self.plane.visible = true;
+        true
+    }
+
     // ---------------------------------------------------------- file I/O
 
     pub fn to_project(&self) -> ProjectFile {
@@ -3163,6 +3336,7 @@ impl Document {
                 .collect(),
             active_layer: self.active_layer,
             bounds: self.data.bounds,
+            references: self.data.references.clone(),
         }
     }
 
@@ -3208,6 +3382,7 @@ impl Document {
         let mut doc = Self::with_bounds(project.name, bounds, layers);
         doc.data.palette = project.palette;
         doc.data.materials = project.materials;
+        doc.data.references = project.references;
         doc.active_layer = active;
         doc.selected_color = project.selected_color;
         doc.path = path;
