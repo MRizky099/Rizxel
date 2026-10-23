@@ -18,6 +18,8 @@ pub mod format_vox;
 pub mod interchange;
 pub mod mesh_import;
 pub mod png_io;
+#[cfg(test)]
+mod test_samples;
 
 pub use format_gox::{read_gox, write_gox, GOX_EXTENSION};
 pub use format_mtl::{palette_from_mtl, read_mtl, MtlMaterial, MTL_EXTENSION};

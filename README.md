@@ -63,6 +63,15 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
+A few tests compare against real files: MagicaVoxel's `chr_knight.vox` sample, its
+`chr_knight.obj` export from MagicaVoxel, and a Goxel file named `coba_goxel.gox`. They
+look for them in the folders listed in `RIZXEL_SAMPLES` (separated with `;` on Windows,
+`:` elsewhere) and skip when it is unset, as on CI. In PowerShell:
+
+```powershell
+$env:RIZXEL_SAMPLES = "D:\samples\magicavoxel;D:\samples\goxel"
+```
+
 ## Controls
 
 | Input | Action |

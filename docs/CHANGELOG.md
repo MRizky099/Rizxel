@@ -19,6 +19,10 @@ sections below keep the per-phase notes, newest first.
   request.
 
 #### Changed
+- Tests that compare against real sample files (`chr_knight.vox`, its
+  MagicaVoxel `chr_knight.obj` export, `coba_goxel.gox`) find them through
+  the `RIZXEL_SAMPLES` folder list instead of fixed local paths, and skip
+  when it is unset.
 - `.tmp-craft/` is ignored, so a local `craft-ui` checkout can't be
   committed by accident.
 
@@ -353,8 +357,8 @@ Qubicle-style global slice editing. Comparison:
   load instead of producing a broken document).
 - Architecture plan: Phase 4 marked done; L0/L1 descriptions updated (u8
   voxels in tiles, in-house greedy mesher instead of `block_mesh`); local
-  reference clones of CADCraft (`cadcraft`, with its current crate
-  layering) and Goxel are listed.
+  reference clones of CADCraft (with its current crate layering) and Goxel
+  are listed.
 
 ### UI Optimization: View Cube, Zen Mode, Resizable Panels
 

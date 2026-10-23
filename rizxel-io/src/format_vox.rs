@@ -865,7 +865,9 @@ mod tests {
 
     #[test]
     fn reads_magicavoxel_sample_when_installed() {
-        let path = std::path::Path::new("chr_knight.vox");
+        let Some(path) = crate::test_samples::sample("chr_knight.vox") else {
+            return; // sample not available on this machine
+        };
         let Ok(bytes) = std::fs::read(path) else {
             return; // sample not available on this machine
         };

@@ -971,7 +971,9 @@ mod tests {
 
     #[test]
     fn reads_users_goxel_file_when_present() {
-        let path = std::path::Path::new("coba_goxel.gox");
+        let Some(path) = crate::test_samples::sample("coba_goxel.gox") else {
+            return;
+        };
         let Ok(bytes) = std::fs::read(path) else {
             return;
         };

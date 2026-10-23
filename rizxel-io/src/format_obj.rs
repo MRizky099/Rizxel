@@ -3,8 +3,8 @@
 //! ## Export (MagicaVoxel layout)
 //!
 //! [`write_obj_set`] writes `name.obj`, `name.mtl` and `name.png` in the same
-//! layout as MagicaVoxel's OBJ export (reference:
-//! `chr_knight.obj`):
+//! layout as MagicaVoxel's OBJ export (reference: MagicaVoxel's own
+//! `chr_knight.obj` export of its `chr_knight.vox` sample):
 //!
 //! - **Text**: CRLF lines. A `# Rizxel @ Abati Technology` header, then the
 //!   `# group`, `# material`, `# normals`, `# texcoords`, `# verts` and
@@ -633,8 +633,13 @@ mod tests {
     fn matches_magicavoxel_reference_when_present() {
         // The knight imported from MagicaVoxel and exported again lands on
         // exactly the same surface as MagicaVoxel's own OBJ export.
-        let vox = std::path::Path::new("chr_knight.vox");
-        let obj = std::path::Path::new("chr_knight.obj");
+        // Both files come from `RIZXEL_SAMPLES` (see `test_samples`).
+        let (Some(vox), Some(obj)) = (
+            crate::test_samples::sample("chr_knight.vox"),
+            crate::test_samples::sample("chr_knight.obj"),
+        ) else {
+            return;
+        };
         let (Ok(vox), Ok(reference)) = (std::fs::read(vox), std::fs::read_to_string(obj)) else {
             return;
         };
