@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.3.0`: Phases 1–8, 261 tests) and a
+Gaps between the current build (`v0.3.0` plus Phase 9: Phases 1–9, 289 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -30,6 +30,12 @@ The **Phase** column names the plan that closes the gap (see
 | No 90° rotate, flip or mirror | Phase 8, `50f2000` |
 | The Edit menu is minimal | Phase 8, `18bba53` |
 | No way to move or copy a selection into a new layer | Phase 8: Cut or Copy, then *Paste to New Layer* |
+| No orthographic camera, isometric presets or frame commands | Phase 9, `fd7d3a8` |
+| Floor grid and model bounds can't be hidden, and there's no voxel grid on the model | Phase 9, `709c51c` |
+| Opacity is stored but not rendered; no ghosts | Phase 9, `54556fd` |
+| Materials are stored but not rendered | Phase 9, `dc052ad` (Render mode) |
+| No ambient occlusion in Render mode | Phase 9, `22600dd` |
+| Meshing runs on the UI thread | Phase 9, `e4bafa4` (large updates; small edits stay on the UI thread on purpose) |
 
 ## Known bugs
 
@@ -39,7 +45,8 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| Opacity and materials are stored but not rendered | High | 9 | `.rzxl` v3 saves layer `opacity` and `materials` (metallic, roughness, emission, tint), but the renderer ignores them. Users can edit values that have no visible effect. |
+| Materials show in Render mode only | Low | — | On purpose: Model mode stays flat for editing. The tint's alpha (opacity) works in both modes. |
+| A document's 256th material shares the last renderer slot | Low | post | The renderer's table has 256 slots and slot 0 is the default material, so material 255 shows as material 254. Files are unaffected. |
 | Bounds are limited to 256³ | Medium | post | `BoundSize` is clamped to `1..=256` and imports above 256 on any axis are refused. MagicaVoxel scenes can be larger. |
 | One shared grid for all layers | Medium | post | Qubicle matrices have their own size and position; needed for Align/Distribute and exact `.qb` multi-matrix layouts. |
 | Palette is limited to 255 colors, with no per-voxel RGBA | Medium | post | `Voxel = u8`. True-color imports (Goxel, OBJ textures) are quantized with median cut, so colors are lost. |
@@ -84,9 +91,7 @@ No open bugs are known. Fixed bugs move to the table above.
 |---|---|---|---|
 | No Settings or Preferences dialog, and shortcuts are fixed | Medium | 12 | The toolbar settings button is a stub (`panels/tools.rs:45`). Shortcuts, theme, grid and the undo limit can't be configured. |
 | No start screen | Low | 12 | |
-| No orthographic camera, isometric presets or frame commands | Medium | 9 | The view cube snaps angles, but the projection is always perspective. Rated High for slice work in the Qubicle analysis. |
-| No ghosts (non-active layers semi-transparent) | Low | 9 | Needs opacity rendering. |
-| Floor grid and model bounds can't be hidden, and there's no voxel grid on the model | Low | 9 | |
+| View toggles and the projection aren't remembered | Low | 12 | Floor grid, voxel grid, bounds, ghosts, AO and Auto Ortho reset on every start; Phase 12 stores them in settings. |
 | The undo history is capped at 512 steps and can't be browsed | Low | 10, 12 | History panel in Phase 10; configurable limit in Phase 12. |
 | No localization | Low | post | The UI is English only. |
 
@@ -94,8 +99,10 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No ambient occlusion, shadows or outline shading in Render mode | Medium | 9, post | Lighting is Lambert plus ambient and fill only. AO in Phase 9; shadows post-1.0. |
-| Meshing runs on the UI thread | Medium | 9 | The tile cache helps with edits, but a full re-mesh of a large import blocks a frame. |
+| No shadows or outline shading in Render mode | Medium | post | Phase 9 added per-vertex AO and material highlights. |
+| Translucent layers sort per layer, not per triangle | Low | post | Interpenetrating translucent layers can blend in the wrong order; no order-independent transparency. |
+| Ambient occlusion costs triangles | Low | 12 | AO-aware merging gives about 1.8× the triangles of the plain mesh (`mesh_bench`: 89,788 vs 49,984). |
+| Loading a file still parses on the UI thread | Low | 12 | Meshing is in the background since Phase 9, but reading a large `.vox` or `.rzxl` blocks before the first frame. |
 | Greedy merging stops at tile borders | Low | 12 | The mesh has more triangles than it needs. |
 | No LOD for large or zoomed-out scenes | Low | post | |
 

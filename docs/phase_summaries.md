@@ -194,3 +194,22 @@ Plan: [`rizxel_phase8_implementation_plan.md`](plan/rizxel_phase8_implementation
   Shortcuts window (`18bba53`).
 - The randomized undo-all / redo-all test covers paste, cut and every transform, each
   one undo step (`8131880`); 261 tests.
+
+## Phase 9 — Visual fidelity
+
+Plan: [`rizxel_phase9_implementation_plan.md`](plan/rizxel_phase9_implementation_plan.md)
+
+**Delivered** (branch `claude/busy-edison-9d3ab1`, not yet released)
+- Orthographic camera with `Numpad 5`, a view cube toggle, Auto Ortho on face and corner
+  snaps, true isometric corners, parallel picking rays, and Frame Selection, Frame Work
+  Area and Home View (`fd7d3a8`).
+- View toggles for the floor grid, a voxel grid drawn on the model's faces in the
+  shader, and the model bounds, in *View ▸ Show* and on viewport buttons (`709c51c`).
+- Layer opacity in a sorted translucent pass with per-draw alpha (no re-mesh on opacity
+  changes) and Ghosts (`54556fd`).
+- Material preview in Render mode: per-vertex material slots, a 256-entry material
+  table, tint, emission and a roughness/metallic highlight (`dc052ad`).
+- Per-vertex ambient occlusion in the greedy mesher with AO-aware merging and diagonal
+  flips; neighbours re-mesh only when a change touches their side (`22600dd`).
+- Background tile meshing pool for imports and undo of big edits; small edits stay
+  synchronous (`e4bafa4`); 289 tests.

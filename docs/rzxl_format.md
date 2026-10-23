@@ -72,8 +72,25 @@ overlap, must stay inside the bounds, and use values `1..=255`.
 2. Clip that to `crop` when it is set.
 
 A layer contributes only when it and every group above it are visible. Where
-layers overlap, the later layer wins. `opacity` and `material` are stored and
-round-tripped. The viewport does not render them yet.
+layers overlap, the later layer wins. The viewport draws a layer with its
+`opacity` times every enclosing group's (and its material tint's alpha);
+fully opaque layers merge into one mesh, translucent ones are drawn after it,
+sorted back to front, and fully transparent ones are not drawn.
+
+## Visible effects
+
+Every stored field changes what the editor shows:
+
+| Field | Visible as |
+|---|---|
+| `name`, `palette`, `selected_color`, `active_layer` | Tab title, Color Palette panel, Layers panel |
+| `bounds` | Yellow bounds wireframe (*View ▸ Show ▸ Model Bounds*), status bar |
+| `layers[].name`, `visible`, `locked` | Layers panel (eye and lock buttons); hidden layers leave the viewport |
+| `layers[].voxels`, `kind`, `crop` | Viewport geometry |
+| `layers[].parent` | A hidden group hides its children; group opacity multiplies |
+| `layers[].opacity` | Translucent layer in the viewport (both modes), Layers panel slider |
+| `layers[].material`, `materials[]` | Render mode: tint color, emission glow, roughness and metallic highlight; the tint alpha also acts as opacity. Layers panel material editor |
+| `layers[].id`, `generator` | Not shown: link targets and diagnostics |
 
 ## Validation
 
