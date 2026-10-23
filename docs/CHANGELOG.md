@@ -372,22 +372,22 @@ Qubicle-style global slice editing. Comparison and screenshots:
 ## [Unreleased] — Phase Plans: 4, 5a, 5b (2026-10-19)
 
 ### Added
-- `docs/rizxel_phase4_implementation_plan.md` — Core Engine & Data: tiled
+- `docs/plan/rizxel_phase4_implementation_plan.md` — Core Engine & Data: tiled
   `VoxelVolume` (Goxel-style 16³ hash-mapped tiles), greedy meshing, lit GPU
   voxel pipeline, `.rzxl` version 2 with RLE voxel runs, OBJ export enablement.
-- `docs/rizxel_phase5a_implementation_plan.md` — Interaction & Core Tools:
+- `docs/plan/rizxel_phase5a_implementation_plan.md` — Interaction & Core Tools:
   DDA voxel raycast, Cursor/Brush/Plane/Move/Color Picker/Extrude, undo
   transactions (one drag = one step), hover and stamp previews. Includes the
   Plane **Slice** mode (§4.3a): axis-aligned cut with keep-side, offset and
   optional cap, previewed as a translucent cut plane, undoable as one step
   (reference: `docs/Slice panel feature.png`).
-- `docs/rizxel_phase5b_implementation_plan.md` — Selection, Fill, Shape &
+- `docs/plan/rizxel_phase5b_implementation_plan.md` — Selection, Fill, Shape &
   Polish: per-layer selection with Set/Add/Subtract mask modes, Selection,
   Fuzzy Select, Fill, Shape, selection-aware Move/Extrude, option-bar
   completion and the performance pass.
 
 ### Changed
-- `docs/rizxel_native_architecture_plan.md` splits Phase 5 into 5a and 5b and
+- `docs/plan/rizxel_native_architecture_plan.md` splits Phase 5 into 5a and 5b and
   links each phase heading to its implementation plan.
 
 ## [Unreleased] — Phase 3: WGPU Viewport (2026-10-19)
@@ -413,7 +413,7 @@ Qubicle-style global slice editing. Comparison and screenshots:
   painter; it builds a `SceneFrame` for the GPU. The view cube and axis gizmo
   remain egui overlays.
 - `docs/rizxel_phase1-2_implementation_plan.md` renamed to
-  `docs/rizxel_phase1-3_implementation_plan.md` and extended with Phase 3.
+  `docs/plan/rizxel_phase1-3_implementation_plan.md` and extended with Phase 3.
 
 ## UI optimization (2026-10-19)
 

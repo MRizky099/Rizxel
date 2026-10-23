@@ -20,7 +20,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Phase 1–2 — Workspace and UI skeleton
 
-Plan: [`rizxel_phase1-3_implementation_plan.md`](rizxel_phase1-3_implementation_plan.md)
+Plan: [`rizxel_phase1-3_implementation_plan.md`](plan/rizxel_phase1-3_implementation_plan.md)
 
 **Goal:** restart the project as pure Rust, replacing the Tauri/React prototype, and
 reproduce `rizxel_ui.html` one to one in egui.
@@ -61,7 +61,7 @@ reproduce `rizxel_ui.html` one to one in egui.
 
 ## Phase 4 — Core engine and data
 
-Plan: [`rizxel_phase4_implementation_plan.md`](rizxel_phase4_implementation_plan.md)
+Plan: [`rizxel_phase4_implementation_plan.md`](plan/rizxel_phase4_implementation_plan.md)
 
 **Goal:** real voxel data, meshing and rendering.
 
@@ -90,7 +90,7 @@ Spec: [`rzxl_format.md`](rzxl_format.md)
 
 ## Phase 5a — Interaction and core tools
 
-Plan: [`rizxel_phase5a_implementation_plan.md`](rizxel_phase5a_implementation_plan.md)
+Plan: [`rizxel_phase5a_implementation_plan.md`](plan/rizxel_phase5a_implementation_plan.md)
 
 **Goal:** make the model editable.
 
@@ -108,7 +108,7 @@ Plan: [`rizxel_phase5a_implementation_plan.md`](rizxel_phase5a_implementation_pl
 
 ## Phase 5b — Selection, fill, shape and polish
 
-Plan: [`rizxel_phase5b_implementation_plan.md`](rizxel_phase5b_implementation_plan.md)
+Plan: [`rizxel_phase5b_implementation_plan.md`](plan/rizxel_phase5b_implementation_plan.md)
 
 **Goal:** finish the toolset.
 
@@ -162,7 +162,7 @@ Qubicle 3.1.2.
 
 ## Phase 7 (in progress) — Stabilize, CI and 0.2.0
 
-Plan: [`rizxel_phase7_implementation_plan.md`](rizxel_phase7_implementation_plan.md)
+Plan: [`rizxel_phase7_implementation_plan.md`](plan/rizxel_phase7_implementation_plan.md)
 
 **Delivered so far**
 - B1 fixed (`aa5d21e`): the model is visible from below the ground plane. From below,

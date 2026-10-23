@@ -113,15 +113,17 @@ Guarantees across the workspace:
 
 | Document | Contents |
 |---|---|
-| [`docs/rizxel_native_architecture_plan.md`](docs/rizxel_native_architecture_plan.md) | Overall architecture and roadmap |
 | [`docs/phase_summaries.md`](docs/phase_summaries.md) | A summary of each phase |
-| [`docs/rizxel_phase*_implementation_plan.md`](docs) | Detailed plan for each phase |
 | [`docs/rzxl_format.md`](docs/rzxl_format.md) | `.rzxl` file format spec |
 | [`docs/interchange_formats.md`](docs/interchange_formats.md) | Import/export behaviour and limits |
-| [`docs/milestones.md`](docs/milestones.md) | Milestones from 0.2 to 1.0 |
 | [`docs/gaps.md`](docs/gaps.md) | Known gaps and limitations |
-| [`docs/feature_recommendations.md`](docs/feature_recommendations.md) | Proposed next features |
+| [`docs/qubicle_feature_gap_analysis.md`](docs/qubicle_feature_gap_analysis.md) | Comparison with Qubicle |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Change history |
+
+Planning documents live in `docs/plan/`, which is kept local and isn't part of the
+repository: the architecture plan (`rizxel_native_architecture_plan.md`), one
+`rizxel_phase*_implementation_plan.md` per phase, `milestones.md` (0.2 to 1.0) and
+`feature_recommendations.md`.
 
 ## License
 
