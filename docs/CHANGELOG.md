@@ -5,6 +5,24 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 10c: Box select, lines and curves, Transform tool (2026-10-24)
+
+- **Box selection** (Selection tool, *Box* mode, default): a click or drag places a blue
+  box that stays open. Face arrows resize it, dragging a face moves it (`Alt`: along the
+  normal), and the option bar types its position and size. The voxels inside are previewed
+  live; `Enter`, *Apply*, a click outside or a tool switch applies it as one undo step
+  (`Shift` adds, `Ctrl` subtracts), `Esc` cancels. Locked to the slice in Slice Mode.
+- **Selection ▸ To New Layer** (Cut `Ctrl+Shift+J`, Copy `Ctrl+J`): the selected voxels
+  go into a new layer above the source, in its group. One undo step.
+- **Line tool** (`L`): Line, Polyline and Curve (quadratic or cubic Bézier) with the
+  Brush's settings, draggable points and a ghost preview. *Pixel perfect* (no L-corners)
+  and *Solid* (6-connected) connectivity, also for size-1 Brush strokes. `Ctrl`+click in
+  the Brush draws a line from the last click (`Shift` stays erase).
+- **Transform tool** (`T`): rotate and resize the selection or layer with rotation rings,
+  face arrows, corner cubes and typed rotation / scale / size / move / pivot. Exact at 90°
+  and whole scales, hole-free nearest-neighbour resampling otherwise. Out-of-bounds voxels
+  are drawn red and need *Clip to bounds*. One undo step per Apply.
+
 ### Phase 10b: Layer hierarchy and reference images (2026-10-24)
 
 #### Added
