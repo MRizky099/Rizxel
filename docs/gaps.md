@@ -9,7 +9,7 @@ Severity: **High** blocks real-world use · **Medium** is a noticeable limitatio
 **Low** is polish.
 
 The **Phase** column names the plan that closes the gap (see
-[`milestones.md`](milestones.md)); `post` means after 1.0.
+[`milestones.md`](plan/milestones.md)); `post` means after 1.0.
 
 > Last updated 2026-10-23.
 
