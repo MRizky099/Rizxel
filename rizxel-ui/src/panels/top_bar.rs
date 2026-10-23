@@ -432,6 +432,96 @@ pub fn close_prompt(ctx: &egui::Context, state: &mut AppState) -> bool {
     step == CloseStep::Quit
 }
 
+/// Startup dialog listing autosaves left by a session that did not exit
+/// cleanly: Restore or Discard each. "Decide Later" keeps the files for the
+/// next start.
+pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut UiState) {
+    if ui_state.recovery.is_empty() {
+        return;
+    }
+    enum Pick {
+        Restore(usize),
+        Discard(usize),
+        Later,
+    }
+    let mut pick = None;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    egui::Modal::new(Id::new("recovery_dialog")).show(ctx, |ui| {
+        ui.set_width(440.0);
+        ui.label(
+            egui::RichText::new("Recover unsaved work")
+                .font(theme::semibold(14.0))
+                .color(theme::TEXT_STRONG),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Rizxel did not close normally. These documents were autosaved:")
+                .color(theme::TEXT_DIM),
+        );
+        ui.add_space(8.0);
+        egui::Grid::new("recovery_entries")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                for (i, entry) in ui_state.recovery.iter().enumerate() {
+                    let meta = &entry.meta;
+                    let minutes = now.saturating_sub(meta.saved_at) / 60;
+                    let when = match minutes {
+                        0 => "less than a minute ago".to_owned(),
+                        1 => "1 minute ago".to_owned(),
+                        m if m < 120 => format!("{m} minutes ago"),
+                        m => format!("{} hours ago", m / 60),
+                    };
+                    let place = meta
+                        .original
+                        .as_ref()
+                        .map_or("never saved".to_owned(), |p| p.display().to_string());
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&meta.title).color(theme::TEXT_STRONG));
+                        ui.label(
+                            egui::RichText::new(format!("{place} · autosaved {when}"))
+                                .size(11.0)
+                                .color(theme::TEXT_DIM),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Restore").clicked() {
+                            pick = Some(Pick::Restore(i));
+                        }
+                        if ui.button("Discard").clicked() {
+                            pick = Some(Pick::Discard(i));
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        ui.add_space(8.0);
+        if ui.button("Decide Later").clicked() {
+            pick = Some(Pick::Later);
+        }
+    });
+    match pick {
+        Some(Pick::Restore(i)) => {
+            let entry = ui_state.recovery.remove(i);
+            state.status_message = Some(match state.restore(&entry) {
+                Ok(()) => format!("Restored {}", entry.meta.title),
+                Err(e) => {
+                    log::error!("restore {}: {e}", entry.key);
+                    format!("Failed to restore {}: {e}", entry.meta.title)
+                }
+            });
+        }
+        Some(Pick::Discard(i)) => {
+            let entry = ui_state.recovery.remove(i);
+            state.discard_recovery(&entry);
+        }
+        Some(Pick::Later) => ui_state.recovery.clear(),
+        None => {}
+    }
+}
+
 /// Help dialogs opened from the menu.
 pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut UiState) {
     if ui_state.show_about {

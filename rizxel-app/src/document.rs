@@ -227,6 +227,8 @@ pub struct Document {
     /// Incremented on every data change; compared with `saved_revision`.
     revision: u64,
     saved_revision: u64,
+    /// Undo steps recorded, undone or redone so far (autosave counts them).
+    edits: u64,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -275,6 +277,7 @@ impl Document {
             history: History::default(),
             revision: 0,
             saved_revision: 0,
+            edits: 0,
             geometry: RefCell::new(None),
             view_tiles: RefCell::new(TileMeshCache::default()),
         }
@@ -289,6 +292,12 @@ impl Document {
     /// Process-unique document id.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Undo steps recorded, undone or redone since the document was created
+    /// (a whole drag counts once).
+    pub fn edit_count(&self) -> u64 {
+        self.edits
     }
 
     /// Bumped on every data change (edit, undo, redo, load). Caches derived
@@ -426,6 +435,7 @@ impl Document {
         self.tag_history();
         edit.apply(&mut self.data);
         self.history.push(edit, merge);
+        self.edits += 1;
         self.touch();
     }
 
@@ -443,6 +453,7 @@ impl Document {
     pub fn undo(&mut self) -> bool {
         let done = self.history.undo(&mut self.data);
         if done {
+            self.edits += 1;
             self.touch();
             if let Some(p) = self.history.undone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
@@ -454,6 +465,7 @@ impl Document {
     pub fn redo(&mut self) -> bool {
         let done = self.history.redo(&mut self.data);
         if done {
+            self.edits += 1;
             self.touch();
             if let Some(p) = self.history.redone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
@@ -545,6 +557,7 @@ impl Document {
             return false;
         }
         let done = self.history.commit_transaction();
+        self.edits += u64::from(done);
         self.touch();
         done
     }
@@ -569,6 +582,7 @@ impl Document {
             _ => Vec::new(),
         };
         let done = self.history.commit_transaction_with(extra);
+        self.edits += u64::from(done);
         self.touch();
         done
     }

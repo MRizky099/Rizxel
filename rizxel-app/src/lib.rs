@@ -3,6 +3,7 @@
 //! Headless application state. The UI layer reads this state and mutates it
 //! only through the methods below, so all behavior is testable without a window.
 
+pub mod autosave;
 pub mod close;
 pub mod document;
 pub mod history;
@@ -12,12 +13,14 @@ pub mod recent;
 pub mod selection;
 
 use std::path::Path;
+use std::time::Instant;
 
 use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
+pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
@@ -379,6 +382,7 @@ pub struct AppState {
     paths: Option<AppPaths>,
     /// *File ▸ Open Recent*.
     pub recent: RecentFiles,
+    autosave: autosave::Autosave,
     untitled_counter: u32,
 }
 
@@ -398,6 +402,7 @@ impl Default for AppState {
             closing: None,
             paths: None,
             recent: RecentFiles::default(),
+            autosave: autosave::Autosave::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -478,12 +483,14 @@ impl AppState {
         }
     }
 
-    /// Closes a tab. Keeps at least one document open.
+    /// Closes a tab (its recovery file goes too). Keeps at least one
+    /// document open.
     pub fn close_document(&mut self, index: usize) {
         if index >= self.documents.len() {
             return;
         }
-        self.documents.remove(index);
+        let doc = self.documents.remove(index);
+        self.drop_recovery(doc.id());
         if self.documents.is_empty() {
             self.new_document();
         } else if self.active_doc >= index && self.active_doc > 0 {
@@ -616,12 +623,113 @@ impl AppState {
 
     /// Saves the active document to `path`.
     pub fn save_active_as(&mut self, path: &Path) -> Result<(), RzxlError> {
-        match self.doc_mut() {
-            Some(doc) => doc.save_to(path)?,
+        let id = match self.doc_mut() {
+            Some(doc) => {
+                doc.save_to(path)?;
+                doc.id()
+            }
             None => return Ok(()),
-        }
+        };
         self.remember_recent(path);
+        // Saved by hand: the autosave copy is obsolete.
+        if let (Some(key), Some(paths)) = (self.autosave.saved(id), &self.paths) {
+            autosave::remove_recovery(paths, &key);
+        }
         Ok(())
+    }
+
+    // ------------------------------------------------------------ autosave
+
+    /// Starts background autosaves of the documents that are due at `now`
+    /// and collects finished ones; a failure goes to the status bar.
+    pub fn autosave_tick(&mut self, now: Instant) {
+        let Some(paths) = &self.paths else { return };
+        for id in self.autosave.due(now, &self.documents) {
+            if let Some(doc) = self.documents.iter().find(|d| d.id() == id) {
+                self.autosave.write(now, doc, paths);
+            }
+        }
+        self.collect_autosaves(false);
+    }
+
+    /// Waits for every autosave in flight.
+    pub fn flush_autosave(&mut self) {
+        self.collect_autosaves(true);
+    }
+
+    fn collect_autosaves(&mut self, block: bool) {
+        for (id, result) in self.autosave.finished(block) {
+            if let Err(e) = result {
+                log::warn!("autosave: {e}");
+                self.status_message = Some(format!("Autosave failed: {e}"));
+                continue;
+            }
+            // Closed or saved while the write ran: the copy is obsolete.
+            let obsolete = self
+                .documents
+                .iter()
+                .find(|d| d.id() == id)
+                .is_none_or(|d| !d.is_dirty());
+            if obsolete {
+                self.drop_recovery(id);
+            }
+        }
+    }
+
+    /// Deletes the recovery file of document `id` and forgets it.
+    fn drop_recovery(&mut self, id: u64) {
+        if let (Some(key), Some(paths)) = (self.autosave.forget(id), &self.paths) {
+            autosave::remove_recovery(paths, &key);
+        }
+    }
+
+    /// Clean exit: every document is answered for, so no recovery file stays.
+    pub fn clean_exit(&mut self) {
+        self.flush_autosave();
+        let ids: Vec<u64> = self.documents.iter().map(Document::id).collect();
+        for id in ids {
+            self.drop_recovery(id);
+        }
+    }
+
+    /// Recovery files left by an earlier session that did not exit cleanly.
+    pub fn recoverable(&self) -> Vec<RecoveryEntry> {
+        self.paths
+            .as_ref()
+            .map(autosave::recoverable)
+            .unwrap_or_default()
+    }
+
+    /// Opens a recovery file as a dirty document with its original path.
+    /// The recovery file stays until the document is saved or closed.
+    pub fn restore(&mut self, entry: &RecoveryEntry) -> Result<(), RzxlError> {
+        let Some(paths) = &self.paths else {
+            return Err(RzxlError::Invalid("no app data folder".to_owned()));
+        };
+        let project = rizxel_io::load_rzxl(&entry.rzxl(paths))?;
+        let mut doc = Document::from_project(project, entry.meta.original.clone())?;
+        doc.name.clone_from(&entry.meta.name);
+        doc.mark_unsaved();
+        self.autosave.adopt_key(doc.id(), entry.key.clone());
+        self.cancel_active_edit();
+        let replace_pristine = self.documents.len() == 1
+            && self.documents[0].path.is_none()
+            && !self.documents[0].is_dirty();
+        if replace_pristine {
+            let old = std::mem::replace(&mut self.documents[0], doc);
+            self.drop_recovery(old.id());
+            self.active_doc = 0;
+        } else {
+            self.push_document(doc);
+        }
+        Ok(())
+    }
+
+    /// Deletes a recovery file the user chose not to restore.
+    pub fn discard_recovery(&self, entry: &RecoveryEntry) {
+        if let Some(paths) = &self.paths {
+            autosave::remove_recovery(paths, &entry.key);
+        }
     }
 
     /// Cancels a tool drag in progress on the active document (tab switch,
@@ -737,6 +845,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn starts_with_one_untitled_doc() {
@@ -922,6 +1031,137 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         s2.prune_recent();
         assert!(s2.recent.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn temp_paths(tag: &str) -> (std::path::PathBuf, AppPaths) {
+        let dir = std::env::temp_dir().join(format!("rizxel_{tag}_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let paths = AppPaths::with_root(&dir);
+        (dir, paths)
+    }
+
+    fn file_len(path: &Path) -> u64 {
+        std::fs::metadata(path).map_or(0, |m| m.len())
+    }
+
+    #[test]
+    fn autosave_waits_for_time_or_edits() {
+        let (dir, paths) = temp_paths("autosave_timing");
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        dirty(&mut s);
+        s.autosave_tick(t0);
+        s.flush_autosave();
+        assert!(s.recoverable().is_empty(), "the clock only just started");
+        // Before the interval nothing is written; after it, once.
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL / 2);
+        s.flush_autosave();
+        assert!(s.recoverable().is_empty());
+        let t1 = t0 + AUTOSAVE_INTERVAL;
+        s.autosave_tick(t1);
+        s.flush_autosave();
+        let entries = s.recoverable();
+        assert_eq!(entries.len(), 1);
+        let file = entries[0].rzxl(&paths);
+        let first = file_len(&file);
+
+        // Never during an open transaction.
+        let doc = s.doc_mut().unwrap();
+        doc.begin_edit();
+        doc.edit_voxels(
+            0,
+            &[VoxelChange {
+                pos: IVec3::ZERO,
+                old: 0,
+                new: 3,
+            }],
+        );
+        s.autosave_tick(t1 + AUTOSAVE_INTERVAL * 2);
+        s.flush_autosave();
+        assert_eq!(file_len(&file), first, "skipped mid-edit");
+        s.doc_mut().unwrap().cancel_edit();
+
+        // 50 edits write again before the interval is over.
+        let t2 = t1 + AUTOSAVE_INTERVAL * 2;
+        s.autosave_tick(t2);
+        s.flush_autosave();
+        let second = file_len(&file);
+        for i in 0..AUTOSAVE_EDITS as i32 {
+            s.doc_mut()
+                .unwrap()
+                .set_voxels(0, [(IVec3::new(i % 30, i / 30, 1), 2)], false);
+        }
+        s.autosave_tick(t2 + Duration::from_secs(1));
+        s.flush_autosave();
+        assert_ne!(file_len(&file), second);
+
+        s.clean_exit();
+        assert!(s.recoverable().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_crash_leaves_a_restorable_copy() {
+        let (dir, paths) = temp_paths("autosave_crash");
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        s.doc_mut().unwrap().set_voxels(
+            0,
+            [(IVec3::new(1, 2, 3), 5), (IVec3::new(4, 0, 0), 7)],
+            false,
+        );
+        s.autosave_tick(t0);
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL);
+        s.flush_autosave();
+        let data = s.doc().unwrap().data.clone();
+        drop(s); // "crash": no clean exit
+
+        let mut fresh = AppState::with_paths(Some(paths));
+        let entries = fresh.recoverable();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].meta.title, "untitled_1.rzxl");
+        fresh.restore(&entries[0]).unwrap();
+        assert_eq!(fresh.documents.len(), 1, "pristine tab replaced");
+        let doc = fresh.doc().unwrap();
+        assert!(doc.is_dirty());
+        assert_eq!(doc.name, "untitled_1");
+        assert_eq!(doc.data, data);
+        // The file stays until the restored document is saved or closed.
+        assert_eq!(fresh.recoverable().len(), 1);
+        fresh.close_document(0);
+        assert!(fresh.recoverable().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn saving_removes_the_recovery_copy() {
+        let (dir, paths) = temp_paths("autosave_save");
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = dir.join("saved.rzxl");
+        let mut s = AppState::with_paths(Some(paths));
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        dirty(&mut s);
+        s.autosave_tick(t0);
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL);
+        s.flush_autosave();
+        assert_eq!(s.recoverable().len(), 1);
+        s.save_active_as(&saved).unwrap();
+        assert!(s.recoverable().is_empty());
+
+        // Discard deletes an entry without opening it.
+        dirty(&mut s);
+        let t1 = t0 + AUTOSAVE_INTERVAL * 2;
+        s.autosave_tick(t1);
+        s.autosave_tick(t1 + AUTOSAVE_INTERVAL);
+        s.flush_autosave();
+        let entries = s.recoverable();
+        assert_eq!(entries[0].meta.original.as_deref(), Some(saved.as_path()));
+        s.discard_recovery(&entries[0]);
+        assert!(s.recoverable().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -39,9 +39,15 @@ impl RizxelApp {
             );
             rs.target_format
         });
+        let state = AppState::with_paths(rizxel_app::AppPaths::new());
+        // Recovery files left by a session that did not exit cleanly.
+        let ui = panels::UiState {
+            recovery: state.recoverable(),
+            ..Default::default()
+        };
         Self {
-            state: AppState::with_paths(rizxel_app::AppPaths::new()),
-            ui: panels::UiState::default(),
+            state,
+            ui,
             icons: Icons::load(&cc.egui_ctx),
             meshes: viewport::MeshCache::default(),
             tools: ToolInput::default(),
@@ -63,22 +69,29 @@ impl RizxelApp {
     fn handle_close(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             if self.state.request_exit() {
-                self.quitting = true;
+                self.quit();
             } else {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             }
         }
         if panels::top_bar::close_prompt(ctx, &mut self.state) {
-            self.quitting = true;
+            self.quit();
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
+    }
+
+    /// Clean exit: lets the close through and deletes the recovery files.
+    fn quit(&mut self) {
+        self.quitting = true;
+        self.state.clean_exit();
     }
 
     /// Global keyboard shortcuts. Skipped while a text field has focus so
     /// e.g. Ctrl+Z edits text instead of the document, and while a modal
     /// prompt is open.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() || self.state.closing().is_some() {
+        let modal = self.state.closing().is_some() || !self.ui.recovery.is_empty();
+        if ctx.egui_wants_keyboard_input() || modal {
             return;
         }
         const CMD: Modifiers = Modifiers::COMMAND;
@@ -134,6 +147,10 @@ impl eframe::App for RizxelApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_close(&ctx);
+        panels::top_bar::recovery_dialog(&ctx, &mut self.state, &mut self.ui);
+        self.state.autosave_tick(std::time::Instant::now());
+        // Keep ticking while idle so the time-based autosave still fires.
+        ctx.request_repaint_after(std::time::Duration::from_secs(5));
         self.handle_shortcuts(&ctx);
 
         let state = &mut self.state;
