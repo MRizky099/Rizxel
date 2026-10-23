@@ -51,7 +51,9 @@ No open bugs are known. Fixed bugs move to the table above.
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
 | No glTF, PLY or Qubicle (`.qb`, `.qef`, `.qbt`) support | Medium | 11 | glTF is the common format for game and web pipelines; `.qb` is the main Qubicle format. |
-| No image output: PNG render, sprite sheets, Export Slices | Medium | 11 | |
+| No image output: PNG render, photo-realistic render, turntables, sprite sheets | Medium | 11b | |
+| No Export Slices | Low | 11 | |
+| OBJ export loads slowly in other tools | Medium | 11 | The MagicaVoxel layout mixes v/vt/vn indices and colors through a palette PNG, so loaders must rebuild vertices and decode the texture. A fast-load layout (one index per corner, `Kd` colors) becomes the default. |
 | No heightmap import, and `voxelize` has no UI | Medium | 11 | |
 | No mesh export options (scale, pivot, per-layer files) | Medium | 11 | |
 | MagicaVoxel `MATL`, cameras and animation frames are dropped | Medium | post | |
@@ -94,7 +96,10 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No ambient occlusion, shadows or outline shading in Render mode | Medium | 9, post | Lighting is Lambert plus ambient and fill only. AO in Phase 9; shadows post-1.0. |
+| No ambient occlusion, shadows or outline shading in Render mode | Medium | 9, 11b | Lighting is Lambert plus ambient and fill only. AO in Phase 9; shadows, GI and edges with the path tracer in Phase 11b. |
+| Render mode has no layout or options of its own | Medium | 11b | It only switches the shading; panels and tools stay as in Model mode. |
+| No photo-realistic rendering | Medium | 11b | |
+| No render-only voxel shapes (bricks with studs, spheres, cylinders) or shaped-mesh export | Low | 11b | MagicaVoxel offers these under *Display ▸ Shape*. |
 | Meshing runs on the UI thread | Medium | 9 | The tile cache helps with edits, but a full re-mesh of a large import blocks a frame. |
 | Greedy merging stops at tile borders | Low | 12 | The mesh has more triangles than it needs. |
 | No LOD for large or zoomed-out scenes | Low | post | |
