@@ -5,8 +5,10 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
-Milestone M3 (planned 0.4.0): everything stored in the file is visible, and
-models look good in Render mode.
+## [0.4.0] — 2026-10-24
+
+Milestone M3: everything stored in the file is visible, and models look good
+in Render mode.
 
 ### Phase 9: Visual fidelity (2026-10-23)
 

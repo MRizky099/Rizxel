@@ -16,6 +16,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | Slice | Qubicle-style Slice Mode | ✅ Done | `04bbdf7`, `d6f13b2` |
 | 7 | Stabilize, CI and 0.2.0 | ✅ Done | `v0.2.0` |
 | 8 | Safe editing and 0.3.0 | ✅ Done | `v0.3.0` |
+| 9 | Visual fidelity and 0.4.0 | ✅ Done | `v0.4.0` |
 
 ---
 
@@ -195,11 +196,11 @@ Plan: [`rizxel_phase8_implementation_plan.md`](plan/rizxel_phase8_implementation
 - The randomized undo-all / redo-all test covers paste, cut and every transform, each
   one undo step (`8131880`); 261 tests.
 
-## Phase 9 — Visual fidelity
+## Phase 9 — Visual fidelity and 0.4.0
 
 Plan: [`rizxel_phase9_implementation_plan.md`](plan/rizxel_phase9_implementation_plan.md)
 
-**Delivered** (PR #4, CI green; release pending)
+**Delivered** (PR #4, tag `v0.4.0`)
 - Orthographic camera with `Numpad 5`, a view cube toggle, Auto Ortho on face and corner
   snaps, true isometric corners, parallel picking rays, and Frame Selection, Frame Work
   Area and Home View (`fd7d3a8`).
