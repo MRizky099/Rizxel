@@ -20,11 +20,15 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use glam::{IVec3, Vec3};
 use rizxel_math::volume::{local_coord, local_index};
 use rizxel_math::{Palette, Rgba8, Tile, Voxel, VoxelVolume, EMPTY_VOXEL, TILE_SIZE};
+
+use crate::mesh_jobs::{next_cache_id, Job, MeshJobs, OwnedParams, TileResult};
 
 /// Indexed triangle mesh. All per-vertex arrays have the same length.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -242,11 +246,17 @@ pub fn mesh_tile(volume: &VoxelVolume, origin: IVec3, params: &MeshParams<'_>) -
 /// while a drag edits a few tiles per frame.
 ///
 /// [`TileMeshCache::mesh_shared`] compares each tile with the previous
-/// volume and re-meshes only the changed ones and their neighbours (border
-/// faces may have appeared or vanished; with AO, corner values read the
-/// edge and corner neighbours too). A palette, bounds, slot-kind or AO
-/// change, or the first call, rebuilds everything. The output
-/// always equals [`mesh_volume_with`] of the same volume.
+/// volume and re-meshes only the changed ones and the neighbours whose side
+/// the changes touch (border faces may have appeared or vanished; with AO,
+/// corner values also read edge and corner neighbours). A palette, bounds,
+/// slot-kind or AO change, or the first call, rebuilds everything. The
+/// output always equals [`mesh_volume_with`] of the same volume.
+///
+/// [`TileMeshCache::mesh_background`] sends large updates (more than
+/// [`SYNC_TILES`] changed tiles, or a rebuild) to [`MeshJobs::shared`]
+/// instead and keeps the previous mesh of each waiting tile until
+/// [`TileMeshCache::poll`] receives the new one; once nothing is
+/// [`pending`](TileMeshCache::pending) the output equals the synchronous one.
 #[derive(Debug, Default)]
 pub struct TileMeshCache {
     source: Option<VoxelVolume>,
@@ -258,6 +268,39 @@ pub struct TileMeshCache {
     last_rebuilt: usize,
     /// Concatenated output of the last call, shared while nothing changes.
     output: Option<Arc<Mesh>>,
+    /// Background meshing state (unused until the first large update).
+    jobs: BackgroundJobs,
+}
+
+/// Most changed tiles an update meshes on the calling thread in
+/// [`TileMeshCache::mesh_background`]: a brush stamp stays latency-free.
+pub const SYNC_TILES: usize = 4;
+
+/// Tiles of a [`TileMeshCache`] that wait for the worker pool.
+#[derive(Debug, Default)]
+struct BackgroundJobs {
+    /// Id of the cache in the pool's queue (0 until first used).
+    id: u64,
+    /// Bumped on every background request.
+    generation: u64,
+    /// Tile origin -> generation its newest request was made at.
+    waiting: HashMap<IVec3, u64>,
+    channel: Option<(Sender<TileResult>, Receiver<TileResult>)>,
+    /// Arrived tiles not in the output yet, and when it was last rebuilt.
+    unpublished: bool,
+    published: Option<Instant>,
+}
+
+/// How often [`TileMeshCache::poll`] rebuilds the output while tiles keep
+/// arriving: each rebuild is concatenated and uploaded whole.
+const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
+
+impl Drop for TileMeshCache {
+    fn drop(&mut self) {
+        if !self.jobs.waiting.is_empty() {
+            MeshJobs::shared().cancel(self.jobs.id);
+        }
+    }
 }
 
 impl TileMeshCache {
@@ -270,8 +313,87 @@ impl TileMeshCache {
     /// Mesh of `volume`; returns the previous `Arc` when no tile changed, so
     /// callers can skip uploading an identical mesh.
     pub fn mesh_shared(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>) -> Arc<Mesh> {
+        self.mesh_with(volume, params, false)
+    }
+
+    /// Like [`TileMeshCache::mesh_shared`], but a large update goes to the
+    /// worker pool: the result keeps the previous meshes of the tiles it
+    /// waits for (none on a first call) and [`TileMeshCache::poll`] brings
+    /// in the new ones.
+    pub fn mesh_background(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>) -> Arc<Mesh> {
+        self.mesh_with(volume, params, true)
+    }
+
+    /// True while tiles wait for the worker pool.
+    pub fn pending(&self) -> bool {
+        !self.jobs.waiting.is_empty()
+    }
+
+    /// The last output, if any.
+    pub fn output(&self) -> Option<Arc<Mesh>> {
+        self.output.clone()
+    }
+
+    /// Takes in finished background tiles (dropping superseded ones).
+    /// Returns true when the output changed.
+    pub fn poll(&mut self) -> bool {
+        let Some((_, rx)) = &self.jobs.channel else {
+            return false;
+        };
+        while let Ok((origin, generation, mesh)) = rx.try_recv() {
+            if self.jobs.waiting.get(&origin) == Some(&generation) {
+                self.jobs.waiting.remove(&origin);
+                self.tiles.insert(origin, mesh);
+                self.jobs.unpublished = true;
+            }
+        }
+        let due = self
+            .jobs
+            .published
+            .is_none_or(|t| t.elapsed() >= PUBLISH_INTERVAL);
+        if !self.jobs.unpublished || (self.pending() && !due) {
+            return false;
+        }
+        let Some(source) = &self.source else {
+            return false;
+        };
+        self.output = Some(Arc::new(self.concatenate(source)));
+        self.jobs.unpublished = false;
+        self.jobs.published = Some(Instant::now());
+        true
+    }
+
+    /// Blocks until no tile waits for the pool (tests and benchmarks).
+    pub fn finish(&mut self) {
+        while self.pending() {
+            let Some((_, rx)) = &self.jobs.channel else {
+                return;
+            };
+            match rx.recv() {
+                Ok(result) => {
+                    let (origin, generation, mesh) = result;
+                    if self.jobs.waiting.get(&origin) == Some(&generation) {
+                        self.jobs.waiting.remove(&origin);
+                        self.tiles.insert(origin, mesh);
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+        if let Some(source) = &self.source {
+            self.output = Some(Arc::new(self.concatenate(source)));
+        }
+        self.jobs.unpublished = false;
+    }
+
+    fn mesh_with(
+        &mut self,
+        volume: &VoxelVolume,
+        params: &MeshParams<'_>,
+        background: bool,
+    ) -> Arc<Mesh> {
         let before = self.tiles.len();
-        self.update(volume, params);
+        self.update(volume, params, background);
         let changed = self.last_rebuilt > 0 || self.tiles.len() != before;
         match &self.output {
             Some(out) if !changed => out.clone(),
@@ -283,8 +405,9 @@ impl TileMeshCache {
         }
     }
 
-    /// Re-meshes the tiles that changed since the last call.
-    fn update(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>) {
+    /// Re-meshes the tiles that changed since the last call, on this thread
+    /// or (`background` and a large update) in the worker pool.
+    fn update(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>, background: bool) {
         let full = self.palette.as_ref() != Some(params.palette)
             || self.ao != params.ao
             || self
@@ -296,8 +419,11 @@ impl TileMeshCache {
                 .as_ref()
                 .is_none_or(|s| s.bounds() != volume.bounds());
         let origins = volume.sorted_tile_origins();
-        let dirty: HashSet<IVec3> = match (&self.source, &self.slots, full) {
+        // A rebuild counts every tile: small models always mesh right here.
+        let mut changed_tiles = origins.len();
+        let mut dirty: HashSet<IVec3> = match (&self.source, &self.slots, full) {
             (Some(old), Some(old_slots), false) => {
+                changed_tiles = 0;
                 let mut candidates: HashSet<IVec3> = origins.iter().copied().collect();
                 candidates.extend(old.sorted_tile_origins());
                 let near = neighbour_offsets(params.ao);
@@ -305,6 +431,7 @@ impl TileMeshCache {
                 for o in candidates {
                     let (before, after) = (old.tile(o), volume.tile(o));
                     if before != after {
+                        changed_tiles += 1;
                         // Neighbours read one voxel into this tile: only
                         // those whose side the changes touch need a re-mesh.
                         let (lo, hi) = diff_box(before, after);
@@ -314,17 +441,31 @@ impl TileMeshCache {
                                 .map(|&d| o + d * TILE_SIZE),
                         );
                     } else if old_slots.tile_differs(params.slots, o) {
+                        changed_tiles += 1;
                         // Slots only affect the tile's own quads.
                         dirty.insert(o);
                     }
                 }
                 dirty
             }
-            _ => {
-                self.tiles.clear();
-                origins.iter().copied().collect()
-            }
+            _ => origins.iter().copied().collect(),
         };
+        let background = background && changed_tiles > SYNC_TILES;
+        if background {
+            self.request(volume, params, &origins, &dirty);
+            self.last_rebuilt = 0;
+            self.source = Some(volume.clone());
+            self.palette = Some(params.palette.clone());
+            self.slots = Some(SlotSource::new(params.slots));
+            self.ao = params.ao;
+            return;
+        }
+        // Meshing here: tiles still waiting for the pool are redone too, and
+        // their late results get dropped.
+        dirty.extend(self.jobs.waiting.drain().map(|(o, _)| o));
+        if full {
+            self.tiles.clear();
+        }
         self.tiles.retain(|o, _| !dirty.contains(o));
         let mut rebuilt = 0;
         for &o in &origins {
@@ -338,6 +479,43 @@ impl TileMeshCache {
         self.palette = Some(params.palette.clone());
         self.slots = Some(SlotSource::new(params.slots));
         self.ao = params.ao;
+    }
+
+    /// Sends the `dirty` tiles of `volume` to the worker pool. Tiles that
+    /// left the volume go now; the others keep their previous mesh until the
+    /// new one arrives.
+    fn request(
+        &mut self,
+        volume: &VoxelVolume,
+        params: &MeshParams<'_>,
+        origins: &[IVec3],
+        dirty: &HashSet<IVec3>,
+    ) {
+        let present: HashSet<IVec3> = origins.iter().copied().collect();
+        self.tiles.retain(|o, _| present.contains(o));
+        self.jobs.waiting.retain(|o, _| present.contains(o));
+        if self.jobs.id == 0 {
+            self.jobs.id = next_cache_id();
+        }
+        let (reply, _) = self.jobs.channel.get_or_insert_with(channel);
+        let reply = reply.clone();
+        self.jobs.generation += 1;
+        let generation = self.jobs.generation;
+        let shared_volume = Arc::new(volume.clone());
+        let shared_params = Arc::new(OwnedParams::new(params));
+        let mut jobs = Vec::new();
+        for &origin in origins.iter().filter(|o| dirty.contains(o)) {
+            self.jobs.waiting.insert(origin, generation);
+            jobs.push(Job {
+                cache: self.jobs.id,
+                origin,
+                generation,
+                volume: shared_volume.clone(),
+                params: shared_params.clone(),
+                reply: reply.clone(),
+            });
+        }
+        MeshJobs::shared().submit_all(jobs);
     }
 
     /// The cached tiles of `volume` in sorted order, as one mesh.
@@ -1035,6 +1213,72 @@ mod tests {
         let plain = MeshParams::new(&palette);
         assert_eq!(*cache.mesh_shared(&v, &plain), mesh_volume(&v, &palette));
         assert_eq!(cache.last_rebuilt(), v.tile_count());
+    }
+
+    /// A volume spread over many tiles.
+    fn many_tiles() -> VoxelVolume {
+        let mut v = VoxelVolume::new(BoundSize::new(96, 32, 96));
+        for i in 0..2000 {
+            v.set(
+                IVec3::new((i * 7) % 96, (i * 13) % 32, (i * 5) % 96),
+                1 + (i % 3) as Voxel,
+            );
+        }
+        v
+    }
+
+    #[test]
+    fn background_meshing_ends_equal_to_the_full_mesh() {
+        let palette = Palette::default();
+        let params = MeshParams::new(&palette).ao(true);
+        let mut v = many_tiles();
+        let mut cache = TileMeshCache::default();
+        // A first call over many tiles goes to the pool.
+        let first = cache.mesh_background(&v, &params);
+        assert!(cache.pending());
+        assert!(first.triangle_count() < mesh_volume_with(&v, &params).triangle_count());
+        cache.finish();
+        assert!(!cache.pending());
+        assert_eq!(*cache.output().unwrap(), mesh_volume_with(&v, &params));
+
+        // A small edit stays on this thread.
+        v.set(IVec3::new(40, 10, 40), 7);
+        let small = cache.mesh_background(&v, &params);
+        assert!(!cache.pending());
+        assert_eq!(*small, mesh_volume_with(&v, &params));
+
+        // A large change keeps the old tiles until the new ones arrive.
+        for x in 0..96 {
+            v.set(IVec3::new(x, 20, 50), 2);
+        }
+        let stale = cache.mesh_background(&v, &params);
+        assert!(cache.pending());
+        assert_eq!(*stale, *small, "previous meshes until results arrive");
+        while cache.pending() {
+            cache.poll();
+        }
+        assert_eq!(*cache.output().unwrap(), mesh_volume_with(&v, &params));
+    }
+
+    #[test]
+    fn superseded_background_tiles_are_dropped() {
+        let palette = Palette::default();
+        let params = MeshParams::new(&palette).ao(true);
+        let mut v = many_tiles();
+        let mut cache = TileMeshCache::default();
+        cache.mesh_background(&v, &params);
+        assert!(cache.pending());
+        // A synchronous call meanwhile meshes the waiting tiles itself; the
+        // late pool results for the old volume must not overwrite them.
+        v.set(IVec3::new(1, 1, 1), 9);
+        assert_eq!(
+            *cache.mesh_shared(&v, &params),
+            mesh_volume_with(&v, &params)
+        );
+        assert!(!cache.pending());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!cache.poll());
+        assert_eq!(*cache.output().unwrap(), mesh_volume_with(&v, &params));
     }
 
     #[test]

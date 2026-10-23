@@ -67,7 +67,9 @@ struct CacheEntry {
 /// revision changes (edits, undo/redo, load, visibility, opacity, palette,
 /// bounds), its slice clip moves or ghosts change. Switching tabs therefore
 /// never re-meshes, and parts the document did not re-mesh (e.g. after an
-/// opacity change) keep their GPU mesh.
+/// opacity change) keep their GPU mesh. Large updates mesh in the
+/// background ([`Document::view_meshes_background`]); every call takes in
+/// the tiles finished since the last one.
 #[derive(Default)]
 pub struct MeshCache {
     entries: HashMap<u64, CacheEntry>,
@@ -86,12 +88,16 @@ impl MeshCache {
             ghosts,
             ghosts.then_some(doc.active_layer),
         );
-        if let Some(entry) = self.entries.get(&doc.id()).filter(|e| e.key == key) {
-            return entry.meshes.clone();
-        }
+        // Same build: only background tiles that finished can change it.
+        let view = match self.entries.get(&doc.id()) {
+            Some(entry) if entry.key == key => match doc.poll_view_meshes() {
+                Some(view) => view,
+                None => return entry.meshes.clone(),
+            },
+            _ => doc.view_meshes_background(ghosts),
+        };
         let old = self.entries.remove(&doc.id());
         let (bmin, _) = bounds_box(doc.data.bounds);
-        let view = doc.view_meshes(ghosts);
         let mut sources = Vec::new();
         let mut gpu = |mesh: &Arc<rizxel_app::Mesh>| {
             let reused = old.as_ref().and_then(|e| {
@@ -326,6 +332,11 @@ pub fn show(
     );
     // Tool edits may have changed the document this frame.
     let voxels = state.doc().map(|d| meshes.get(d, ghosts)).or(voxels);
+    // Keep frames coming while background tiles arrive.
+    let meshing = state.doc().is_some_and(Document::view_meshing);
+    if meshing {
+        ui.ctx().request_repaint();
+    }
 
     // --- Scene (wgpu) -------------------------------------------------------
     let mut frame = scene_frame(state, &proj, target, bmin, bmax, ppp);
@@ -382,6 +393,16 @@ pub fn show(
         state.camera.toggle_projection();
     }
     view_toggles(ui, &mut state.view, toggles_rect);
+
+    if meshing {
+        painter.text(
+            Pos2::new(rect.left() + 12.0, rect.bottom() - 12.0),
+            Align2::LEFT_BOTTOM,
+            "Meshing...",
+            theme::regular(12.0),
+            theme::TEXT_DIM,
+        );
+    }
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);

@@ -290,6 +290,8 @@ struct ViewCache {
     opaque: TileMeshCache,
     /// Per translucent layer.
     layers: HashMap<LayerId, TileMeshCache>,
+    /// The last result, updated in place by [`Document::poll_view_meshes`].
+    last: ViewMeshes,
 }
 
 /// Geometry of the effectively visible layers for one revision, in layer
@@ -525,6 +527,51 @@ impl Document {
     /// output as a full mesh), and an opacity change alone re-meshes
     /// nothing.
     pub fn view_meshes(&self, ghosts: bool) -> ViewMeshes {
+        self.view_meshes_with(ghosts, false)
+    }
+
+    /// [`Document::view_meshes`] for the viewport: a large update (an
+    /// import, the undo of a big edit) is meshed by the background pool and
+    /// the result keeps the previous meshes of the waiting tiles; call
+    /// [`Document::poll_view_meshes`] every frame while
+    /// [`Document::view_meshing`]. Small edits mesh right here.
+    pub fn view_meshes_background(&self, ghosts: bool) -> ViewMeshes {
+        self.view_meshes_with(ghosts, true)
+    }
+
+    /// True while background meshing for the viewport is in progress.
+    pub fn view_meshing(&self) -> bool {
+        let cache = self.view_cache.borrow();
+        cache.opaque.pending() || cache.layers.values().any(TileMeshCache::pending)
+    }
+
+    /// Takes in finished background tiles. Returns the updated meshes of
+    /// the last [`Document::view_meshes_background`] call when any part
+    /// changed (alphas and centers unchanged).
+    pub fn poll_view_meshes(&self) -> Option<ViewMeshes> {
+        let mut cache = self.view_cache.borrow_mut();
+        let cache = &mut *cache;
+        let mut changed = false;
+        if cache.opaque.poll() {
+            if let Some(mesh) = cache.opaque.output() {
+                cache.last.opaque = mesh;
+                changed = true;
+            }
+        }
+        for t in &mut cache.last.transparent {
+            if let Some(tiles) = cache.layers.get_mut(&t.layer) {
+                if tiles.poll() {
+                    if let Some(mesh) = tiles.output() {
+                        t.mesh = mesh;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed.then(|| cache.last.clone())
+    }
+
+    fn view_meshes_with(&self, ghosts: bool, background: bool) -> ViewMeshes {
         let clip = self.view_clip();
         let clipped = |v: &VoxelVolume| match clip {
             Some(c) => v.cropped(&c),
@@ -537,6 +584,14 @@ impl Document {
             let mut opaque = Vec::new();
             let mut out = ViewMeshes::default();
             let mut kept = Vec::new();
+            let mesh = |tiles: &mut TileMeshCache, volume: &VoxelVolume, params: &MeshParams| {
+                let params = params.ao(true);
+                if background {
+                    tiles.mesh_background(volume, &params)
+                } else {
+                    tiles.mesh_shared(volume, &params)
+                }
+            };
             for &(index, volume) in layers {
                 let alpha = self.view_alpha(index, ghosts);
                 if alpha >= 1.0 {
@@ -554,8 +609,7 @@ impl Document {
                 let slots = MaterialSlots::Uniform(self.material_slot(index));
                 out.transparent.push(TransparentMesh {
                     layer: layer.id,
-                    mesh: tiles
-                        .mesh_shared(&volume, &MeshParams::new(palette).slots(slots).ao(true)),
+                    mesh: mesh(tiles, &volume, &MeshParams::new(palette).slots(slots)),
                     alpha,
                     center: (lo + hi).as_vec3() * 0.5,
                 });
@@ -592,10 +646,15 @@ impl Document {
                     (Some(&merged), slots)
                 }
             };
-            if let Some(volume) = volume {
-                let params = MeshParams::new(palette).slots(slots).ao(true);
-                out.opaque = cache.opaque.mesh_shared(volume, &params);
+            match volume {
+                Some(volume) => {
+                    let params = MeshParams::new(palette).slots(slots);
+                    out.opaque = mesh(&mut cache.opaque, volume, &params);
+                }
+                // Nothing opaque: drop the cache so no late tile lands here.
+                None => cache.opaque = TileMeshCache::default(),
             }
+            cache.last = out.clone();
             out
         })
     }
@@ -2332,6 +2391,84 @@ mod tests {
         assert_eq!(d.view_alpha(0, false), 0.5);
         assert!(d.undo());
         assert_eq!(d.view_alpha(0, false), 1.0);
+    }
+
+    #[test]
+    fn large_import_meshes_in_the_background() {
+        // A 256³ document like an import: the viewport call returns at
+        // once and the meshes fill in until they equal the synchronous ones.
+        let mut volume = VoxelVolume::new(BoundSize::new(256, 256, 256));
+        for z in 0..256 {
+            for x in 0..256 {
+                let h = 4 + ((x * 7 + z * 3) % 24);
+                for y in 0..h {
+                    volume.set(IVec3::new(x, y, z), 1 + ((x / 16 + z / 16) % 8) as Voxel);
+                }
+            }
+        }
+        let mut layer = Layer::new("import", BoundSize::new(256, 256, 256));
+        layer.volume = volume;
+        let d = Document::with_bounds("big", BoundSize::new(256, 256, 256), vec![layer]);
+
+        let start = std::time::Instant::now();
+        let first = d.view_meshes_background(false);
+        let returned = start.elapsed();
+        assert!(d.view_meshing(), "large updates go to the pool");
+        assert!(
+            first.opaque.is_empty(),
+            "nothing finished yet on a first call"
+        );
+        let mut polls = 0;
+        let mut last = first;
+        while d.view_meshing() {
+            if let Some(view) = d.poll_view_meshes() {
+                last = view;
+            }
+            polls += 1;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if let Some(view) = d.poll_view_meshes() {
+            last = view;
+        }
+        let total = start.elapsed();
+        println!("256³ import: returned in {returned:?}, meshed in {total:?} ({polls} polls)");
+        let params = MeshParams::new(&d.data.palette).ao(true);
+        let full = rizxel_engine::mesh_volume_with(&d.data.layers[0].volume, &params);
+        assert_eq!(*last.opaque, full);
+        assert!(returned < total);
+    }
+
+    #[test]
+    fn undoing_a_big_edit_meshes_in_the_background() {
+        let mut d = Document::new("t");
+        d.set_bounds(BoundSize::new(96, 32, 96), false);
+        d.view_meshes_background(false);
+        let wall: Vec<_> = (0..96)
+            .flat_map(|x| (0..32).map(move |y| (IVec3::new(x, y, 40), 5)))
+            .collect();
+        d.set_voxels(0, wall.clone(), false);
+        d.view_meshes_background(false);
+        while d.view_meshing() {
+            d.poll_view_meshes();
+        }
+        // Deleting only drops tiles: nothing to mesh.
+        d.set_voxels(0, wall.into_iter().map(|(p, _)| (p, EMPTY_VOXEL)), false);
+        assert!(d.view_meshes_background(false).opaque.is_empty());
+        assert!(!d.view_meshing());
+        // Undoing the delete brings back 12 tiles: background.
+        assert!(d.undo());
+        d.view_meshes_background(false);
+        assert!(d.view_meshing());
+        while d.view_meshing() {
+            d.poll_view_meshes();
+        }
+        // A brush-sized edit stays synchronous.
+        d.set_voxels(0, [(IVec3::new(3, 3, 3), 5)], false);
+        let view = d.view_meshes_background(false);
+        assert!(!d.view_meshing());
+        let params = MeshParams::new(&d.data.palette).ao(true);
+        let full = rizxel_engine::mesh_volume_with(&d.data.layers[0].volume, &params);
+        assert_eq!(*view.opaque, full);
     }
 
     #[test]
