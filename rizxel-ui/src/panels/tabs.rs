@@ -46,7 +46,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (i, doc) in state.documents.iter().enumerate() {
                     let active = i == state.active_doc;
-                    let title = doc.title();
+                    // `name*.rzxl` while unsaved.
+                    let title = doc.tab_title();
                     if let Some(a) = tab(
                         ui,
                         i,
@@ -76,7 +77,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
 
     match action {
         Some(TabAction::Activate(i)) => state.activate(i),
-        Some(TabAction::Close(i)) => state.close_document(i),
+        // Unsaved documents ask first (the prompt is drawn by the app).
+        Some(TabAction::Close(i)) => {
+            state.close_document_checked(i);
+        }
         None => {}
     }
 }

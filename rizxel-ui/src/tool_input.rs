@@ -75,6 +75,9 @@ pub struct ToolInput {
     region_cache: Option<(RegionKey, Vec<IVec3>)>,
     /// Selection outline cache: geometry and whether it fell back to the box.
     selection_cache: Option<(SelectionKey, Preview, bool)>,
+    /// Pick target while a floating paste follows the cursor: the model
+    /// without the paste, keyed by `(document id, edit count)`.
+    paste_pick: Option<((u64, u64), VoxelVolume)>,
 }
 
 /// `(document id, revision, hit voxel, hit normal, options, selection
@@ -311,6 +314,14 @@ impl ToolInput {
             return preview;
         };
 
+        // A floating paste takes the viewport input until it is placed.
+        if state.doc().is_some_and(|d| d.floating_paste().is_some()) {
+            self.drag = None;
+            self.paste_frame(f, state, &mut preview);
+            return preview;
+        }
+        self.paste_pick = None;
+
         // A drag survives only on its own document and while its
         // transaction is open (undo or a tab switch may have closed it).
         if let Some(drag) = &self.drag {
@@ -483,6 +494,68 @@ impl ToolInput {
             drag_marquee(f, drag, &mut preview);
         }
         preview
+    }
+
+    // ---------------------------------------------------------------- paste
+
+    /// Floating paste: follows the cursor (Paste) or stays put (Paste in
+    /// Place); a click or `Enter` places it, `Esc` cancels it.
+    fn paste_frame(&mut self, f: &Frame, state: &mut AppState, out: &mut Preview) {
+        let (pressed, focused) = f.ui.input(|i| {
+            (
+                i.pointer.button_pressed(egui::PointerButton::Primary),
+                i.focused,
+            )
+        });
+        let keys = !f.ui.ctx().egui_wants_keyboard_input();
+        let (enter, esc) = f.ui.input_mut(|i| {
+            (
+                keys && i.consume_key(Modifiers::NONE, Key::Enter),
+                keys && i.consume_key(Modifiers::NONE, Key::Escape),
+            )
+        });
+        if esc {
+            state.cancel_paste();
+            return;
+        }
+        let hover = f.response.hover_pos();
+        let Some(doc) = state.doc_mut() else { return };
+        let key = (doc.id(), doc.edit_count());
+        if self.paste_pick.as_ref().is_none_or(|(k, _)| *k != key) {
+            let snapshot = doc.without_paste(pick_snapshot);
+            self.paste_pick = Some((key, snapshot));
+        }
+        let follows = doc.floating_paste().is_some_and(|p| p.follows_cursor);
+        if let (true, Some(pos), Some((_, snap))) = (follows && focused, hover, &self.paste_pick) {
+            let plane = doc.plane;
+            let hit = pick_with(&f.ray(pos), snap.bounds(), &plane, true, true, |p| {
+                snap.get(p) != EMPTY_VOXEL
+            });
+            let origin = hit.and_then(|h| doc.floating_paste().map(|p| p.origin_at(h.adjacent())));
+            if let Some(origin) = origin {
+                doc.move_paste(origin);
+            }
+        }
+        if let Some(p) = doc.floating_paste() {
+            let lo = p.origin.as_vec3() + f.bmin;
+            box_outline(
+                lo,
+                lo + p.size.as_vec3(),
+                theme::ACCENT_LIGHT,
+                2.0 * f.pixels_per_point,
+                out,
+            );
+            state.tool_feedback = Some(format!(
+                "Paste at ({}, {}, {}): click or Enter to place, Esc to cancel",
+                p.origin.x, p.origin.y, p.origin.z
+            ));
+        }
+        let click = pressed
+            && f.response.hovered()
+            && hover.is_some_and(|p| !f.blocked.iter().any(|r| r.contains(p)));
+        if enter || click {
+            state.commit_paste();
+        }
     }
 
     // ---------------------------------------------------------------- press
@@ -1219,15 +1292,10 @@ fn selection_keys(f: &Frame, state: &mut AppState) {
                 || i.consume_key(Modifiers::NONE, Key::Backspace),
         )
     });
-    let Some(doc) = state.doc_mut() else { return };
     if del {
-        let removed = doc.delete_selected();
-        state.status_message = Some(match doc.editable_layer(doc.active_layer) {
-            Err(e) if removed == 0 => e.message().to_owned(),
-            _ => format!("Deleted {removed} selected voxels"),
-        });
-    } else if esc && doc.clear_selection() {
-        state.status_message = Some("Selection cleared".to_owned());
+        state.delete_selected();
+    } else if esc {
+        state.deselect();
     }
 }
 

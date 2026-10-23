@@ -7,7 +7,8 @@ A native voxel editor written in pure Rust. Rizxel uses `egui` for the interface
 [CADCraft](https://github.com/storytold/cadcraft), and its voxel model and tools draw on
 Goxel, MagicaVoxel and Qubicle.
 
-> Status: pre-release (`0.2.0`). Phases 1–6, Slice Mode and CI are in place. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+> Status: pre-release (`0.3.0`). Phases 1–8 are in place: the editing tools, import/export,
+> Slice Mode, CI and safe editing (save prompt, autosave, clipboard, transforms). See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Features
 
@@ -18,12 +19,16 @@ Goxel, MagicaVoxel and Qubicle.
   selection.
 - **Undo/redo**: one drag is one undo step, and a cancelled drag restores the grid
   exactly.
+- **Clipboard and transforms**: copy, cut, a floating paste that follows the cursor,
+  paste to a new layer, rotate 90°, flip and mirror, each one undo step.
+- **Safe editing**: a Save / Don't Save / Cancel prompt on every close path, autosave
+  with crash recovery, and a recent files list.
 - **Layers**: groups, linked clones, procedural shape layers (cube, sphere, cylinder),
   non-destructive crop, opacity, materials, visibility and lock.
 - **Viewport**: wgpu with 4× MSAA, an infinity grid, greedy-meshed voxels, Model and
   Render shading, a 26-target view cube and incremental per-tile re-meshing.
-- **Workspace**: dockable and floating panels, document tabs, Zen mode, and a frameless
-  window with a custom title bar.
+- **Workspace**: dockable and floating panels, document tabs (`name*.rzxl` while
+  unsaved), Zen mode, and a frameless window with a custom title bar.
 - **Files**: native `.rzxl` (zstd-compressed JSON). Rizxel can also import and export
   MagicaVoxel `.vox`, Goxel `.gox`, Wavefront `.obj` + `.mtl` and `.stl`.
 

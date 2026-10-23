@@ -15,6 +15,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 6 | Import and export | ✅ Done | `363f73d` |
 | Slice | Qubicle-style Slice Mode | ✅ Done | `04bbdf7`, `d6f13b2` |
 | 7 | Stabilize, CI and 0.2.0 | ✅ Done | `v0.2.0` |
+| 8 | Safe editing and 0.3.0 | ✅ Done | `v0.3.0` |
 
 ---
 
@@ -174,3 +175,22 @@ Plan: [`rizxel_phase7_implementation_plan.md`](plan/rizxel_phase7_implementation
   CHANGELOG section and the `v0.2.0` tag.
 - Planning documents moved to a local-only `docs/plan/`; screenshots of third-party
   applications removed from the repository history.
+
+## Phase 8 — Safe editing and 0.3.0
+
+Plan: [`rizxel_phase8_implementation_plan.md`](plan/rizxel_phase8_implementation_plan.md)
+
+**Delivered** (PR #3, tag `v0.3.0`)
+- Save / Don't Save / Cancel prompt before unsaved work is closed, from the tab, *File ▸
+  Exit*, the title bar, `Alt+F4` and the OS (`e6e4a21`), and `name*.rzxl` on unsaved
+  tabs (`187beb4`).
+- App data folder and *File ▸ Open Recent* (`7fdd4c8`).
+- Autosave every 2 minutes or 50 edits on a background thread, with a Restore / Discard
+  dialog after a crash (`e2d69d8`, `be3f4ae`).
+- Copy, cut, a floating paste that follows the cursor, paste in place and paste to a
+  new layer, with palette mapping across documents (`6aa12e4`).
+- Rotate 90°, flip X/Y/Z and a one-shot mirror for the selection or layer (`50f2000`).
+- Complete Edit menu with Select All, Invert and Deselect, and an expanded Keyboard
+  Shortcuts window (`18bba53`).
+- The randomized undo-all / redo-all test covers paste, cut and every transform, each
+  one undo step (`8131880`); 261 tests.

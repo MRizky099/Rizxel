@@ -3,21 +3,35 @@
 //! Headless application state. The UI layer reads this state and mutates it
 //! only through the methods below, so all behavior is testable without a window.
 
+pub mod autosave;
+pub mod clipboard;
+pub mod close;
 pub mod document;
 pub mod history;
 pub mod interchange;
+pub mod paths;
+pub mod recent;
 pub mod selection;
 
 use std::path::Path;
+use std::time::Instant;
 
 use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use glam::{IVec3, Mat4, Vec3};
+use rizxel_engine::tools::Transform;
 use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
-pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
+pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
+pub use clipboard::Clipboard;
+pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
+pub use document::{
+    DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
+};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
+pub use paths::AppPaths;
+pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::RZXL_EXTENSION;
@@ -366,6 +380,16 @@ pub struct AppState {
     /// Live feedback of the active tool (hovered slice plane, pending
     /// change count while dragging). Set by the viewport every frame.
     pub tool_feedback: Option<String>,
+    /// Open "Save changes?" prompt (tab close or exit).
+    closing: Option<CloseRequest>,
+    /// App data folder; `None` keeps recent files and autosave in memory
+    /// only (tests, or no home directory).
+    paths: Option<AppPaths>,
+    /// *File ▸ Open Recent*.
+    pub recent: RecentFiles,
+    autosave: autosave::Autosave,
+    /// Voxels copied or cut, shared by every open document.
+    pub clipboard: Option<Clipboard>,
     untitled_counter: u32,
 }
 
@@ -382,6 +406,11 @@ impl Default for AppState {
             cursor_voxel: None,
             status_message: None,
             tool_feedback: None,
+            closing: None,
+            paths: None,
+            recent: RecentFiles::default(),
+            autosave: autosave::Autosave::default(),
+            clipboard: None,
             untitled_counter: 0,
         };
         state.new_document();
@@ -390,6 +419,48 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// State backed by an app data folder: loads the recent files list.
+    pub fn with_paths(paths: Option<AppPaths>) -> Self {
+        let mut state = Self::default();
+        if let Some(p) = &paths {
+            state.recent = RecentFiles::load(&p.recent_file());
+        }
+        state.paths = paths;
+        state
+    }
+
+    pub fn paths(&self) -> Option<&AppPaths> {
+        self.paths.as_ref()
+    }
+
+    // --------------------------------------------------------- recent files
+
+    /// Puts `path` at the top of the recent files and writes the list.
+    pub fn remember_recent(&mut self, path: &Path) {
+        self.recent.push(path);
+        self.write_recent();
+    }
+
+    /// Drops recent files that no longer exist (when the menu opens).
+    pub fn prune_recent(&mut self) {
+        if self.recent.prune() {
+            self.write_recent();
+        }
+    }
+
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.write_recent();
+    }
+
+    fn write_recent(&self) {
+        if let Some(p) = &self.paths {
+            if let Err(e) = self.recent.save(&p.recent_file()) {
+                log::warn!("recent files: {e}");
+            }
+        }
+    }
+
     // ------------------------------------------------------------ documents
 
     pub fn doc(&self) -> Option<&Document> {
@@ -420,17 +491,116 @@ impl AppState {
         }
     }
 
-    /// Closes a tab. Keeps at least one document open.
+    /// Closes a tab (its recovery file goes too). Keeps at least one
+    /// document open.
     pub fn close_document(&mut self, index: usize) {
         if index >= self.documents.len() {
             return;
         }
-        self.documents.remove(index);
+        let doc = self.documents.remove(index);
+        self.drop_recovery(doc.id());
         if self.documents.is_empty() {
             self.new_document();
         } else if self.active_doc >= index && self.active_doc > 0 {
             self.active_doc -= 1;
         }
+    }
+
+    fn doc_index(&self, id: u64) -> Option<usize> {
+        self.documents.iter().position(|d| d.id() == id)
+    }
+
+    /// Closes tab `index`, asking first when it has unsaved changes. Returns
+    /// `true` when the tab closed right away; otherwise the prompt is open
+    /// (see [`AppState::close_prompt`]).
+    pub fn close_document_checked(&mut self, index: usize) -> bool {
+        let Some(doc) = self.documents.get(index) else {
+            return false;
+        };
+        if !doc.is_dirty() {
+            self.close_document(index);
+            return true;
+        }
+        let request = CloseRequest::close_tab(doc.id());
+        let step = request.start();
+        self.closing = Some(request);
+        self.follow_close(step);
+        false
+    }
+
+    /// Exit requested (menu, title bar, `Alt+F4`, the OS). Returns `true`
+    /// when nothing is unsaved and the app may quit now; otherwise the
+    /// prompt walks the dirty documents one at a time.
+    pub fn request_exit(&mut self) -> bool {
+        if self.closing.is_some() {
+            return false;
+        }
+        self.cancel_active_edit();
+        let dirty: Vec<u64> = self
+            .documents
+            .iter()
+            .filter(|d| d.is_dirty())
+            .map(Document::id)
+            .collect();
+        if dirty.is_empty() {
+            return true;
+        }
+        let request = CloseRequest::exit(dirty);
+        let step = request.start();
+        self.closing = Some(request);
+        self.follow_close(step) == CloseStep::Quit
+    }
+
+    /// Open close request, if any.
+    pub fn closing(&self) -> Option<&CloseRequest> {
+        self.closing.as_ref()
+    }
+
+    /// Document the "Save changes?" prompt is about (also the active one).
+    pub fn close_prompt(&self) -> Option<&Document> {
+        let id = self.closing.as_ref()?.current()?;
+        self.documents.iter().find(|d| d.id() == id)
+    }
+
+    /// Answers the prompt. [`CloseStep::Save`] asks the caller to save the
+    /// active document (Save As when untitled) and then call
+    /// [`AppState::close_after_save`]; [`CloseStep::Quit`] means the app may
+    /// quit. Closing tabs and walking to the next document happen here.
+    pub fn answer_close(&mut self, choice: CloseChoice) -> CloseStep {
+        let Some(request) = &mut self.closing else {
+            return CloseStep::Abort;
+        };
+        let step = request.answer(choice);
+        self.follow_close(step)
+    }
+
+    /// Continues after the save asked for by [`CloseStep::Save`]: a document
+    /// that is still dirty (Save As cancelled, write failed) aborts.
+    pub fn close_after_save(&mut self) -> CloseStep {
+        let saved = self.close_prompt().is_some_and(|d| !d.is_dirty());
+        let Some(request) = &mut self.closing else {
+            return CloseStep::Abort;
+        };
+        let step = request.saved(saved);
+        self.follow_close(step)
+    }
+
+    fn follow_close(&mut self, step: CloseStep) -> CloseStep {
+        match step {
+            CloseStep::Ask(id) | CloseStep::Save(id) => match self.doc_index(id) {
+                Some(i) => self.activate(i),
+                // Gone meanwhile: nothing left to ask about.
+                None => return self.answer_close(CloseChoice::DontSave),
+            },
+            CloseStep::Close(id) => {
+                self.closing = None;
+                if let Some(i) = self.doc_index(id) {
+                    self.close_document(i);
+                }
+            }
+            CloseStep::Quit | CloseStep::Abort => self.closing = None,
+        }
+        step
     }
 
     /// Opens a `.rzxl`. If it is already open, that tab is activated instead.
@@ -455,14 +625,118 @@ impl AppState {
         } else {
             self.push_document(doc);
         }
+        self.remember_recent(path);
         Ok(())
     }
 
     /// Saves the active document to `path`.
     pub fn save_active_as(&mut self, path: &Path) -> Result<(), RzxlError> {
-        match self.doc_mut() {
-            Some(doc) => doc.save_to(path),
-            None => Ok(()),
+        let id = match self.doc_mut() {
+            Some(doc) => {
+                doc.save_to(path)?;
+                doc.id()
+            }
+            None => return Ok(()),
+        };
+        self.remember_recent(path);
+        // Saved by hand: the autosave copy is obsolete.
+        if let (Some(key), Some(paths)) = (self.autosave.saved(id), &self.paths) {
+            autosave::remove_recovery(paths, &key);
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ autosave
+
+    /// Starts background autosaves of the documents that are due at `now`
+    /// and collects finished ones; a failure goes to the status bar.
+    pub fn autosave_tick(&mut self, now: Instant) {
+        let Some(paths) = &self.paths else { return };
+        for id in self.autosave.due(now, &self.documents) {
+            if let Some(doc) = self.documents.iter().find(|d| d.id() == id) {
+                self.autosave.write(now, doc, paths);
+            }
+        }
+        self.collect_autosaves(false);
+    }
+
+    /// Waits for every autosave in flight.
+    pub fn flush_autosave(&mut self) {
+        self.collect_autosaves(true);
+    }
+
+    fn collect_autosaves(&mut self, block: bool) {
+        for (id, result) in self.autosave.finished(block) {
+            if let Err(e) = result {
+                log::warn!("autosave: {e}");
+                self.status_message = Some(format!("Autosave failed: {e}"));
+                continue;
+            }
+            // Closed or saved while the write ran: the copy is obsolete.
+            let obsolete = self
+                .documents
+                .iter()
+                .find(|d| d.id() == id)
+                .is_none_or(|d| !d.is_dirty());
+            if obsolete {
+                self.drop_recovery(id);
+            }
+        }
+    }
+
+    /// Deletes the recovery file of document `id` and forgets it.
+    fn drop_recovery(&mut self, id: u64) {
+        if let (Some(key), Some(paths)) = (self.autosave.forget(id), &self.paths) {
+            autosave::remove_recovery(paths, &key);
+        }
+    }
+
+    /// Clean exit: every document is answered for, so no recovery file stays.
+    pub fn clean_exit(&mut self) {
+        self.flush_autosave();
+        let ids: Vec<u64> = self.documents.iter().map(Document::id).collect();
+        for id in ids {
+            self.drop_recovery(id);
+        }
+    }
+
+    /// Recovery files left by an earlier session that did not exit cleanly.
+    pub fn recoverable(&self) -> Vec<RecoveryEntry> {
+        self.paths
+            .as_ref()
+            .map(autosave::recoverable)
+            .unwrap_or_default()
+    }
+
+    /// Opens a recovery file as a dirty document with its original path.
+    /// The recovery file stays until the document is saved or closed.
+    pub fn restore(&mut self, entry: &RecoveryEntry) -> Result<(), RzxlError> {
+        let Some(paths) = &self.paths else {
+            return Err(RzxlError::Invalid("no app data folder".to_owned()));
+        };
+        let project = rizxel_io::load_rzxl(&entry.rzxl(paths))?;
+        let mut doc = Document::from_project(project, entry.meta.original.clone())?;
+        doc.name.clone_from(&entry.meta.name);
+        doc.mark_unsaved();
+        self.autosave.adopt_key(doc.id(), entry.key.clone());
+        self.cancel_active_edit();
+        let replace_pristine = self.documents.len() == 1
+            && self.documents[0].path.is_none()
+            && !self.documents[0].is_dirty();
+        if replace_pristine {
+            let old = std::mem::replace(&mut self.documents[0], doc);
+            self.drop_recovery(old.id());
+            self.active_doc = 0;
+        } else {
+            self.push_document(doc);
+        }
+        Ok(())
+    }
+
+    /// Deletes a recovery file the user chose not to restore.
+    pub fn discard_recovery(&self, entry: &RecoveryEntry) {
+        if let Some(paths) = &self.paths {
+            autosave::remove_recovery(paths, &entry.key);
         }
     }
 
@@ -503,6 +777,206 @@ impl AppState {
         self.doc()
             .and_then(Document::selection)
             .map_or(0, Selection::len)
+    }
+
+    // ------------------------------------------------------ edit menu
+
+    /// The active layer stores voxels and has some (Select All, Invert,
+    /// Copy, transforms).
+    pub fn active_layer_has_voxels(&self) -> bool {
+        self.doc()
+            .and_then(Document::active_layer)
+            .is_some_and(|l| l.kind().stores_voxels() && !l.volume.is_empty())
+    }
+
+    /// Tools may write into the active layer (hidden counts as writable).
+    pub fn active_layer_editable(&self) -> bool {
+        self.doc().is_some_and(|d| {
+            matches!(
+                d.editable_layer(d.active_layer),
+                Ok(()) | Err(EditBlock::Hidden)
+            )
+        })
+    }
+
+    pub fn select_all(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.select_all();
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selected {n} voxels"));
+        }
+    }
+
+    pub fn invert_selection(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.invert_selection();
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selection inverted: {n} voxels"));
+        }
+    }
+
+    pub fn deselect(&mut self) {
+        if self.doc_mut().is_some_and(Document::clear_selection) {
+            self.status_message = Some("Selection cleared".to_owned());
+        }
+    }
+
+    /// Deletes the selected voxels of the active layer (`Delete`).
+    pub fn delete_selected(&mut self) {
+        let Some(doc) = self.doc_mut() else { return };
+        let removed = doc.delete_selected();
+        self.status_message = Some(match doc.editable_layer(doc.active_layer) {
+            Err(e) if removed == 0 && e != EditBlock::Hidden => e.message().to_owned(),
+            _ => format!("Deleted {removed} selected voxels"),
+        });
+    }
+
+    // --------------------------------------------------------- clipboard
+
+    /// Copies the selection (or the whole active layer) to the clipboard.
+    pub fn copy(&mut self) -> bool {
+        let clip = self.doc().and_then(Clipboard::copy);
+        self.status_message = Some(match &clip {
+            Some(c) => format!("Copied {} voxels", c.cells.len()),
+            None => "Nothing to copy".to_owned(),
+        });
+        let copied = clip.is_some();
+        if copied {
+            self.clipboard = clip;
+        }
+        copied
+    }
+
+    /// Copies, then deletes the selection (or the whole active layer), as
+    /// one undo step.
+    pub fn cut(&mut self) -> bool {
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        let block = doc.editable_layer(doc.active_layer).err();
+        let clip = doc.cut();
+        self.status_message = Some(match (&clip, block) {
+            (Some(c), _) => format!("Cut {} voxels", c.cells.len()),
+            (None, Some(e)) if e != EditBlock::Hidden => e.message().to_owned(),
+            (None, _) => "Nothing to cut".to_owned(),
+        });
+        let cut = clip.is_some();
+        if cut {
+            self.clipboard = clip;
+        }
+        cut
+    }
+
+    /// Starts a floating paste on the active layer that follows the cursor,
+    /// starting with its bottom center at `at` (the hovered cell) or, off
+    /// the model, where it was copied from.
+    pub fn paste(&mut self, at: Option<IVec3>) -> bool {
+        self.start_paste(at, true)
+    }
+
+    /// Floating paste at the position it was copied from; it stays there
+    /// until committed.
+    pub fn paste_in_place(&mut self) -> bool {
+        self.start_paste(None, false)
+    }
+
+    fn start_paste(&mut self, at: Option<IVec3>, follow: bool) -> bool {
+        let Some(clip) = self.clipboard.clone() else {
+            self.status_message = Some("The clipboard is empty".to_owned());
+            return false;
+        };
+        let origin = at.map_or(clip.origin, |cell| clip.origin_at(cell));
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        let result = doc.begin_paste(&clip, origin, follow);
+        self.status_message = Some(match result {
+            Ok(()) => format!(
+                "Pasting {} voxels: click or Enter to place, Esc to cancel",
+                clip.cells.len()
+            ),
+            Err(e) => e.message().to_owned(),
+        });
+        result.is_ok()
+    }
+
+    /// Pastes in place into a new layer (one undo step).
+    pub fn paste_to_new_layer(&mut self) -> bool {
+        let Some(clip) = self.clipboard.clone() else {
+            self.status_message = Some("The clipboard is empty".to_owned());
+            return false;
+        };
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        doc.paste_to_new_layer(&clip);
+        self.status_message = Some(format!(
+            "Pasted {} voxels into a new layer",
+            clip.cells.len()
+        ));
+        true
+    }
+
+    /// Places the floating paste of the active document.
+    pub fn commit_paste(&mut self) {
+        if let Some(doc) = self.doc_mut().filter(|d| d.floating_paste().is_some()) {
+            let n = doc.commit_paste();
+            self.status_message = Some(format!("Pasted {n} voxels"));
+        }
+    }
+
+    pub fn cancel_paste(&mut self) {
+        if let Some(doc) = self.doc_mut().filter(|d| d.floating_paste().is_some()) {
+            doc.cancel_paste();
+            self.status_message = Some("Paste cancelled".to_owned());
+        }
+    }
+
+    // -------------------------------------------------------- transforms
+
+    /// Axis the camera faces most (the default axis of rotate and flip).
+    pub fn facing_axis(&self) -> usize {
+        rizxel_engine::raycast::dominant_axis(self.camera.eye_direction())
+    }
+
+    /// Rotates the selection (or active layer) a quarter turn about `axis`:
+    /// `turns` is counterclockwise seen from `+axis`.
+    pub fn rotate(&mut self, axis: usize, turns: i32) {
+        let label = format!("Rotate {}° about {}", turns * 90, AXIS_NAMES[axis]);
+        self.run_transform(&label, |d| d.transform(Transform::Rotate { axis, turns }));
+    }
+
+    /// Rotates about the axis the camera faces, counterclockwise on screen
+    /// (`clockwise` reverses it): `Ctrl+R` / `Ctrl+Shift+R`.
+    pub fn rotate_facing(&mut self, clockwise: bool) {
+        let axis = self.facing_axis();
+        // Seen from the -axis side, a screen-counterclockwise turn is negative.
+        let toward_plus = self.camera.eye_direction()[axis] >= 0.0;
+        let turns = if toward_plus != clockwise { 1 } else { -1 };
+        self.rotate(axis, turns);
+    }
+
+    pub fn flip(&mut self, axis: usize) {
+        let label = format!("Flip {}", AXIS_NAMES[axis]);
+        self.run_transform(&label, |d| d.transform(Transform::Flip { axis }));
+    }
+
+    /// Copies the `-axis` half onto the `+axis` half (Mirror ▸).
+    pub fn mirror(&mut self, axis: usize) {
+        let label = format!("Mirror {}", AXIS_NAMES[axis]);
+        self.run_transform(&label, |d| d.mirror(axis));
+    }
+
+    fn run_transform(
+        &mut self,
+        label: &str,
+        f: impl FnOnce(&mut Document) -> Result<usize, TransformError>,
+    ) {
+        let Some(doc) = self.doc_mut() else { return };
+        self.status_message = Some(match f(doc) {
+            Ok(n) => format!("{label}: {n} voxels changed"),
+            Err(e) => format!("{label}: {}", e.message()),
+        });
     }
 
     // ------------------------------------------------------------- slice
@@ -579,6 +1053,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn starts_with_one_untitled_doc() {
@@ -641,6 +1116,97 @@ mod tests {
         assert_eq!(s.documents.len(), 1, "always keeps one document");
     }
 
+    fn dirty(s: &mut AppState) {
+        s.doc_mut().unwrap().add_layer();
+    }
+
+    #[test]
+    fn clean_documents_close_without_a_prompt() {
+        let mut s = AppState::default();
+        s.new_document();
+        assert!(s.close_document_checked(1));
+        assert_eq!(s.documents.len(), 1);
+        assert!(s.request_exit());
+        assert!(s.closing().is_none());
+    }
+
+    #[test]
+    fn cancel_keeps_everything_open() {
+        let mut s = AppState::default();
+        dirty(&mut s);
+        s.new_document();
+        assert!(!s.close_document_checked(0));
+        assert_eq!(s.active_doc, 0, "the prompt shows its document");
+        assert_eq!(
+            s.close_prompt().map(Document::id),
+            Some(s.documents[0].id())
+        );
+        assert_eq!(s.answer_close(CloseChoice::Cancel), CloseStep::Abort);
+        assert_eq!(s.documents.len(), 2);
+        assert!(s.close_prompt().is_none());
+
+        assert!(!s.request_exit());
+        assert_eq!(s.answer_close(CloseChoice::Cancel), CloseStep::Abort);
+        assert_eq!(s.documents.len(), 2);
+        assert!(s.documents[0].is_dirty());
+    }
+
+    #[test]
+    fn dont_save_on_a_tab_closes_it() {
+        let mut s = AppState::default();
+        s.new_document();
+        dirty(&mut s);
+        let id = s.doc().unwrap().id();
+        assert!(!s.close_document_checked(1));
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Close(id));
+        assert_eq!(s.documents.len(), 1);
+    }
+
+    #[test]
+    fn exit_asks_about_each_dirty_document() {
+        let mut s = AppState::default();
+        dirty(&mut s);
+        s.new_document();
+        s.new_document();
+        dirty(&mut s);
+        let (a, c) = (s.documents[0].id(), s.documents[2].id());
+        assert!(!s.request_exit());
+        assert_eq!(s.close_prompt().map(Document::id), Some(a));
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Ask(c));
+        assert_eq!(s.active_doc, 2);
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Quit);
+        assert!(s.closing().is_none());
+    }
+
+    #[test]
+    fn save_during_exit_continues_only_when_saved() {
+        let path = std::env::temp_dir().join(format!("rizxel_close_{}.rzxl", std::process::id()));
+        let mut s = AppState::default();
+        dirty(&mut s);
+        s.new_document();
+        dirty(&mut s);
+        let second = s.documents[1].id();
+
+        assert!(!s.request_exit());
+        assert!(matches!(
+            s.answer_close(CloseChoice::Save),
+            CloseStep::Save(_)
+        ));
+        // Save As cancelled: the untitled document stays dirty, exit aborts.
+        assert_eq!(s.close_after_save(), CloseStep::Abort);
+        assert!(s.closing().is_none());
+
+        assert!(!s.request_exit());
+        assert!(matches!(
+            s.answer_close(CloseChoice::Save),
+            CloseStep::Save(_)
+        ));
+        s.save_active_as(&path).unwrap();
+        assert_eq!(s.close_after_save(), CloseStep::Ask(second));
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Quit);
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn save_and_open_roundtrip() {
         let path = std::env::temp_dir().join(format!("rizxel_app_{}.rzxl", std::process::id()));
@@ -654,6 +1220,157 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(s2.documents.len(), 1, "pristine tab replaced");
         assert_eq!(s2.doc().unwrap().data.layers.len(), 2);
+    }
+
+    #[test]
+    fn opens_and_saves_go_to_recent_files() {
+        let dir = std::env::temp_dir().join(format!("rizxel_paths_{}", std::process::id()));
+        let paths = AppPaths::with_root(dir.join("data"));
+        let file = dir.join("a.rzxl");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        s.save_active_as(&file).unwrap();
+        assert_eq!(s.recent.paths().len(), 1);
+        // A fresh start reads the list back.
+        let mut s2 = AppState::with_paths(Some(paths));
+        assert!(s2.recent.paths()[0].ends_with("a.rzxl"));
+        s2.open(&file).unwrap();
+        assert_eq!(s2.recent.paths().len(), 1, "no duplicate");
+        std::fs::remove_file(&file).unwrap();
+        s2.prune_recent();
+        assert!(s2.recent.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn temp_paths(tag: &str) -> (std::path::PathBuf, AppPaths) {
+        let dir = std::env::temp_dir().join(format!("rizxel_{tag}_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let paths = AppPaths::with_root(&dir);
+        (dir, paths)
+    }
+
+    fn file_len(path: &Path) -> u64 {
+        std::fs::metadata(path).map_or(0, |m| m.len())
+    }
+
+    #[test]
+    fn autosave_waits_for_time_or_edits() {
+        let (dir, paths) = temp_paths("autosave_timing");
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        dirty(&mut s);
+        s.autosave_tick(t0);
+        s.flush_autosave();
+        assert!(s.recoverable().is_empty(), "the clock only just started");
+        // Before the interval nothing is written; after it, once.
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL / 2);
+        s.flush_autosave();
+        assert!(s.recoverable().is_empty());
+        let t1 = t0 + AUTOSAVE_INTERVAL;
+        s.autosave_tick(t1);
+        s.flush_autosave();
+        let entries = s.recoverable();
+        assert_eq!(entries.len(), 1);
+        let file = entries[0].rzxl(&paths);
+        let first = file_len(&file);
+
+        // Never during an open transaction.
+        let doc = s.doc_mut().unwrap();
+        doc.begin_edit();
+        doc.edit_voxels(
+            0,
+            &[VoxelChange {
+                pos: IVec3::ZERO,
+                old: 0,
+                new: 3,
+            }],
+        );
+        s.autosave_tick(t1 + AUTOSAVE_INTERVAL * 2);
+        s.flush_autosave();
+        assert_eq!(file_len(&file), first, "skipped mid-edit");
+        s.doc_mut().unwrap().cancel_edit();
+
+        // 50 edits write again before the interval is over.
+        let t2 = t1 + AUTOSAVE_INTERVAL * 2;
+        s.autosave_tick(t2);
+        s.flush_autosave();
+        let second = file_len(&file);
+        for i in 0..AUTOSAVE_EDITS as i32 {
+            s.doc_mut()
+                .unwrap()
+                .set_voxels(0, [(IVec3::new(i % 30, i / 30, 1), 2)], false);
+        }
+        s.autosave_tick(t2 + Duration::from_secs(1));
+        s.flush_autosave();
+        assert_ne!(file_len(&file), second);
+
+        s.clean_exit();
+        assert!(s.recoverable().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_crash_leaves_a_restorable_copy() {
+        let (dir, paths) = temp_paths("autosave_crash");
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        s.doc_mut().unwrap().set_voxels(
+            0,
+            [(IVec3::new(1, 2, 3), 5), (IVec3::new(4, 0, 0), 7)],
+            false,
+        );
+        s.autosave_tick(t0);
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL);
+        s.flush_autosave();
+        let data = s.doc().unwrap().data.clone();
+        drop(s); // "crash": no clean exit
+
+        let mut fresh = AppState::with_paths(Some(paths));
+        let entries = fresh.recoverable();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].meta.title, "untitled_1.rzxl");
+        fresh.restore(&entries[0]).unwrap();
+        assert_eq!(fresh.documents.len(), 1, "pristine tab replaced");
+        let doc = fresh.doc().unwrap();
+        assert!(doc.is_dirty());
+        assert_eq!(doc.name, "untitled_1");
+        assert_eq!(doc.data, data);
+        // The file stays until the restored document is saved or closed.
+        assert_eq!(fresh.recoverable().len(), 1);
+        fresh.close_document(0);
+        assert!(fresh.recoverable().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn saving_removes_the_recovery_copy() {
+        let (dir, paths) = temp_paths("autosave_save");
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = dir.join("saved.rzxl");
+        let mut s = AppState::with_paths(Some(paths));
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        dirty(&mut s);
+        s.autosave_tick(t0);
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL);
+        s.flush_autosave();
+        assert_eq!(s.recoverable().len(), 1);
+        s.save_active_as(&saved).unwrap();
+        assert!(s.recoverable().is_empty());
+
+        // Discard deletes an entry without opening it.
+        dirty(&mut s);
+        let t1 = t0 + AUTOSAVE_INTERVAL * 2;
+        s.autosave_tick(t1);
+        s.autosave_tick(t1 + AUTOSAVE_INTERVAL);
+        s.flush_autosave();
+        let entries = s.recoverable();
+        assert_eq!(entries[0].meta.original.as_deref(), Some(saved.as_path()));
+        s.discard_recovery(&entries[0]);
+        assert!(s.recoverable().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

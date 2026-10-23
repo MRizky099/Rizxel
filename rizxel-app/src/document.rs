@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::IVec3;
-use rizxel_engine::tools::slice_layers;
+use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
 use rizxel_engine::{
     greedy_mesh, rasterize_shape, MaskMode, Mesh, SliceRequest, TileMeshCache, WorkPlane,
 };
@@ -15,6 +15,7 @@ use rizxel_math::{
     VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
 };
 
+use crate::clipboard::Clipboard;
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
 use crate::selection::Selection;
 
@@ -180,6 +181,28 @@ impl EditBlock {
     }
 }
 
+/// Why a transform did nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformError {
+    Blocked(EditBlock),
+    /// No voxels in the selection (or on the layer).
+    Empty,
+    /// Some voxels would leave the bounds; nothing was changed.
+    OutOfBounds,
+}
+
+impl TransformError {
+    pub const fn message(self) -> &'static str {
+        match self {
+            TransformError::Blocked(e) => e.message(),
+            TransformError::Empty => "Nothing to transform",
+            TransformError::OutOfBounds => {
+                "The result would leave the bounds: enlarge them or move the voxels first"
+            }
+        }
+    }
+}
+
 /// Summary of a [`Document::slice`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SliceOutcome {
@@ -191,6 +214,35 @@ pub struct SliceOutcome {
     pub layers: usize,
     /// Visible, non-empty voxel layers skipped because they are locked.
     pub locked_skipped: usize,
+}
+
+/// A paste that follows the cursor (like a selection Move) until it is
+/// committed (`Enter`, click) or cancelled (`Esc`). Its voxels are written
+/// tentatively inside an open edit transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatingPaste {
+    /// Target layer index.
+    pub layer: usize,
+    /// Minimum corner of the pasted box.
+    pub origin: IVec3,
+    /// Size of the pasted box.
+    pub size: IVec3,
+    /// Follows the cursor (Paste); Paste in Place stays where it was copied.
+    pub follows_cursor: bool,
+    /// Cells relative to `origin`, mapped onto the document palette.
+    cells: Vec<(IVec3, Voxel)>,
+}
+
+impl FloatingPaste {
+    /// Box origin that puts the paste's bottom center on `cell`.
+    pub fn origin_at(&self, cell: IVec3) -> IVec3 {
+        crate::clipboard::bottom_center_origin(self.size, cell)
+    }
+
+    /// Cells at their current position.
+    pub fn placed(&self) -> impl Iterator<Item = (IVec3, Voxel)> + '_ {
+        self.cells.iter().map(|&(p, v)| (p + self.origin, v))
+    }
 }
 
 /// Result of [`DocData::evaluate`]: the layer's own volume or a computed one.
@@ -227,6 +279,10 @@ pub struct Document {
     /// Incremented on every data change; compared with `saved_revision`.
     revision: u64,
     saved_revision: u64,
+    /// Undo steps recorded, undone or redone so far (autosave counts them).
+    edits: u64,
+    /// Paste in progress (see [`Document::begin_paste`]).
+    paste: Option<FloatingPaste>,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -275,6 +331,8 @@ impl Document {
             history: History::default(),
             revision: 0,
             saved_revision: 0,
+            edits: 0,
+            paste: None,
             geometry: RefCell::new(None),
             view_tiles: RefCell::new(TileMeshCache::default()),
         }
@@ -289,6 +347,12 @@ impl Document {
     /// Process-unique document id.
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Undo steps recorded, undone or redone since the document was created
+    /// (a whole drag counts once).
+    pub fn edit_count(&self) -> u64 {
+        self.edits
     }
 
     /// Bumped on every data change (edit, undo, redo, load). Caches derived
@@ -404,6 +468,19 @@ impl Document {
             .unwrap_or_else(|| format!("{}.{}", self.name, rizxel_io::RZXL_EXTENSION))
     }
 
+    /// Tab label: [`Document::title`] with `*` between the file name and its
+    /// extension while there are unsaved changes (`hero*.rzxl`).
+    pub fn tab_title(&self) -> String {
+        let title = self.title();
+        if !self.is_dirty() {
+            return title;
+        }
+        match title.rsplit_once('.') {
+            Some((stem, ext)) if !stem.is_empty() => format!("{stem}*.{ext}"),
+            _ => format!("{title}*"),
+        }
+    }
+
     pub fn selected_rgba(&self) -> Rgba8 {
         self.data
             .palette
@@ -426,6 +503,7 @@ impl Document {
         self.tag_history();
         edit.apply(&mut self.data);
         self.history.push(edit, merge);
+        self.edits += 1;
         self.touch();
     }
 
@@ -440,9 +518,15 @@ impl Document {
     /// Undoes the last step (an edit in progress is committed first, so it
     /// is what gets undone).
     /// While slicing, the slice moves back to the one the step was made on.
+    /// A floating paste is cancelled instead (it is the step in progress).
     pub fn undo(&mut self) -> bool {
+        if self.paste.is_some() {
+            self.cancel_paste();
+            return true;
+        }
         let done = self.history.undo(&mut self.data);
         if done {
+            self.edits += 1;
             self.touch();
             if let Some(p) = self.history.undone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
@@ -452,8 +536,12 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.paste.is_some() {
+            return false;
+        }
         let done = self.history.redo(&mut self.data);
         if done {
+            self.edits += 1;
             self.touch();
             if let Some(p) = self.history.redone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
@@ -541,10 +629,12 @@ impl Document {
     /// Closes the transaction as one undo step. Returns `false` when it
     /// changed nothing (no undo entry is recorded then).
     pub fn commit_edit(&mut self) -> bool {
+        self.paste = None;
         if !self.is_editing() {
             return false;
         }
         let done = self.history.commit_transaction();
+        self.edits += u64::from(done);
         self.touch();
         done
     }
@@ -553,6 +643,7 @@ impl Document {
     /// `layer`'s selection with `selection` (Move and Extrude carry the
     /// selection along). Returns `false` when nothing changed.
     pub fn commit_edit_with_selection(&mut self, layer: usize, selection: Selection) -> bool {
+        self.paste = None;
         if !self.is_editing() {
             return false;
         }
@@ -569,12 +660,15 @@ impl Document {
             _ => Vec::new(),
         };
         let done = self.history.commit_transaction_with(extra);
+        self.edits += u64::from(done);
         self.touch();
         done
     }
 
-    /// Closes the transaction and restores every voxel it changed.
+    /// Closes the transaction and restores every voxel it changed (a
+    /// floating paste disappears).
     pub fn cancel_edit(&mut self) {
+        self.paste = None;
         if self.is_editing() {
             self.history.cancel_transaction(&mut self.data);
             self.touch();
@@ -711,6 +805,25 @@ impl Document {
         self.set_selection(self.active_layer, new)
     }
 
+    /// Selects every voxel of the active layer (`Ctrl+A`).
+    pub fn select_all(&mut self) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let all: Selection = l.volume.iter().map(|(p, _)| p).collect();
+        self.set_selection(self.active_layer, all)
+    }
+
+    /// Selects the active layer's voxels that are not selected, and
+    /// deselects the rest (`Ctrl+I`).
+    pub fn invert_selection(&mut self) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let inverted = l.selection.inverted(l.volume.iter().map(|(p, _)| p));
+        self.set_selection(self.active_layer, inverted)
+    }
+
     /// Deselects everything on the active layer (`Esc`).
     pub fn clear_selection(&mut self) -> bool {
         self.set_selection(self.active_layer, Selection::default())
@@ -748,6 +861,233 @@ impl Document {
         let removed = self.edit_voxels(layer, &changes);
         self.commit_edit_with_selection(layer, Selection::default());
         removed
+    }
+
+    // ---------------------------------------------------------- transforms
+
+    /// Layer index a transform may write to, or why not (hidden is fine).
+    fn transform_layer(&self) -> Result<usize, TransformError> {
+        let layer = self.active_layer;
+        match self.editable_layer(layer) {
+            Ok(()) | Err(EditBlock::Hidden) => Ok(layer),
+            Err(e) => Err(TransformError::Blocked(e)),
+        }
+    }
+
+    /// Rotates or flips the selection (or, without one, the whole active
+    /// layer) inside its box, as one undo step that carries the selection
+    /// along. Refused as a whole when a voxel would leave the bounds.
+    /// Returns the number of voxels changed.
+    pub fn transform(&mut self, t: Transform) -> Result<usize, TransformError> {
+        let layer = self.transform_layer()?;
+        let l = &self.data.layers[layer];
+        let selection = (!l.selection.is_empty()).then(|| l.selection.clone());
+        let sources: Vec<(IVec3, Voxel)> = match &selection {
+            Some(sel) => sel
+                .iter()
+                .map(|p| (p, l.volume.get(p)))
+                .filter(|&(_, v)| v != EMPTY_VOXEL)
+                .collect(),
+            None => l.volume.iter().collect(),
+        };
+        if sources.is_empty() {
+            return Err(TransformError::Empty);
+        }
+        let (min, size) = match selection.as_ref().and_then(Selection::bounds) {
+            Some((lo, hi)) => (lo, hi - lo),
+            None => cells_box(sources.iter().map(|c| c.0)).ok_or(TransformError::Empty)?,
+        };
+        let targets: Vec<(IVec3, Voxel)> = sources
+            .iter()
+            .map(|&(p, v)| (t.apply(p, min, size), v))
+            .collect();
+        let changes =
+            relocate_changes(&l.volume, &sources, &targets).ok_or(TransformError::OutOfBounds)?;
+        let bounds = VoxelBox::from_bounds(self.data.bounds);
+        let moved: Option<Selection> = selection.map(|sel| {
+            sel.iter()
+                .map(|p| t.apply(p, min, size))
+                .filter(|&p| bounds.contains(p))
+                .collect()
+        });
+        Ok(self.commit_transform(layer, &changes, moved))
+    }
+
+    /// One-shot mirror across the bounds' center plane on `axis`: the
+    /// selection's (or layer's) `-axis` half is copied onto the `+axis`
+    /// half, as one undo step. The mirrored cells join the selection.
+    pub fn mirror(&mut self, axis: usize) -> Result<usize, TransformError> {
+        let layer = self.transform_layer()?;
+        let bounds = self.data.bounds;
+        let l = &self.data.layers[layer];
+        let region = (!l.selection.is_empty()).then(|| l.selection.cells());
+        let changes = mirror_changes(&l.volume, region, axis, bounds);
+        let grown = region.map(|cells| {
+            let mut sel = l.selection.clone();
+            sel.extend(
+                cells
+                    .iter()
+                    .map(|&p| rizxel_engine::tools::mirror(p, bounds, axis)),
+            );
+            sel.translated(IVec3::ZERO, bounds)
+        });
+        if changes.is_empty() && grown.as_ref().is_none_or(|g| *g == l.selection) {
+            return Err(TransformError::Empty);
+        }
+        Ok(self.commit_transform(layer, &changes, grown))
+    }
+
+    fn commit_transform(
+        &mut self,
+        layer: usize,
+        changes: &[VoxelChange],
+        selection: Option<Selection>,
+    ) -> usize {
+        self.cancel_edit();
+        self.begin_edit();
+        let n = self.edit_voxels(layer, changes);
+        match selection {
+            Some(sel) => self.commit_edit_with_selection(layer, sel),
+            None => self.commit_edit(),
+        };
+        n
+    }
+
+    // ----------------------------------------------------------- clipboard
+
+    /// Copies the selection (or the whole active layer), then deletes it, as
+    /// one undo step. `None` when there is nothing to cut or the layer is
+    /// locked or not a voxel layer.
+    pub fn cut(&mut self) -> Option<Clipboard> {
+        let layer = self.active_layer;
+        if self
+            .editable_layer(layer)
+            .is_err_and(|e| e != EditBlock::Hidden)
+        {
+            return None;
+        }
+        let clip = Clipboard::copy(self)?;
+        if self.selection().is_some_and(|s| !s.is_empty()) {
+            self.delete_selected();
+        } else {
+            let changes: Vec<VoxelChange> = self.data.layers[layer]
+                .volume
+                .iter()
+                .map(|(pos, old)| VoxelChange {
+                    pos,
+                    old,
+                    new: EMPTY_VOXEL,
+                })
+                .collect();
+            self.edit_voxels(layer, &changes);
+        }
+        Some(clip)
+    }
+
+    /// Starts a floating paste of `clip` on the active layer with its box at
+    /// `origin`. Cells outside the bounds are clipped.
+    pub fn begin_paste(
+        &mut self,
+        clip: &Clipboard,
+        origin: IVec3,
+        follows_cursor: bool,
+    ) -> Result<(), EditBlock> {
+        let layer = self.active_layer;
+        if let Err(e) = self.editable_layer(layer) {
+            if e != EditBlock::Hidden {
+                return Err(e);
+            }
+        }
+        self.cancel_edit();
+        self.begin_edit();
+        self.paste = Some(FloatingPaste {
+            layer,
+            origin,
+            size: clip.size.as_ivec3(),
+            follows_cursor,
+            cells: clip.mapped(&self.data.palette),
+        });
+        self.write_paste();
+        Ok(())
+    }
+
+    pub fn floating_paste(&self) -> Option<&FloatingPaste> {
+        self.paste.as_ref()
+    }
+
+    /// Moves the floating paste so its box starts at `origin`.
+    pub fn move_paste(&mut self, origin: IVec3) {
+        match &mut self.paste {
+            Some(p) if p.origin != origin => p.origin = origin,
+            _ => return,
+        }
+        self.revert_pending();
+        self.write_paste();
+    }
+
+    /// Runs `f` on the document as it is without the floating paste's
+    /// voxels (the pick target while the paste follows the cursor).
+    pub fn without_paste<R>(&mut self, f: impl FnOnce(&Self) -> R) -> R {
+        if self.paste.is_none() {
+            return f(self);
+        }
+        self.revert_pending();
+        let out = f(self);
+        self.write_paste();
+        out
+    }
+
+    fn write_paste(&mut self) {
+        let Some(p) = &self.paste else { return };
+        let layer = p.layer;
+        let changes: Vec<VoxelChange> = p
+            .placed()
+            .map(|(pos, new)| VoxelChange {
+                pos,
+                old: EMPTY_VOXEL,
+                new,
+            })
+            .collect();
+        self.edit_voxels(layer, &changes);
+    }
+
+    /// Commits the floating paste as one undo step; the pasted cells become
+    /// the layer's selection. Returns the number of voxels pasted.
+    pub fn commit_paste(&mut self) -> usize {
+        let Some(p) = self.paste.take() else {
+            return 0;
+        };
+        let bounds = self.data.bounds;
+        let selection: Selection = p
+            .placed()
+            .map(|(pos, _)| pos)
+            .filter(|&pos| VoxelBox::from_bounds(bounds).contains(pos))
+            .collect();
+        let count = selection.len();
+        self.commit_edit_with_selection(p.layer, selection);
+        count
+    }
+
+    /// Drops the floating paste; no undo step is recorded.
+    pub fn cancel_paste(&mut self) {
+        if self.paste.is_some() {
+            self.cancel_edit();
+        }
+    }
+
+    /// Pastes `clip` at its original position into a new layer above the
+    /// active one, as one undo step. The pasted voxels are selected.
+    pub fn paste_to_new_layer(&mut self, clip: &Clipboard) -> LayerId {
+        self.cancel_edit();
+        let mut layer = Layer::new(self.unique_name_from("Pasted"), self.data.bounds);
+        for (p, v) in clip.mapped(&self.data.palette) {
+            let pos = p + clip.origin;
+            if layer.volume.in_bounds(pos) {
+                layer.volume.set(pos, v);
+                layer.selection.insert(pos);
+            }
+        }
+        self.insert_above_active(layer)
     }
 
     // ------------------------------------------------------ voxel helpers
@@ -1744,6 +2084,20 @@ mod tests {
         // Redo reproduces the live state, including the clipped voxel.
         assert!(d.redo());
         assert_eq!(d.data.layers[0].volume.voxel_count(), 1);
+    }
+
+    #[test]
+    fn tab_title_marks_unsaved_changes() {
+        let mut d = Document::new("hero");
+        assert_eq!(d.tab_title(), "hero.rzxl");
+        d.add_layer();
+        assert_eq!(d.tab_title(), "hero*.rzxl");
+        d.path = Some(PathBuf::from("/m/my.model.rzxl"));
+        assert_eq!(d.tab_title(), "my.model*.rzxl", "only the last extension");
+        let path = std::env::temp_dir().join(format!("rizxel_tab_{}.rzxl", std::process::id()));
+        d.save_to(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(d.tab_title(), d.title(), "saved: no marker");
     }
 
     #[test]

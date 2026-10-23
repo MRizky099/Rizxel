@@ -16,4 +16,6 @@ pub struct UiState {
     pub renaming_layer: Option<(usize, String)>,
     /// Zen mode: hide all panels except the viewport and status bar.
     pub zen_mode: bool,
+    /// Autosaves offered for recovery at startup (dialog open while non-empty).
+    pub recovery: Vec<rizxel_app::RecoveryEntry>,
 }

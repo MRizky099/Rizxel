@@ -1,12 +1,12 @@
 //! Phase 5b: selections (undoable, per layer), selection-aware Move and
 //! Extrude, Fill, Shape, and a randomized undo/redo round trip over all of
-//! them.
+//! them (extended in Phase 8 with copy, cut, paste and the transforms).
 
 use glam::IVec3;
-use rizxel_app::{Document, Edit, Layer, Selection, VoxelChange};
+use rizxel_app::{Clipboard, Document, Edit, Layer, Selection, VoxelChange};
 use rizxel_engine::tools::{
     apply_op, extrude_changes, extruded_cells, fill_cells, fuzzy_select, move_selection_changes,
-    select_box, selection_box, selection_region, shape_box, shape_cells,
+    select_box, selection_box, selection_region, shape_box, shape_cells, Transform,
 };
 use rizxel_engine::{BrushShape, VoxelOp};
 use rizxel_engine::{FillMode, FillOptions, FuzzySelectOptions, MaskMode, RayHit, ShapeOptions};
@@ -211,11 +211,13 @@ impl Lcg {
 }
 
 /// One random tool operation on the active layer, applied like the UI does
-/// (one transaction or one selection edit per operation).
-fn random_op(d: &mut Document, rng: &mut Lcg) {
+/// (one transaction or one selection edit per operation). Returns which
+/// operation it picked.
+fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
     let layer = d.active_layer;
     let color = 1 + rng.below(8) as Voxel;
-    match rng.below(8) {
+    let op = rng.below(OPS as u64);
+    match op {
         // Brush-like stroke.
         0 => {
             let changes: Vec<VoxelChange> = (0..rng.below(6) + 1)
@@ -307,27 +309,79 @@ fn random_op(d: &mut Document, rng: &mut Lcg) {
                 d.edit_voxels(layer, &changes);
             }
         }
-        _ => {
+        7 => {
             if rng.below(2) == 0 {
                 d.delete_selected();
             } else {
                 d.clear_selection();
             }
         }
+        // Copy, then a floating paste that moves and is placed (or
+        // cancelled); sometimes into another document's palette mapping.
+        8 => {
+            if let Some(clip) = Clipboard::copy(d) {
+                let at = rng.cell(10) - IVec3::splat(2);
+                if d.begin_paste(&clip, at, true).is_ok() {
+                    d.move_paste(at + rng.cell(3));
+                    if rng.below(4) == 0 {
+                        d.cancel_paste();
+                    } else {
+                        d.commit_paste();
+                    }
+                }
+            }
+        }
+        9 => {
+            d.cut();
+        }
+        10 => {
+            if let Some(clip) = Clipboard::copy(d) {
+                d.paste_to_new_layer(&clip);
+            }
+        }
+        11 => {
+            let axis = rng.below(3) as usize;
+            let turns = if rng.below(2) == 0 { 1 } else { -1 };
+            let _ = d.transform(Transform::Rotate { axis, turns });
+        }
+        12 => {
+            let _ = d.transform(Transform::Flip {
+                axis: rng.below(3) as usize,
+            });
+        }
+        _ => {
+            let _ = d.mirror(rng.below(3) as usize);
+        }
     }
+    op as usize
 }
+
+/// Number of operation kinds [`random_op`] picks from.
+const OPS: usize = 14;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {
-    for seed in 1..=12u64 {
+    // Operations that changed the document, per kind.
+    let mut effective = [0usize; OPS];
+    for seed in 1..=24u64 {
         let mut rng = Lcg(seed);
         let mut d = Document::with_layers("t", vec![solid_layer("A", 2), solid_layer("B", 3)]);
         // Start from a non-trivial selection on one layer (not undoable).
         d.data.layers[1].selection = (0..3).map(|x| IVec3::new(x, 3, 0)).collect();
         let initial = d.data.clone();
-        for _ in 0..40 {
+        for _ in 0..60 {
             d.active_layer = rng.below(2) as usize;
-            random_op(&mut d, &mut rng);
+            let before = d.data.clone();
+            let op = random_op(&mut d, &mut rng);
+            // Every operation is a single undo step.
+            if d.data != before {
+                effective[op] += 1;
+                let after = d.data.clone();
+                assert!(d.undo());
+                assert_eq!(d.data, before, "seed {seed}: one step");
+                assert!(d.redo());
+                assert_eq!(d.data, after, "seed {seed}: redo");
+            }
         }
         let last = d.data.clone();
         while d.undo() {}
@@ -335,6 +389,10 @@ fn random_tool_sequences_undo_and_redo_exactly() {
         while d.redo() {}
         assert_eq!(d.data, last, "seed {seed}: redo all");
     }
+    assert!(
+        effective.iter().all(|&n| n > 0),
+        "every operation kind changed something: {effective:?}"
+    );
 }
 
 #[test]

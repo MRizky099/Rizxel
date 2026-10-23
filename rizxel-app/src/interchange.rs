@@ -183,6 +183,7 @@ impl AppState {
         };
         let mut doc = Document::from_project(project, None)?;
         doc.mark_unsaved();
+        self.remember_recent(path);
         let summary = format!(
             "Imported {} ({} voxels, {} layers{mesh_note})",
             path.display(),
