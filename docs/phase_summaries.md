@@ -5,16 +5,16 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 
 | Phase | Theme | Status | Commit |
 |---|---|---|---|
-| 1–2 | Workspace and UI skeleton | ✅ Done | `f072972` |
-| 3 | WGPU viewport | ✅ Done | `fed30db` |
-| UI | Docking, view cube, Zen mode, icons | ✅ Done | `125f54b`, `73a5315` |
-| 4 | Core engine and voxel data | ✅ Done | `0ceeb6a` |
-| 4.5 | `.rzxl` v3 layer data | ✅ Done | `6dbbd34` |
-| 5a | Interaction and core tools | ✅ Done | `26c24f1`, `8e4e881` |
-| 5b | Selection, fill, shape and performance | ✅ Done | `00e6924` |
-| 6 | Import and export | ✅ Done | `16a8ebc` |
-| Slice | Qubicle-style Slice Mode | ✅ Done | `2b4f8e2`, `30db23c` |
-| 7 | Stabilize, CI and 0.2.0 | 🚧 In progress | `aa5d21e` (B1) |
+| 1–2 | Workspace and UI skeleton | ✅ Done | `ee95fff` |
+| 3 | WGPU viewport | ✅ Done | `a77177f` |
+| UI | Docking, view cube, Zen mode, icons | ✅ Done | `e82cb54`, `aed8f8c` |
+| 4 | Core engine and voxel data | ✅ Done | `7287ae5` |
+| 4.5 | `.rzxl` v3 layer data | ✅ Done | `65ad2bc` |
+| 5a | Interaction and core tools | ✅ Done | `48d1c80`, `228bcae` |
+| 5b | Selection, fill, shape and performance | ✅ Done | `d3dd242` |
+| 6 | Import and export | ✅ Done | `b26f6da` |
+| Slice | Qubicle-style Slice Mode | ✅ Done | `699367e`, `1098e9a` |
+| 7 | Stabilize, CI and 0.2.0 | 🚧 In progress | `eac9ae1` (B1) |
 
 ---
 
@@ -129,7 +129,7 @@ Plan: [`rizxel_phase5b_implementation_plan.md`](plan/rizxel_phase5b_implementati
 
 Spec: [`interchange_formats.md`](interchange_formats.md)
 
-**Delivered** (`16a8ebc`)
+**Delivered** (`b26f6da`)
 - MagicaVoxel `.vox`: import reads the scene graph, and repeated instances become linked
   clones. Export writes one model per layer.
 - Goxel `.gox`: import reads PNG blocks and layer dicts, and groups, shapes, materials
@@ -150,7 +150,7 @@ Analysis: [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md)
 **Goal:** Qubicle-style slice editing from any tool, based on hands-on tests with
 Qubicle 3.1.2.
 
-**Delivered** (`2b4f8e2`, `30db23c`)
+**Delivered** (`699367e`, `1098e9a`)
 - A `2D` button with a 1-based slice counter, `Space` from any tool (slices at the
   hovered voxel or restores the last slice) and *View ▸ Slice* with Next, Previous,
   First and Last.
@@ -165,7 +165,7 @@ Qubicle 3.1.2.
 Plan: [`rizxel_phase7_implementation_plan.md`](plan/rizxel_phase7_implementation_plan.md)
 
 **Delivered so far**
-- B1 fixed (`aa5d21e`): the model is visible from below the ground plane. From below,
+- B1 fixed (`eac9ae1`): the model is visible from below the ground plane. From below,
   the grid writes no ground depth and its lines are drawn over the model as a faded
   overlay.
 - GitHub Actions CI (`fmt`, `clippy -D warnings`, tests on Windows and Linux) and a
