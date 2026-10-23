@@ -201,6 +201,15 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::H)) {
             view.ghosts = !view.ghosts;
         }
+        // Favorite colors: Ctrl+Shift+digit stores, Ctrl+digit recalls.
+        for (slot, key) in DIGITS.into_iter().enumerate() {
+            if pressed(KeyboardShortcut::new(CMD_SHIFT, key)) {
+                self.state.store_favorite(slot);
+            }
+            if pressed(KeyboardShortcut::new(CMD, key)) {
+                self.state.recall_favorite(slot);
+            }
+        }
         // Before the tool letters: `M` is the Move tool.
         if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::M)) {
             self.state.toggle_mask_selection();
@@ -272,9 +281,9 @@ impl eframe::App for RizxelApp {
                         .inner_margin(egui::Margin::symmetric(8, 0))
                         .show(ui, |ui| panels::options::show(ui, state, icons));
                 }),
-                dock::Panel::Palette => {
-                    scroll_panel(ui, panel, |ui| panels::sidebar::palette(ui, state))
-                }
+                dock::Panel::Palette => scroll_panel(ui, panel, |ui| {
+                    panels::sidebar::palette(ui, state, ui_state)
+                }),
                 dock::Panel::Layers => {
                     scroll_panel(ui, panel, |ui| panels::sidebar::layers(ui, state, ui_state))
                 }
@@ -294,6 +303,20 @@ impl eframe::App for RizxelApp {
         resize::paint_border(&ctx);
     }
 }
+
+/// Keys of favorite colors `0`–`9`.
+const DIGITS: [Key; 10] = [
+    Key::Num0,
+    Key::Num1,
+    Key::Num2,
+    Key::Num3,
+    Key::Num4,
+    Key::Num5,
+    Key::Num6,
+    Key::Num7,
+    Key::Num8,
+    Key::Num9,
+];
 
 enum ClipboardCommand {
     Copy,

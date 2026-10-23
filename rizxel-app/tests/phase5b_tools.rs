@@ -5,7 +5,7 @@
 //! palette operations).
 
 use glam::IVec3;
-use rizxel_app::{Clipboard, CoreOp, Document, Edit, Layer, Selection, VoxelChange};
+use rizxel_app::{Clipboard, CoreOp, Document, Edit, Layer, PaletteSort, Selection, VoxelChange};
 use rizxel_engine::tools::BooleanOp;
 use rizxel_engine::tools::{
     apply_op, extrude_changes, extruded_cells, fill_cells, fuzzy_select, move_selection_changes,
@@ -390,15 +390,37 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
             let other = rng.below(d.data.layers.len() as u64) as usize;
             let _ = d.boolean(other, BooleanOp::ALL[rng.below(3) as usize]);
         }
-        _ => {
+        19 => {
             let _ = d.fit_bounds_to_content();
+        }
+        // Palette operations (they remap voxels on every layer).
+        20 => {
+            let key = [PaletteSort::Hue, PaletteSort::Luminance][rng.below(2) as usize];
+            d.sort_palette(key);
+        }
+        21 => {
+            d.remap_color(2 + rng.below(6) as usize, 2 + rng.below(6) as usize);
+        }
+        22 => {
+            d.palette_gradient(1 + rng.below(20) as usize, 1 + rng.below(20) as usize);
+        }
+        _ => {
+            // Snapping to a small palette with a repeated color leaves
+            // duplicates for the next Remove Duplicates.
+            if rng.below(2) == 0 {
+                d.remove_duplicate_colors();
+            } else {
+                let c = rizxel_math::Rgba8::rgb(rng.below(256) as u8, 40, 9);
+                let colors = [c, rizxel_math::Rgba8::rgb(9, rng.below(256) as u8, 90), c];
+                d.snap_to_palette(&colors);
+            }
         }
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 20;
+const OPS: usize = 24;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {

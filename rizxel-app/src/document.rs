@@ -18,7 +18,7 @@ use rizxel_engine::{
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
     BoundSize, LayerId, LayerKind, Material, Palette, Rgba8, ShapeKind, Voxel, VoxelBox,
-    VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
+    VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX, MAX_PALETTE_COLORS,
 };
 
 use crate::clipboard::Clipboard;
@@ -222,6 +222,40 @@ pub enum CoreOp {
     Hollow,
     /// Hollow keeping a shell this many voxels thick.
     HollowAdvanced(u32),
+}
+
+/// Order of *Palette ▸ Sort* ([`Document::sort_palette`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteSort {
+    /// Greys first (dark to light), then colors by hue, then lightness.
+    Hue,
+    /// Dark to light (Rec. 709 luma).
+    Luminance,
+}
+
+impl PaletteSort {
+    fn key(self, c: Rgba8) -> (f32, f32) {
+        let (r, g, b) = (c.r as f32, c.g as f32, c.b as f32);
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        match self {
+            PaletteSort::Luminance => (luma, 0.0),
+            PaletteSort::Hue => {
+                let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+                let delta = max - min;
+                if delta < 8.0 {
+                    return (-1.0, luma);
+                }
+                let hue = if max == r {
+                    ((g - b) / delta).rem_euclid(6.0)
+                } else if max == g {
+                    (b - r) / delta + 2.0
+                } else {
+                    (r - g) / delta + 4.0
+                };
+                (hue, luma)
+            }
+        }
+    }
 }
 
 /// Why a structure operation (Separate Parts, Fit Bounds, Core, Boolean)
@@ -1916,6 +1950,265 @@ impl Document {
         if !edits.is_empty() {
             self.apply(Edit::Batch(edits), false);
         }
+    }
+
+    // --------------------------------------------------------- palette ops
+
+    /// Palette indices used by some voxel layer or shape (`used[i]`).
+    pub fn used_colors(&self) -> Vec<bool> {
+        let mut used = vec![false; MAX_PALETTE_COLORS];
+        for l in &self.data.layers {
+            match l.props.kind {
+                LayerKind::Voxels => {
+                    for (_, v) in l.volume.iter() {
+                        used[v as usize] = true;
+                    }
+                }
+                LayerKind::Shape { color, .. } => used[color as usize] = true,
+                _ => {}
+            }
+        }
+        used
+    }
+
+    /// Edits that recolor every voxel layer and shape by `map` (old index →
+    /// new index), on every layer (locked and hidden ones too: the colors
+    /// move, the look does not change).
+    fn remap_edits(&self, map: &[Voxel]) -> Vec<Edit> {
+        let to = |v: Voxel| map.get(v as usize).copied().unwrap_or(v);
+        let mut edits = Vec::new();
+        for (index, l) in self.data.layers.iter().enumerate() {
+            match l.props.kind {
+                LayerKind::Voxels => {
+                    let changes: Vec<VoxelChange> = l
+                        .volume
+                        .iter()
+                        .filter(|&(_, v)| to(v) != v)
+                        .map(|(pos, old)| VoxelChange {
+                            pos,
+                            old,
+                            new: to(old),
+                        })
+                        .collect();
+                    if !changes.is_empty() {
+                        edits.push(Edit::Voxels {
+                            layer: index,
+                            changes,
+                        });
+                    }
+                }
+                LayerKind::Shape { shape, area, color } if to(color) != color => {
+                    edits.push(Edit::SetLayerProps {
+                        index,
+                        old: l.props.clone(),
+                        new: LayerProps {
+                            kind: LayerKind::Shape {
+                                shape,
+                                area,
+                                color: to(color),
+                            },
+                            ..l.props.clone()
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+        edits
+    }
+
+    /// Applies a new palette and an index remap as one undo step; the
+    /// selected color follows the remap. Returns `false` when nothing would
+    /// change.
+    fn apply_palette_remap(&mut self, palette: Palette, map: &[Voxel]) -> bool {
+        let mut edits = self.remap_edits(map);
+        if palette != self.data.palette {
+            edits.insert(
+                0,
+                Edit::SetPalette {
+                    old: self.data.palette.clone(),
+                    new: palette,
+                },
+            );
+        }
+        if edits.is_empty() {
+            return false;
+        }
+        let selected = map
+            .get(self.selected_color)
+            .map_or(self.selected_color, |&v| v as usize);
+        self.cancel_edit();
+        self.apply(Edit::Batch(edits), false);
+        self.select_color(selected);
+        true
+    }
+
+    /// *Palette ▸ Sort*: reorders slots `1..` by `key` and remaps the voxels
+    /// so the model looks the same. One undo step.
+    pub fn sort_palette(&mut self, key: PaletteSort) -> bool {
+        let colors = self.data.palette.colors();
+        let mut order: Vec<usize> = (FIRST_COLOR_INDEX as usize..colors.len()).collect();
+        order.sort_by(|&a, &b| {
+            key.key(colors[a])
+                .partial_cmp(&key.key(colors[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut sorted = colors.to_vec();
+        let mut map: Vec<Voxel> = (0..MAX_PALETTE_COLORS).map(|i| i as Voxel).collect();
+        for (slot, &old) in order.iter().enumerate() {
+            let new = slot + FIRST_COLOR_INDEX as usize;
+            sorted[new] = colors[old];
+            map[old] = new as Voxel;
+        }
+        self.apply_palette_remap(Palette::new(sorted), &map)
+    }
+
+    /// *Palette ▸ Remove Duplicates*: later slots with the same color as an
+    /// earlier one go; the palette closes up and voxels follow. One step.
+    pub fn remove_duplicate_colors(&mut self) -> usize {
+        let colors = self.data.palette.colors();
+        let mut kept: Vec<Rgba8> = colors
+            .iter()
+            .take(FIRST_COLOR_INDEX as usize)
+            .copied()
+            .collect();
+        let mut map: Vec<Voxel> = (0..MAX_PALETTE_COLORS).map(|i| i as Voxel).collect();
+        for (i, &c) in colors.iter().enumerate().skip(FIRST_COLOR_INDEX as usize) {
+            let first = kept
+                .iter()
+                .skip(FIRST_COLOR_INDEX as usize)
+                .position(|&k| k == c)
+                .map(|p| p + FIRST_COLOR_INDEX as usize);
+            map[i] = match first {
+                Some(j) => j as Voxel,
+                None => {
+                    kept.push(c);
+                    (kept.len() - 1) as Voxel
+                }
+            };
+        }
+        let removed = colors.len() - kept.len();
+        if removed == 0 {
+            return 0;
+        }
+        self.apply_palette_remap(Palette::new(kept), &map);
+        removed
+    }
+
+    /// *Palette ▸ Remap*: every voxel (and shape) of color `from` becomes
+    /// `to`, on every layer. One undo step; returns the voxels changed.
+    pub fn remap_color(&mut self, from: usize, to: usize) -> usize {
+        let palette = &self.data.palette;
+        if from == to || !palette.is_selectable(from) || !palette.is_selectable(to) {
+            return 0;
+        }
+        let mut map: Vec<Voxel> = (0..MAX_PALETTE_COLORS).map(|i| i as Voxel).collect();
+        map[from] = to as Voxel;
+        let edits = self.remap_edits(&map);
+        let count = edits
+            .iter()
+            .map(|e| match e {
+                Edit::Voxels { changes, .. } => changes.len(),
+                _ => 1,
+            })
+            .sum();
+        if !edits.is_empty() {
+            self.cancel_edit();
+            self.apply(Edit::Batch(edits), false);
+        }
+        count
+    }
+
+    /// *Palette ▸ Gradient*: the slots from `a` to `b` (either order) blend
+    /// linearly between the two end colors, which stay exact. One step.
+    pub fn palette_gradient(&mut self, a: usize, b: usize) -> bool {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let palette = &self.data.palette;
+        if hi - lo < 2 || !palette.is_selectable(lo) || !palette.is_selectable(hi) {
+            return false;
+        }
+        let (start, end) = (
+            palette.get(a).unwrap_or_default(),
+            palette.get(b).unwrap_or_default(),
+        );
+        let mut colors = palette.colors().to_vec();
+        let span = (b as f32) - (a as f32);
+        for (i, slot) in colors.iter_mut().enumerate().take(hi + 1).skip(lo) {
+            let t = (i as f32 - a as f32) / span;
+            let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+            *slot = Rgba8::new(
+                mix(start.r, end.r),
+                mix(start.g, end.g),
+                mix(start.b, end.b),
+                mix(start.a, end.a),
+            );
+        }
+        let new = Palette::new(colors);
+        if new == self.data.palette {
+            return false;
+        }
+        self.cancel_edit();
+        self.apply(
+            Edit::SetPalette {
+                old: self.data.palette.clone(),
+                new,
+            },
+            false,
+        );
+        true
+    }
+
+    /// *Palette ▸ Load*: `colors` fill slots `1..` (indices stay, so voxels
+    /// take the new colors); a shorter list keeps the old trailing slots.
+    /// One undo step.
+    pub fn load_palette(&mut self, colors: &[Rgba8]) -> bool {
+        let before = self.data.palette.clone();
+        let mut new: Vec<Rgba8> = before
+            .colors()
+            .iter()
+            .take(FIRST_COLOR_INDEX as usize)
+            .copied()
+            .collect();
+        new.extend(colors.iter().take(MAX_PALETTE_COLORS - new.len()));
+        self.replace_palette_and_materials(Palette::new(new), self.data.materials.clone());
+        self.data.palette != before
+    }
+
+    /// *Palette ▸ Load and Snap Model* (Qubicle *Apply Colors*): the
+    /// palette becomes `colors` (slots `1..`) and every voxel takes the
+    /// nearest new color (RGB distance), so the model keeps its look as
+    /// closely as the new palette allows. One undo step.
+    pub fn snap_to_palette(&mut self, colors: &[Rgba8]) -> bool {
+        if colors.is_empty() {
+            return false;
+        }
+        let old = self.data.palette.colors().to_vec();
+        let mut new: Vec<Rgba8> = old
+            .iter()
+            .take(FIRST_COLOR_INDEX as usize)
+            .copied()
+            .collect();
+        new.extend(colors.iter().take(MAX_PALETTE_COLORS - new.len()));
+        let nearest = |c: Rgba8| -> Voxel {
+            let d = |k: &Rgba8| {
+                let (dr, dg, db) = (
+                    c.r as i32 - k.r as i32,
+                    c.g as i32 - k.g as i32,
+                    c.b as i32 - k.b as i32,
+                );
+                dr * dr + dg * dg + db * db
+            };
+            (FIRST_COLOR_INDEX as usize..new.len())
+                .min_by_key(|&i| d(&new[i]))
+                .unwrap_or(FIRST_COLOR_INDEX as usize) as Voxel
+        };
+        let map: Vec<Voxel> = (0..MAX_PALETTE_COLORS)
+            .map(|i| match old.get(i) {
+                Some(&c) if i >= FIRST_COLOR_INDEX as usize => nearest(c),
+                _ => i as Voxel,
+            })
+            .collect();
+        self.apply_palette_remap(Palette::new(new), &map)
     }
 
     /// Everything exporters need: every non-group layer's final geometry

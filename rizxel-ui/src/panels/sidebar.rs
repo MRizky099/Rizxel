@@ -2,7 +2,7 @@
 
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, Document};
+use rizxel_app::{AppState, Document, Favorites, PaletteSort};
 use rizxel_math::BoundSize;
 
 use super::UiState;
@@ -13,10 +13,155 @@ const PALETTE_COLUMNS: usize = 8;
 const SWATCH_GAP: f32 = 4.0;
 
 /// Color Palette dock panel.
-pub fn palette(ui: &mut Ui, state: &mut AppState) {
-    if let Some(doc) = state.doc_mut() {
-        palette_section(ui, doc);
+pub fn palette(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+    if state.doc().is_none() {
+        return;
     }
+    palette_tools(ui, state, ui_state);
+    favorites_row(ui, state);
+    if let Some(doc) = state.doc_mut() {
+        palette_section(ui, doc, ui_state);
+    }
+}
+
+/// Palette menu, used-colors toggle and the Shift+click marker.
+fn palette_tools(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+    let Some(doc) = state.doc() else { return };
+    let selected = doc.selected_color;
+    let mark = ui_state
+        .palette_mark
+        .filter(|&m| doc.data.palette.is_selectable(m) && m != selected);
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.menu_button(icon_label(ui, icon::LIST, "Palette", None), |ui| {
+                    ui.set_min_width(260.0);
+                    palette_menu(ui, state, mark);
+                });
+                ui.toggle_value(&mut ui_state.palette_used_only, "Used only")
+                    .on_hover_text("Show only the colors the model uses");
+                if let Some(m) = mark {
+                    ui.label(
+                        RichText::new(format!("Marked: {m}"))
+                            .size(11.0)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .on_hover_text("Shift+click a swatch to mark it for Gradient and Remap");
+                }
+            });
+        });
+}
+
+fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
+    if ui.button("Load .gpl / .hex...").clicked() {
+        crate::actions::load_palette(state, false);
+    }
+    if ui
+        .button("Load and Snap Model...")
+        .on_hover_text("Replace the palette and give every voxel the nearest new color")
+        .clicked()
+    {
+        crate::actions::load_palette(state, true);
+    }
+    if ui.button("Save .gpl / .hex...").clicked() {
+        crate::actions::save_palette(state);
+    }
+    ui.separator();
+    let Some(doc) = state.doc_mut() else { return };
+    let selected = doc.selected_color;
+    let mut message = None;
+    if ui.button("Sort by Hue").clicked() && doc.sort_palette(PaletteSort::Hue) {
+        message = Some("Palette sorted by hue".to_owned());
+    }
+    if ui.button("Sort by Luminance").clicked() && doc.sort_palette(PaletteSort::Luminance) {
+        message = Some("Palette sorted by luminance".to_owned());
+    }
+    if ui.button("Remove Duplicates").clicked() {
+        let n = doc.remove_duplicate_colors();
+        message = Some(format!("Removed {n} duplicate colors"));
+    }
+    ui.separator();
+    match mark {
+        None => {
+            ui.label(
+                RichText::new("Gradient and Remap: Shift+click a swatch to mark it first")
+                    .size(10.0)
+                    .color(theme::TEXT_DIM),
+            );
+        }
+        Some(m) => {
+            if ui
+                .button(format!("Gradient {m} → {selected}"))
+                .on_hover_text("Blend the slots between the marked and the selected color")
+                .clicked()
+            {
+                message = Some(if doc.palette_gradient(m, selected) {
+                    format!("Gradient from color {m} to {selected}")
+                } else {
+                    "Gradient: the two colors need a slot between them".to_owned()
+                });
+            }
+            if ui
+                .button(format!("Remap {m} → {selected}"))
+                .on_hover_text("Recolor every voxel of the marked color with the selected one")
+                .clicked()
+            {
+                let n = doc.remap_color(m, selected);
+                message = Some(format!("Remapped {n} voxels from color {m} to {selected}"));
+            }
+        }
+    }
+    if message.is_some() {
+        state.status_message = message;
+        ui.close();
+    }
+}
+
+/// Favorite colors `0`-`9`: click selects, right-click stores the selected
+/// color (also `Ctrl+digit` / `Ctrl+Shift+digit`).
+fn favorites_row(ui: &mut Ui, state: &mut AppState) {
+    let Some(palette) = state.doc().map(|d| d.data.palette.clone()) else {
+        return;
+    };
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(12, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let size = ((ui.available_width() - 27.0) / 10.0).clamp(12.0, 22.0);
+                for slot in 0..Favorites::SLOTS {
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(size, size), Sense::click());
+                    let color = state.favorites.get(slot).and_then(|i| palette.get(i));
+                    match color {
+                        Some(c) => ui.painter().rect_filled(rect, 2.0, theme::to_color32(c)),
+                        None => ui.painter().rect_stroke(
+                            rect.shrink(0.5),
+                            2.0,
+                            Stroke::new(1.0, theme::TEXT_DIM),
+                            StrokeKind::Inside,
+                        ),
+                    };
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        slot.to_string(),
+                        theme::regular(9.0),
+                        Color32::from_white_alpha(170),
+                    );
+                    let response = response.on_hover_text(format!(
+                        "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
+                    ));
+                    if response.clicked() {
+                        state.recall_favorite(slot);
+                    }
+                    if response.secondary_clicked() {
+                        state.store_favorite(slot);
+                    }
+                }
+            });
+        });
 }
 
 /// Layers dock panel.
@@ -35,7 +180,7 @@ pub fn bounds(ui: &mut Ui, state: &mut AppState) {
 
 // ------------------------------------------------------------------ palette
 
-fn palette_section(ui: &mut Ui, doc: &mut Document) {
+fn palette_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     // Selected color preview with an editable color picker.
     egui::Frame::NONE
         .inner_margin(egui::Margin {
@@ -98,7 +243,7 @@ fn palette_section(ui: &mut Ui, doc: &mut Document) {
     // Swatch grid.
     egui::Frame::NONE
         .inner_margin(12)
-        .show(ui, |ui| swatch_grid(ui, doc));
+        .show(ui, |ui| swatch_grid(ui, doc, ui_state));
 }
 
 fn kv_row(ui: &mut Ui, key: &str, value: &str) {
@@ -111,18 +256,28 @@ fn kv_row(ui: &mut Ui, key: &str, value: &str) {
     });
 }
 
-fn swatch_grid(ui: &mut Ui, doc: &mut Document) {
+fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let colors = doc.data.palette.colors().to_vec();
+    // Palette indices shown, in order ("Used only" hides unused colors).
+    let shown: Vec<usize> = if ui_state.palette_used_only {
+        let used = doc.used_colors();
+        (0..colors.len())
+            .filter(|&i| used.get(i).copied().unwrap_or(false))
+            .collect()
+    } else {
+        (0..colors.len()).collect()
+    };
     let width = ui.available_width();
     let size =
         ((width - SWATCH_GAP * (PALETTE_COLUMNS as f32 - 1.0)) / PALETTE_COLUMNS as f32).floor();
-    let rows = colors.len().div_ceil(PALETTE_COLUMNS);
+    let rows = shown.len().div_ceil(PALETTE_COLUMNS);
     let height = rows as f32 * (size + SWATCH_GAP) - SWATCH_GAP;
     let (area, _) = ui.allocate_exact_size(egui::vec2(width, height.max(0.0)), Sense::hover());
 
     let mut hovered: Option<(usize, Rect)> = None;
-    for (i, c) in colors.iter().enumerate() {
-        let (row, col) = (i / PALETTE_COLUMNS, i % PALETTE_COLUMNS);
+    for (n, &i) in shown.iter().enumerate() {
+        let c = &colors[i];
+        let (row, col) = (n / PALETTE_COLUMNS, n % PALETTE_COLUMNS);
         let rect = Rect::from_min_size(
             area.min
                 + egui::vec2(
@@ -151,9 +306,21 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document) {
         }
         let response = ui
             .interact(rect, ui.id().with(("swatch", i)), Sense::click())
-            .on_hover_text(c.to_hex_string());
+            .on_hover_text(format!("{i}: {} (Shift+click: mark)", c.to_hex_string()));
         if response.clicked() {
-            doc.select_color(i);
+            if ui.input(|inp| inp.modifiers.shift) {
+                ui_state.palette_mark = Some(i);
+            } else {
+                doc.select_color(i);
+            }
+        }
+        if ui_state.palette_mark == Some(i) {
+            ui.painter().rect_stroke(
+                rect.expand(1.0),
+                2.0,
+                Stroke::new(1.0, theme::ACCENT),
+                StrokeKind::Outside,
+            );
         }
         if response.hovered() {
             hovered = Some((i, rect));

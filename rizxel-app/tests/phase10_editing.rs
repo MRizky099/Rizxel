@@ -4,12 +4,12 @@
 
 use glam::IVec3;
 use rizxel_app::{
-    AppState, CoreOp, Document, Layer, OpError, Selection, TransformError, VoxelChange,
+    AppState, CoreOp, Document, Layer, OpError, PaletteSort, Selection, TransformError, VoxelChange,
 };
 use rizxel_engine::tools::BooleanOp;
 use rizxel_engine::tools::{apply_op, extrude_changes, extrude_region, fill_cells, Transform};
 use rizxel_engine::{ExtrudeOptions, FillMode, FillOptions, MaskMode, RayHit, VoxelOp};
-use rizxel_math::{BoundSize, Voxel, VoxelBox, EMPTY_VOXEL};
+use rizxel_math::{BoundSize, Rgba8, Voxel, VoxelBox, EMPTY_VOXEL};
 
 /// Solid box `lo..hi` of color `c`.
 fn box_layer(name: &str, lo: IVec3, hi: IVec3, c: Voxel) -> Layer {
@@ -305,4 +305,170 @@ fn booleans_replace_only_the_active_layer() {
     assert_eq!(row(&d), [0, 0, 2, 2, 0, 0]);
     assert_eq!(d.data.layers[1], other);
     assert!(d.boolean(0, BooleanOp::Union).is_err());
+}
+
+// ------------------------------------------------------------ Track C
+
+/// Every voxel's RGBA, per layer: what the model looks like.
+fn look(d: &Document) -> Vec<Vec<(IVec3, Rgba8)>> {
+    d.data
+        .layers
+        .iter()
+        .map(|l| {
+            let mut cells: Vec<(IVec3, Rgba8)> = l
+                .volume
+                .iter()
+                .map(|(p, v)| (p, d.data.palette.get(v as usize).unwrap()))
+                .collect();
+            cells.sort_by_key(|(p, _)| (p.x, p.y, p.z));
+            cells
+        })
+        .collect()
+}
+
+/// Two layers painted with many palette colors.
+fn colorful() -> Document {
+    let mut a = Layer::new("A", BoundSize::default());
+    let mut b = Layer::new("B", BoundSize::default());
+    for i in 1..50 {
+        a.volume.set(IVec3::new(i % 7, i / 7, 0), i as Voxel);
+        b.volume.set(IVec3::new(i % 7, i / 7, 3), (50 - i) as Voxel);
+    }
+    b.locked = true;
+    Document::with_layers("t", vec![a, b])
+}
+
+#[test]
+fn sorting_the_palette_keeps_the_model_identical() {
+    for key in [PaletteSort::Hue, PaletteSort::Luminance] {
+        let mut d = colorful();
+        d.selected_color = 35;
+        let picked = d.selected_rgba();
+        let (before, data) = (look(&d), d.data.clone());
+        assert!(d.sort_palette(key));
+        assert_ne!(d.data.palette, data.palette);
+        assert_eq!(look(&d), before, "{key:?}");
+        assert_eq!(d.selected_rgba(), picked, "selection follows its color");
+        if key == PaletteSort::Luminance {
+            let luma = |c: Rgba8| 2126 * c.r as u32 + 7152 * c.g as u32 + 722 * c.b as u32;
+            let colors = &d.data.palette.colors()[1..];
+            assert!(colors.windows(2).all(|w| luma(w[0]) <= luma(w[1])));
+        }
+        d.undo();
+        assert_eq!(d.data, data, "one undo step");
+    }
+}
+
+#[test]
+fn gradient_endpoints_are_exact() {
+    let mut d = colorful();
+    let (a, b) = (10, 20);
+    let (ca, cb) = (Rgba8::rgb(0, 100, 200), Rgba8::rgb(250, 0, 100));
+    d.set_palette_color(a, ca, false);
+    d.set_palette_color(b, cb, false);
+    let before = d.data.palette.clone();
+    assert!(d.palette_gradient(b, a));
+    let p = &d.data.palette;
+    assert_eq!((p.get(a), p.get(b)), (Some(ca), Some(cb)));
+    assert_eq!(p.get(15), Some(Rgba8::rgb(125, 50, 150)));
+    assert_eq!(p.get(9), before.get(9));
+    assert_eq!(p.get(21), before.get(21));
+    assert!(!d.palette_gradient(4, 5), "no slot between");
+    d.undo();
+    assert_eq!(d.data.palette, before);
+}
+
+#[test]
+fn remap_touches_every_layer_in_one_step() {
+    let mut d = colorful();
+    let before = d.data.clone();
+    // Color 7 is on layer A (x = 0, y = 1) and on layer B (43 → 50 - 43 = 7).
+    let n = d.remap_color(7, 3);
+    assert_eq!(n, 2);
+    assert_eq!(d.data.layers[0].volume.get(IVec3::new(0, 1, 0)), 3);
+    assert_eq!(d.data.layers[1].volume.get(IVec3::new(1, 6, 3)), 3);
+    assert_eq!(d.remap_color(7, 3), 0);
+    d.undo();
+    assert_eq!(d.data, before);
+}
+
+#[test]
+fn removing_duplicates_closes_up_the_palette() {
+    let mut d = colorful();
+    let dup = d.data.palette.get(5).unwrap();
+    d.set_palette_color(9, dup, false);
+    d.set_palette_color(12, dup, false);
+    let before = look(&d);
+    let len = d.data.palette.len();
+    assert_eq!(d.remove_duplicate_colors(), 2);
+    assert_eq!(d.data.palette.len(), len - 2);
+    assert_eq!(look(&d), before);
+    assert_eq!(
+        d.data.layers[0].volume.get(IVec3::new(2, 1, 0)),
+        5,
+        "9 became 5"
+    );
+    assert_eq!(d.remove_duplicate_colors(), 0);
+}
+
+#[test]
+fn loading_and_snapping_palettes() {
+    let mut d = colorful();
+    let colors = [Rgba8::rgb(255, 0, 0), Rgba8::rgb(0, 0, 255)];
+    assert!(d.load_palette(&colors));
+    assert_eq!(d.data.palette.get(1), Some(colors[0]));
+    assert_eq!(
+        d.data.palette.get(3),
+        colorful().data.palette.get(3),
+        "rest kept"
+    );
+    d.undo();
+    let mut d = colorful();
+    d.set_palette_color(4, Rgba8::rgb(200, 10, 10), false);
+    assert!(d.snap_to_palette(&colors));
+    assert_eq!(d.data.palette.len(), 3);
+    let v = d.data.layers[0].volume.get(IVec3::new(4, 0, 0));
+    assert_eq!(d.data.palette.get(v as usize), Some(colors[0]));
+    assert!(d
+        .data
+        .layers
+        .iter()
+        .all(|l| l.volume.iter().all(|(_, v)| v == 1 || v == 2)));
+    d.undo();
+    assert_eq!(d.data.palette.get(4), Some(Rgba8::rgb(200, 10, 10)));
+}
+
+#[test]
+fn favorites_store_and_recall_palette_indices() {
+    let mut s = AppState::default();
+    s.doc_mut().unwrap().select_color(12);
+    s.store_favorite(3);
+    s.doc_mut().unwrap().select_color(20);
+    s.recall_favorite(3);
+    assert_eq!(s.doc().unwrap().selected_color, 12);
+    s.recall_favorite(4);
+    assert_eq!(s.doc().unwrap().selected_color, 12, "empty slot");
+    s.new_document();
+    s.recall_favorite(3);
+    assert_eq!(s.doc().unwrap().selected_color, 12, "shared by documents");
+}
+
+#[test]
+fn palette_files_load_through_the_app() {
+    let dir = std::env::temp_dir().join(format!("rizxel_p10_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.hex");
+    std::fs::write(&path, "ff0000\nnope\n00ff00\n").unwrap();
+    let mut s = AppState::default();
+    s.load_palette_file(&path, false).unwrap();
+    assert_eq!(
+        s.doc().unwrap().data.palette.get(2),
+        Some(Rgba8::rgb(0, 255, 0))
+    );
+    assert!(s.status_message.as_deref().unwrap().contains("line 2"));
+    let out = dir.join("out.gpl");
+    s.save_palette_file(&out).unwrap();
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.starts_with("GIMP Palette"));
+    std::fs::remove_dir_all(&dir).ok();
 }

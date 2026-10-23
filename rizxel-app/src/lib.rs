@@ -7,6 +7,7 @@ pub mod autosave;
 pub mod clipboard;
 pub mod close;
 pub mod document;
+pub mod favorites;
 pub mod history;
 pub mod interchange;
 pub mod paths;
@@ -30,16 +31,18 @@ pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVA
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
-    CoreOp, DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, OpError, SliceOutcome,
-    TransformError, TransparentMesh, ViewMeshes, GHOST_ALPHA, MASKED_MESSAGE, MAX_MATERIAL_SLOT,
+    CoreOp, DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, OpError, PaletteSort,
+    SliceOutcome, TransformError, TransparentMesh, ViewMeshes, GHOST_ALPHA, MASKED_MESSAGE,
+    MAX_MATERIAL_SLOT,
 };
+pub use favorites::Favorites;
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
-pub use rizxel_io::RZXL_EXTENSION;
+pub use rizxel_io::{GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use selection::Selection;
 
 /// File extension of mesh exports.
@@ -567,6 +570,9 @@ pub struct AppState {
     pub clipboard: Option<Clipboard>,
     /// Settings of the *Layer* and *Model* structure operations.
     pub structure: StructureOptions,
+    /// Favorite colors `0`–`9`: palette indices, shared by every document
+    /// and kept in the app settings (not in files).
+    pub favorites: Favorites,
     untitled_counter: u32,
 }
 
@@ -612,6 +618,7 @@ impl Default for AppState {
             autosave: autosave::Autosave::default(),
             clipboard: None,
             structure: StructureOptions::default(),
+            favorites: Favorites::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -625,6 +632,7 @@ impl AppState {
         let mut state = Self::default();
         if let Some(p) = &paths {
             state.recent = RecentFiles::load(&p.recent_file());
+            state.favorites = Favorites::load(&p.favorites_file());
         }
         state.paths = paths;
         state
@@ -1288,6 +1296,77 @@ impl AppState {
         self.run_op(op.label(), |d| {
             d.boolean(other, op).map(|n| format!("{n} voxels changed"))
         });
+    }
+
+    // ------------------------------------------------------------ palette
+
+    /// Stores the selected palette index as favorite `slot` (`Ctrl+Shift+digit`).
+    pub fn store_favorite(&mut self, slot: usize) {
+        let Some(index) = self.doc().map(|d| d.selected_color) else {
+            return;
+        };
+        if self.favorites.set(slot, index) {
+            if let Some(p) = &self.paths {
+                if let Err(e) = self.favorites.save(&p.favorites_file()) {
+                    log::warn!("favorites: {e}");
+                }
+            }
+            self.status_message = Some(format!("Favorite {slot}: color {index}"));
+        }
+    }
+
+    /// Selects favorite `slot`'s color (`Ctrl+digit`).
+    pub fn recall_favorite(&mut self, slot: usize) {
+        let Some(index) = self.favorites.get(slot) else {
+            self.status_message = Some(format!(
+                "Favorite {slot} is empty: Ctrl+Shift+{slot} stores the selected color"
+            ));
+            return;
+        };
+        if let Some(d) = self.doc_mut() {
+            if !d.select_color(index) {
+                self.status_message = Some(format!(
+                    "Favorite {slot}: color {index} is not in this palette"
+                ));
+            }
+        }
+    }
+
+    /// *Palette ▸ Load* (`snap`: *Load and Snap Model*) from a `.gpl` or
+    /// `.hex` file; skipped lines are reported in the status bar.
+    pub fn load_palette_file(&mut self, path: &Path, snap: bool) -> Result<(), RzxlError> {
+        let file = rizxel_io::load_palette_file(path)?;
+        let Some(doc) = self.doc_mut() else {
+            return Ok(());
+        };
+        if snap {
+            doc.snap_to_palette(&file.colors);
+        } else {
+            doc.load_palette(&file.colors);
+        }
+        let mut msg = format!(
+            "Loaded {} colors from {}",
+            file.colors.len(),
+            path.display()
+        );
+        if !file.warnings.is_empty() {
+            msg.push_str(&format!(" (skipped: {})", file.warnings.join("; ")));
+        }
+        self.status_message = Some(msg);
+        Ok(())
+    }
+
+    /// *Palette ▸ Save*: slots `1..` of the active palette as `.gpl` / `.hex`.
+    pub fn save_palette_file(&mut self, path: &Path) -> Result<(), RzxlError> {
+        let Some(doc) = self.doc() else { return Ok(()) };
+        let colors = &doc.data.palette.colors()[rizxel_math::FIRST_COLOR_INDEX as usize..];
+        rizxel_io::save_palette_file(path, &doc.name, colors)?;
+        self.status_message = Some(format!(
+            "Saved {} colors to {}",
+            colors.len(),
+            path.display()
+        ));
+        Ok(())
     }
 
     // ------------------------------------------------------------- slice

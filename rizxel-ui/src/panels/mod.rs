@@ -18,4 +18,8 @@ pub struct UiState {
     pub zen_mode: bool,
     /// Autosaves offered for recovery at startup (dialog open while non-empty).
     pub recovery: Vec<rizxel_app::RecoveryEntry>,
+    /// Color Palette panel: show only the colors the model uses.
+    pub palette_used_only: bool,
+    /// Second swatch for Gradient and Remap (`Shift+click`).
+    pub palette_mark: Option<usize>,
 }
