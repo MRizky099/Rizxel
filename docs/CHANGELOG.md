@@ -3,6 +3,16 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Fixes (2026-10-23)
+
+### Fixed
+- The model can be seen from below the ground (B1). With the camera under
+  the `y = 0` plane, the ground grid wrote its depth in front of the model,
+  so only the bottom faces of the lowest voxel row showed. From below, the
+  grid now only clears the background (`fs_grid`), and its lines are drawn
+  after the voxels as a faded overlay without depth writes
+  (`fs_grid_under`, `eye_below_ground`).
+
 ## [Unreleased] — Import & Export: MagicaVoxel, Goxel, OBJ/MTL, STL (2026-10-20)
 
 ### Added

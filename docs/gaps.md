@@ -20,12 +20,13 @@ The **Phase** column names the plan that closes the gap (see
 | Phase 6 work is uncommitted | `16a8ebc` |
 | `.tmp-craft/` is an untracked vendor checkout | Removed from the tree (an ignore rule is still added in Phase 7) |
 | No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `2b4f8e2`, `30db23c` |
+| B1: the model can't be seen from below | `aa5d21e` (see below) |
 
 ## Known bugs
 
 | Bug | Severity | Phase | Notes |
 |---|---|---|---|
-| B1: the model can't be seen from below | High | 7 | With the camera under the ground plane only the bottom faces of the lowest voxel row show. `fs_grid` (`render/scene.wgsl`) writes the `y = 0` ground depth even when the eye is below it, so voxels above the floor fail the depth test. |
+| ~~B1: the model can't be seen from below~~ ✅ fixed in `aa5d21e` | High | 7 | With the camera under the ground plane only the bottom faces of the lowest voxel row show. `fs_grid` (`render/scene.wgsl`) writes the `y = 0` ground depth even when the eye is below it, so voxels above the floor fail the depth test. Fixed: from below, the grid writes no ground depth and its lines are drawn over the model as a faded overlay. |
 
 ## Data model and files
 
