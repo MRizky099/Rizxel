@@ -16,6 +16,10 @@ struct Camera {
     grid_color: vec4<f32>,
     axis_x_color: vec4<f32>,
     axis_z_color: vec4<f32>,
+    // xyz = unit view direction, w = 1 for orthographic.
+    forward: vec4<f32>,
+    // xyz = center of the grid fade (eye, or orbit target in orthographic).
+    focus: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -26,7 +30,17 @@ const NEAR_W: f32 = 0.1;
 /// camera so they never z-fight with the ground grid.
 const OVERLAY_PULL: f32 = 0.0015;
 
+fn is_ortho() -> bool {
+    return cam.forward.w > 0.5;
+}
+
 fn pull_to_eye(p: vec3<f32>) -> vec3<f32> {
+    if is_ortho() {
+        // Parallel rays: pull straight back along the view direction (the
+        // far orthographic eye would shift overlays sideways), by the same
+        // amount as a perspective eye at the orbit distance.
+        return p - cam.forward.xyz * (cam.eye.w * OVERLAY_PULL);
+    }
     return p + (cam.eye.xyz - p) * OVERLAY_PULL;
 }
 
@@ -102,7 +116,7 @@ fn grid_sample(ndc: vec2<f32>) -> GridSample {
     let axis_z = axis_coverage(p.x, 1.6);
 
     // "Infinity" look: fade with distance and at grazing angles.
-    let dist = length(p.xz - cam.eye.xz);
+    let dist = length(p.xz - cam.focus.xz);
     let fade_far = cam.viewport.w;
     var fade = 1.0 - smoothstep(fade_far * 0.25, fade_far, dist);
     fade *= smoothstep(0.0, 0.12, abs(normalize(dir).y));

@@ -146,7 +146,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui.set_min_width(160.0);
                 for face in rizxel_app::ViewFace::ALL {
                     if menu_item(ui, icon::SQUARE, face.label(), "", true) {
-                        state.camera.snap(rizxel_app::ViewTarget::Face(face));
+                        state.snap_view(rizxel_app::ViewTarget::Face(face));
                     }
                 }
             });
@@ -155,7 +155,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui.set_min_width(160.0);
                 for edge in rizxel_app::ViewEdge::ALL {
                     if menu_item(ui, icon::LINE_SEGMENT, edge.label(), "", true) {
-                        state.camera.snap(rizxel_app::ViewTarget::Edge(edge));
+                        state.snap_view(rizxel_app::ViewTarget::Edge(edge));
                     }
                 }
             });
@@ -164,16 +164,13 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui.set_min_width(160.0);
                 for corner in rizxel_app::ViewCorner::ALL {
                     if menu_item(ui, icon::CUBE, corner.label(), "", true) {
-                        state.camera.snap(rizxel_app::ViewTarget::Corner(corner));
+                        state.snap_view(rizxel_app::ViewTarget::Corner(corner));
                     }
                 }
             });
 
             ui.separator();
-
-            if menu_item(ui, icon::ARROW_COUNTER_CLOCKWISE, "Reset Camera", "", true) {
-                state.camera = rizxel_app::OrbitCamera::default();
-            }
+            camera_items(ui, state);
 
             ui.separator();
             panels_menu(ui, dock);
@@ -189,6 +186,43 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             }
         });
     });
+}
+
+/// View menu: projection and the camera framing commands.
+fn camera_items(ui: &mut Ui, state: &mut AppState) {
+    let has_doc = state.doc().is_some();
+    let ortho = state.camera.is_ortho();
+    if menu_item(ui, check_glyph(ortho), "Orthographic", "Numpad 5", true) {
+        state.camera.toggle_projection();
+    }
+    if menu_item(
+        ui,
+        check_glyph(state.view.auto_ortho),
+        "Auto Ortho on Face Snap",
+        "",
+        true,
+    ) {
+        state.view.auto_ortho = !state.view.auto_ortho;
+    }
+    ui.separator();
+    if menu_item(ui, icon::FRAME_CORNERS, "Frame Selection", ".", has_doc) {
+        state.frame_selection();
+    }
+    if menu_item(ui, icon::BOUNDING_BOX, "Frame Work Area", "Home", has_doc) {
+        state.frame_work_area();
+    }
+    if menu_item(ui, icon::HOUSE, "Home View", "Shift+Home", true) {
+        state.camera.reset();
+    }
+}
+
+/// Leading glyph of a menu toggle.
+fn check_glyph(on: bool) -> &'static str {
+    if on {
+        icon::CHECK_SQUARE
+    } else {
+        icon::SQUARE
+    }
 }
 
 /// Edit menu: history, clipboard, selection, layer and transform commands.
@@ -737,6 +771,10 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Space", "Slice Mode on / off"),
         ("/", "Show or hide the work plane"),
         ("Ctrl+Shift+F", "Zen mode"),
+        ("Numpad 5 / 5", "Perspective / orthographic"),
+        (". / Numpad .", "Frame selection (or the model)"),
+        ("Home", "Frame work area (model bounds)"),
+        ("Shift+Home", "Home view (reset camera)"),
         ("Right drag (viewport)", "Orbit camera"),
         ("Middle drag (viewport)", "Pan camera"),
         ("Middle double-click", "Reset camera"),

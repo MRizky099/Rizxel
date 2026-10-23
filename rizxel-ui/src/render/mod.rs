@@ -47,6 +47,11 @@ struct CameraUniform {
     grid_color: [f32; 4],
     axis_x_color: [f32; 4],
     axis_z_color: [f32; 4],
+    /// xyz = unit view direction, w = 1 for orthographic.
+    forward: [f32; 4],
+    /// xyz = center of the grid fade (the eye, or the orbit target in
+    /// orthographic mode).
+    focus: [f32; 4],
 }
 
 /// One thick line segment (instanced; see `vs_line`).
@@ -145,6 +150,11 @@ fn rgba(c: Color32) -> [f32; 4] {
 pub struct SceneFrame {
     pub view_proj: Mat4,
     pub eye: Vec3,
+    /// Orbit target (the grid fades around it in orthographic mode).
+    pub target: Vec3,
+    /// Unit view direction.
+    pub forward: Vec3,
+    pub ortho: bool,
     pub distance: f32,
     /// XZ offset of the grid so lines align with voxel boundaries.
     pub grid_origin: Vec2,
@@ -177,6 +187,13 @@ impl SceneFrame {
             grid_color: v4(self.grid_color),
             axis_x_color: v4(self.axis_x),
             axis_z_color: v4(self.axis_z),
+            forward: self
+                .forward
+                .extend(f32::from(u8::from(self.ortho)))
+                .to_array(),
+            focus: if self.ortho { self.target } else { self.eye }
+                .extend(0.0)
+                .to_array(),
         }
     }
 }
@@ -825,8 +842,8 @@ mod tests {
 
     #[test]
     fn gpu_struct_sizes_match_wgsl() {
-        // WGSL struct: 2 mat4 + 7 vec4 = 128 + 112 bytes.
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 240);
+        // WGSL struct: 2 mat4 + 9 vec4 = 128 + 144 bytes.
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 272);
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);

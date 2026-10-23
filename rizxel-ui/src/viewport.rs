@@ -94,6 +94,9 @@ pub struct Projection {
     eye: Vec3,
     /// Unit view direction.
     forward: Vec3,
+    /// World units covered by the viewport height in orthographic mode;
+    /// `None` in perspective.
+    ortho_height: Option<f32>,
 }
 
 impl Projection {
@@ -104,27 +107,37 @@ impl Projection {
             rect,
             eye: camera.eye(target),
             forward: -camera.eye_direction(),
+            ortho_height: camera.is_ortho().then(|| camera.view_height()),
         }
     }
 
-    /// Camera position in world space.
+    /// Camera position in world space (far back along the line of sight in
+    /// orthographic mode).
     pub fn eye(&self) -> Vec3 {
         self.eye
     }
 
     /// On-screen size (logical points) of one world unit at `world`.
     pub fn points_per_unit(&self, world: Vec3) -> f32 {
-        let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
-        self.rect.height() / (2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan())
+        let span = self.ortho_height.unwrap_or_else(|| {
+            let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
+            2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan()
+        });
+        self.rect.height() / span
     }
 
     /// World-space mouse ray `(origin, unit direction)` through `screen`.
+    /// Perspective rays start at the eye; orthographic rays are parallel
+    /// and start on the near plane.
     pub fn world_ray(&self, screen: Pos2) -> (Vec3, Vec3) {
         let ndc = glam::Vec2::new(
             (screen.x - self.rect.center().x) / (self.rect.width() * 0.5),
             -(screen.y - self.rect.center().y) / (self.rect.height() * 0.5),
         );
         let inv = self.view_proj.inverse();
+        if self.ortho_height.is_some() {
+            return (inv.project_point3(ndc.extend(0.0)), self.forward);
+        }
         let far = inv.project_point3(ndc.extend(1.0));
         (self.eye, (far - self.eye).normalize_or_zero())
     }
@@ -165,9 +178,7 @@ fn view_rotation(camera: &OrbitCamera) -> Mat3 {
 
 /// World-space min/max of the model bounds, centered on the origin in XZ.
 fn bounds_box(bounds: BoundSize) -> (Vec3, Vec3) {
-    let size = bounds.0.as_vec3();
-    let half = Vec3::new(size.x * 0.5, 0.0, size.z * 0.5);
-    (-half, Vec3::new(half.x, size.y, half.z))
+    rizxel_app::world_bounds(bounds)
 }
 
 pub fn show(
@@ -204,7 +215,8 @@ pub fn show(
     if response.double_clicked_by(egui::PointerButton::Middle) {
         state.camera.reset();
     }
-    let target = Vec3::new(0.0, bmax.y * 0.4, 0.0) + state.camera.pan;
+    state.viewport_aspect = rect.width() / rect.height().max(1.0);
+    let target = rizxel_app::orbit_base(bounds) + state.camera.pan;
     let proj = Projection::new(&state.camera, target, rect);
 
     // --- Slice Mode: hide the camera's side, slider on the right edge -------
@@ -227,8 +239,10 @@ pub fn show(
         Pos2::new(rect.right() - 100.0, rect.top() + 16.0),
         Vec2::splat(84.0),
     );
+    let projection_rect = projection_button_rect(cube_rect);
     let ppp = ui.ctx().pixels_per_point();
-    let blocked: Vec<Rect> = std::iter::once(cube_rect)
+    let blocked: Vec<Rect> = [cube_rect, projection_rect]
+        .into_iter()
         .chain(slider.map(|(r, _)| r))
         .collect();
     let preview = tools.update(
@@ -248,7 +262,16 @@ pub fn show(
     // --- Scene (wgpu) -------------------------------------------------------
     // While slicing, the bounds are drawn one voxel thick (Slice panel look).
     let bold = state.doc().is_some_and(|d| d.plane.slice);
-    let mut frame = scene_frame(&state.camera, &proj, state.view_mode, bmin, bmax, ppp, bold);
+    let mut frame = scene_frame(
+        &state.camera,
+        &proj,
+        target,
+        state.view_mode,
+        bmin,
+        bmax,
+        ppp,
+        bold,
+    );
     frame.fills.extend(preview.fills);
     frame.lines.extend(preview.lines);
     if let Some((lo, hi)) = occupied {
@@ -293,7 +316,10 @@ pub fn show(
         paint_slice_slider(&painter, state, track, active);
     }
     if let Some(target) = view_cube(ui, &state.camera, cube_rect) {
-        state.camera.snap(target);
+        state.snap_view(target);
+    }
+    if projection_button(ui, &state.camera, projection_rect) {
+        state.camera.toggle_projection();
     }
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
@@ -308,8 +334,8 @@ const SLIDER_WIDTH: f32 = 12.0;
 fn slider_track(rect: Rect) -> Rect {
     let right = rect.right() - 8.0;
     Rect::from_min_max(
-        Pos2::new(right - SLIDER_WIDTH, rect.top() + 116.0),
-        Pos2::new(right, (rect.bottom() - 104.0).max(rect.top() + 160.0)),
+        Pos2::new(right - SLIDER_WIDTH, rect.top() + 132.0),
+        Pos2::new(right, (rect.bottom() - 104.0).max(rect.top() + 176.0)),
     )
 }
 
@@ -415,9 +441,11 @@ fn paint_slice_slider(painter: &egui::Painter, state: &AppState, track: Rect, ac
 }
 
 /// Builds the GPU scene description for this frame.
+#[allow(clippy::too_many_arguments)]
 fn scene_frame(
     camera: &OrbitCamera,
     proj: &Projection,
+    target: Vec3,
     view_mode: ViewMode,
     bmin: Vec3,
     bmax: Vec3,
@@ -444,6 +472,9 @@ fn scene_frame(
     SceneFrame {
         view_proj: proj.view_proj,
         eye: proj.eye,
+        target,
+        forward: proj.forward,
+        ortho: camera.is_ortho(),
         distance: camera.distance,
         // Align grid lines with the voxel cells of the (possibly odd-sized) bounds.
         grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
@@ -766,6 +797,45 @@ fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget
     response.clicked().then_some(hovered).flatten()
 }
 
+/// Perspective / orthographic toggle under the view cube.
+fn projection_button_rect(cube_rect: Rect) -> Rect {
+    Rect::from_center_size(
+        Pos2::new(cube_rect.center().x, cube_rect.bottom() + 12.0),
+        Vec2::new(64.0, 18.0),
+    )
+}
+
+/// Draws the projection toggle; true when clicked.
+fn projection_button(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> bool {
+    let response = ui
+        .interact(rect, ui.id().with("projection_toggle"), Sense::click())
+        .on_hover_text("Toggle perspective / orthographic (Numpad 5)");
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let painter = ui.painter();
+    let fill = if hovered {
+        Color32::from_rgb(0x62, 0x62, 0x6b)
+    } else {
+        Color32::from_rgb(0x52, 0x52, 0x5b)
+    };
+    painter.rect_filled(rect, 4.0, fill);
+    let label = if camera.is_ortho() { "Ortho" } else { "Persp" };
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        theme::semibold(11.0),
+        if camera.is_ortho() {
+            theme::BOUND
+        } else {
+            Color32::from_rgb(0xd4, 0xd4, 0xd8)
+        },
+    );
+    response.clicked()
+}
+
 /// Linear blend from `a` toward `b` by `t` in 0..=1.
 fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
@@ -829,6 +899,80 @@ mod tests {
         let proj = Projection::new(&cam, Vec3::ZERO, rect);
         let hit = proj.ground_hit(rect.center()).unwrap();
         assert!(hit.length() < 0.5, "hit = {hit:?}");
+    }
+
+    fn test_rect() -> Rect {
+        Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0))
+    }
+
+    #[test]
+    fn screen_round_trip_in_both_projections() {
+        let rect = test_rect();
+        for ortho in [false, true] {
+            let mut cam = OrbitCamera::default();
+            if ortho {
+                cam.toggle_projection();
+            }
+            let proj = Projection::new(&cam, Vec3::new(0.0, 5.0, 0.0), rect);
+            for world in [Vec3::new(3.0, 2.0, -4.0), Vec3::new(-10.0, 12.0, 7.5)] {
+                let screen = proj.to_screen(world).unwrap();
+                let (origin, dir) = proj.world_ray(screen);
+                // The ray through the point's pixel passes through the point.
+                let t = (world - origin).dot(dir);
+                let closest = origin + dir * t;
+                assert!(
+                    (closest - world).length() < 1e-2,
+                    "ortho {ortho}: {closest:?} vs {world:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ortho_rays_are_parallel_and_keep_the_framing() {
+        let rect = test_rect();
+        let mut cam = OrbitCamera::default();
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        let target = Vec3::new(0.0, 4.0, 0.0);
+        let persp = Projection::new(&cam, target, rect);
+        cam.toggle_projection();
+        let ortho = Projection::new(&cam, target, rect);
+        let (_, a) = ortho.world_ray(rect.left_top());
+        let (_, b) = ortho.world_ray(rect.right_bottom());
+        assert!((a - b).length() < 1e-5 && (a + Vec3::Z).length() < 1e-5);
+        // At the orbit target both projections show the same scale.
+        let (p, o) = (persp.points_per_unit(target), ortho.points_per_unit(target));
+        assert!((p - o).abs() < 1e-3, "{p} vs {o}");
+        // Ortho scale does not depend on depth.
+        assert_eq!(o, ortho.points_per_unit(target + Vec3::Z * 50.0));
+    }
+
+    #[test]
+    fn ortho_and_perspective_pick_the_same_voxel_in_a_face_view() {
+        // A voxel column seen from the front: the centre pixel of voxel
+        // (5, 3, *) picks the front-most voxel in both projections.
+        use rizxel_engine::raycast::{raycast_volume, Ray};
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, (0..6).map(|z| (IVec3::new(5, 3, z), 9)), false);
+        let bounds = doc.data.bounds;
+        let (bmin, _) = bounds_box(bounds);
+        let rect = test_rect();
+        let mut cam = OrbitCamera::default();
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        let target = rizxel_app::orbit_base(bounds);
+        let mut picks = Vec::new();
+        for ortho in [false, true] {
+            if ortho {
+                cam.toggle_projection();
+            }
+            let proj = Projection::new(&cam, target, rect);
+            let screen = proj.to_screen(bmin + Vec3::new(5.5, 3.5, 6.0)).unwrap();
+            let (origin, dir) = proj.world_ray(screen);
+            let hit = raycast_volume(&Ray::new(origin - bmin, dir), &doc.data.layers[0].volume);
+            picks.push(hit.map(|h| (h.voxel, h.normal)));
+        }
+        assert_eq!(picks[0], Some((IVec3::new(5, 3, 5), IVec3::Z)));
+        assert_eq!(picks[0], picks[1]);
     }
 
     #[test]

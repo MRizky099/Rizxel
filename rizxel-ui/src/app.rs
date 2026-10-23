@@ -172,6 +172,20 @@ impl RizxelApp {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Slash)) {
             self.state.toggle_plane_visible();
         }
+        // Camera. egui reports the numpad digits and `.` as the main keys.
+        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Num5)) {
+            self.state.camera.toggle_projection();
+        }
+        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Period)) {
+            self.state.frame_selection();
+        }
+        // Shift+Home first: a plain `Home` pattern also matches it.
+        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::Home)) {
+            self.state.camera.reset();
+        }
+        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Home)) {
+            self.state.frame_work_area();
+        }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
         for tool in rizxel_engine::Tool::ALL {
