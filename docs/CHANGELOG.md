@@ -3,6 +3,18 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — Phase 7: CI (2026-10-23)
+
+### Added
+- GitHub Actions workflow (`.github/workflows/ci.yml`): `cargo fmt --check`
+  on Linux, then `clippy -D warnings` and `cargo test --workspace` on
+  Windows and Linux. Runs on pushes to `main` and `ui-*` and on every pull
+  request.
+
+### Changed
+- `.tmp-craft/` is ignored, so a local `craft-ui` checkout can't be
+  committed by accident.
+
 ## [Unreleased] — Fixes (2026-10-23)
 
 ### Fixed
@@ -12,6 +24,36 @@ All notable changes to Rizxel are documented here. Format follows
   grid now only clears the background (`fs_grid`), and its lines are drawn
   after the voxels as a faded overlay without depth writes
   (`fs_grid_under`, `eye_below_ground`).
+
+## [Unreleased] — Slice Mode (2026-10-23)
+
+Qubicle-style global slice editing. Comparison and screenshots:
+`docs/qubicle_feature_gap_analysis.md`.
+
+### Added
+- **Slice Mode** from any tool, without switching tools (`2b4f8e2`):
+  - A `2D` button in the Tools panel with a 1-based slice counter
+    (`Y 3/32`).
+  - `Space` toggles it: over a voxel it slices at that voxel, otherwise it
+    restores the last slice.
+  - *View ▸ Slice* with Slice Mode, Next, Previous, First and Last.
+  - A slice slider in the viewport, and dragging the bounds frame moves the
+    slice with any tool.
+- While slicing, only the slice layer can be picked and edited. Brush,
+  Shape, Fill, box Selection and Fuzzy Select stay on it; a mirror axis
+  along the slice normal still reaches the mirrored slice.
+- `/` toggles the work plane (`30db23c`). Hiding it (the key, the Visible
+  checkbox or *View ▸ Slice ▸ Show Work Plane*) while slicing turns Slice
+  Mode off and remembers it; showing the plane again resumes the same
+  slice. Turning Slice Mode on another way or placing a new plane drops the
+  pending resume.
+
+### Changed
+- The camera's side of the slice is hidden every frame, so the Flip button
+  is gone. The context layer is dropped and the slice sheet sits on the
+  slice's far face.
+- Slice moves are not undo steps; undo and redo move the slice back to the
+  edited slice.
 
 ## [Unreleased] — Import & Export: MagicaVoxel, Goxel, OBJ/MTL, STL (2026-10-20)
 

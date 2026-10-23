@@ -1,8 +1,8 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (Phases 1–6 plus Slice Mode, on `ui-docking` at
-`30db23c`) and a usable 1.0 editor. Sources: the "Out of Scope" sections in each phase
-plan, the limits in `interchange_formats.md` and `rzxl_format.md`,
+Gaps between the current build (Phases 1–6 plus Slice Mode and the B1 fix, on
+`ui-docking` at `ca9a299`, 228 tests) and a usable 1.0 editor. Sources: the "Out of
+Scope" sections in each phase plan, the limits in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
 
 Severity: **High** blocks real-world use · **Medium** is a noticeable limitation ·
@@ -18,15 +18,14 @@ The **Phase** column names the plan that closes the gap (see
 | Gap | Closed by |
 |---|---|
 | Phase 6 work is uncommitted | `16a8ebc` |
-| `.tmp-craft/` is an untracked vendor checkout | Removed from the tree (an ignore rule is still added in Phase 7) |
+| `.tmp-craft/` is an untracked vendor checkout | Removed from the tree; ignored since Phase 7 |
 | No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `2b4f8e2`, `30db23c` |
-| B1: the model can't be seen from below | `aa5d21e` (see below) |
+| B1: the model can't be seen from below | `aa5d21e` |
+| No CI | `.github/workflows/ci.yml` (Phase 7): fmt, clippy and tests on Windows and Linux; first run pending the first push |
 
 ## Known bugs
 
-| Bug | Severity | Phase | Notes |
-|---|---|---|---|
-| ~~B1: the model can't be seen from below~~ ✅ fixed in `aa5d21e` | High | 7 | With the camera under the ground plane only the bottom faces of the lowest voxel row show. `fs_grid` (`render/scene.wgsl`) writes the `y = 0` ground depth even when the eye is below it, so voxels above the floor fail the depth test. Fixed: from below, the grid writes no ground depth and its lines are drawn over the model as a faded overlay. |
+No open bugs are known. Fixed bugs move to the table above.
 
 ## Data model and files
 
@@ -102,7 +101,6 @@ The **Phase** column names the plan that closes the gap (see
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No CI | High | 7 | There is no `.github/workflows`, so the 227 tests, clippy and fmt only run by hand. |
 | `main` is at Phase 4 | High | 7 | Everything since `0ceeb6a` lives only on `ui-docking`. |
 | No release packaging | Medium | 12 | There are no installers or signed binaries, and only Windows has an embedded icon resource. |
 | UI behaviour isn't tested | Medium | 12 | Tests cover the engine, I/O and app layers. Viewport and panel interactions aren't automated. |
