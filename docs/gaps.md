@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.2.0`: Phases 1–7 plus Slice Mode, 228 tests) and a
+Gaps between the current build (`v0.2.0` plus Phase 8 on its branch, 260 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -23,6 +23,13 @@ The **Phase** column names the plan that closes the gap (see
 | B1: the model can't be seen from below | `c68aa10` |
 | No CI | `.github/workflows/ci.yml` (Phase 7): fmt, clippy and tests on Windows and Linux |
 | `main` is at Phase 4 | Merged in Phase 7 (PR #2, `v0.2.0`) |
+| Closing unsaved work doesn't ask first | Phase 8, `e6e4a21` |
+| No recent files list | Phase 8, `7fdd4c8` |
+| No autosave or crash recovery | Phase 8, `e2d69d8` |
+| No copy, cut or paste | Phase 8, `6aa12e4` |
+| No 90° rotate, flip or mirror | Phase 8, `50f2000` |
+| The Edit menu is minimal | Phase 8, `18bba53` |
+| No way to move or copy a selection into a new layer | Phase 8: Cut or Copy, then *Paste to New Layer* |
 
 ## Known bugs
 
@@ -33,13 +40,10 @@ No open bugs are known. Fixed bugs move to the table above.
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
 | Opacity and materials are stored but not rendered | High | 9 | `.rzxl` v3 saves layer `opacity` and `materials` (metallic, roughness, emission, tint), but the renderer ignores them. Users can edit values that have no visible effect. |
-| Closing unsaved work doesn't ask first | High | 8 | The tab's close button, *File ▸ Exit*, the title bar and `Alt+F4` all discard unsaved changes without a prompt. |
-| No autosave or crash recovery | High | 8 | A crash or power loss loses everything since the last manual save. |
 | Bounds are limited to 256³ | Medium | post | `BoundSize` is clamped to `1..=256` and imports above 256 on any axis are refused. MagicaVoxel scenes can be larger. |
 | One shared grid for all layers | Medium | post | Qubicle matrices have their own size and position; needed for Align/Distribute and exact `.qb` multi-matrix layouts. |
 | Palette is limited to 255 colors, with no per-voxel RGBA | Medium | post | `Voxel = u8`. True-color imports (Goxel, OBJ textures) are quantized with median cut, so colors are lost. |
 | Selections aren't saved | Low | post | Each layer's selection is lost on save and reload. |
-| No recent files list | Low | 8 | |
 | Dock layout isn't saved between sessions | Low | 12 | `Workspace::reset` exists, but the layout isn't written to disk. |
 
 ## Interchange
@@ -59,12 +63,10 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No copy, cut or paste | High | 8 | There is no clipboard, and no duplicating a selection into a new layer. |
-| No transforms: rotate, flip, mirror or resize of a selection or layer | High | 8, 10c | Basic modeling operations. Live Symmetry only affects placement. Phase 8 adds 90° rotate, flip and mirror commands; the Transform tool (free angles, scaling, gizmo) comes in Phase 10c. |
+| No free rotation or resize of a selection or layer | Medium | 10c | Phase 8 added 90° rotate, flip and one-shot mirror; the Transform tool (free angles, scaling, gizmo) comes in Phase 10c. |
 | No line or curve tool, and no pixel-perfect option | Medium | 10c | Brush only interpolates between drag samples. The next Slice Mode workflow. |
 | The selection box can't be adjusted | Medium | 10c | The Selection drag selects on release; there are no handles and no typed position or size. |
-| No way to move or copy a selection into a new layer | Medium | 10c | |
-| No select all / invert / grow / shrink / by color | Medium | 8, 10 | Selection is box-based or fuzzy only. Select All and Invert land with the Edit menu in Phase 8. |
+| No grow / shrink / select by color | Medium | 10 | Select All and Invert came with the Edit menu in Phase 8. |
 | No Mask Mode (protect the selection) | Medium | 10 | Qubicle's third global tool option. |
 | Slice can't split parts into separate layers | Medium | 10 | Listed as out of scope in 5a. |
 | No core operations (Hollow, Fill Hollows) or layer Booleans | Medium | 10 | |
@@ -80,7 +82,6 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| The Edit menu is minimal | Medium | 8 | It has Undo, Redo and New Layer only (`panels/top_bar.rs`). Select All, Invert and Delete are reachable only by keyboard or the option bar. |
 | No Settings or Preferences dialog, and shortcuts are fixed | Medium | 12 | The toolbar settings button is a stub (`panels/tools.rs:45`). Shortcuts, theme, grid and the undo limit can't be configured. |
 | No start screen | Low | 12 | |
 | No orthographic camera, isometric presets or frame commands | Medium | 9 | The view cube snaps angles, but the projection is always perspective. Rated High for slice work in the Qubicle analysis. |

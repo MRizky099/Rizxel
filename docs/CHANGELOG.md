@@ -5,6 +5,43 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 8: Safe editing (2026-10-23)
+
+#### Added
+- Save / Don't Save / Cancel prompt before unsaved work is closed, from the
+  tab's close button, *File ▸ Exit*, the title bar, `Alt+F4` and the OS
+  closing the window. On exit it asks about each dirty document in turn;
+  *Save* on an untitled one opens Save As, and cancelling that cancels the
+  exit.
+- Autosave: every 2 minutes or 50 edits, never mid-drag, dirty documents
+  are written in the background to `recovery/` in the app data folder
+  (`%APPDATA%\Rizxel`, `~/.local/share/rizxel`,
+  `~/Library/Application Support/Rizxel`). After a crash the next start
+  offers each copy with Restore / Discard; restored documents keep their
+  original path and open as unsaved. A save, closing the document and a
+  clean exit delete the copy.
+- *File ▸ Open Recent* with the last 10 opened, imported or saved files, and
+  *Clear Recent*.
+- Copy (`Ctrl+C`), Cut (`Ctrl+X`), Paste (`Ctrl+V`), Paste in Place
+  (`Ctrl+Alt+V`) and Paste to New Layer (`Ctrl+Shift+V`). Copy and cut take
+  the selection, or the whole active layer without one. A paste floats and
+  follows the cursor until a click or `Enter` places it (`Esc` cancels);
+  colors map onto the target document's palette.
+- Rotate 90° (`Ctrl+R` / `Ctrl+Shift+R` about the axis the camera faces, or
+  any axis from the menu), Flip X/Y/Z (`Ctrl+Alt+X/Y/Z`) and a one-shot
+  Mirror that copies one half of the bounds onto the other. They act on the
+  selection or the active layer and are refused as a whole when voxels
+  would leave the bounds.
+- Complete Edit menu: Undo, Redo, Cut, Copy, Paste, Paste in Place, Paste to
+  New Layer, Select All (`Ctrl+A`), Deselect (`Ctrl+D`), Invert Selection
+  (`Ctrl+I`), Delete, New Layer, Duplicate Layer, Rotate 90°, Flip and
+  Mirror. Items show their shortcut and are disabled when they can't apply.
+
+#### Changed
+- *Help ▸ Keyboard Shortcuts* lists every command and tool key and scrolls.
+- Every paste, cut and transform is one undo step; the randomized undo-all /
+  redo-all test now covers them.
+
 ## [0.2.0] — 2026-10-23
 
 First tagged release: everything from Phase 1 to Phase 7 (milestone M1). The

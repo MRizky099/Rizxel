@@ -628,7 +628,7 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
             ui.separator();
             ui.label(egui::RichText::new(&meta.title).color(theme::TEXT_STRONG));
             ui.label(
-                egui::RichText::new(format!("{place} · autosaved {when}"))
+                egui::RichText::new(format!("{place}, autosaved {when}"))
                     .size(11.0)
                     .color(theme::TEXT_DIM),
             );
