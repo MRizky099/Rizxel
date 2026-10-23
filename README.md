@@ -1,12 +1,16 @@
 # Rizxel
 
+<!-- TODO(Phase 7): no GitHub remote is configured yet. Once it exists, replace this
+comment with the CI badge:
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml) -->
+
 A native voxel editor written in pure Rust. Rizxel uses `egui` for the interface and
 `wgpu` for the 3D viewport. Its layered architecture follows
 [CADCraft](https://github.com/storytold/cadcraft), and its voxel model and tools draw on
 Goxel, MagicaVoxel and Qubicle.
 
-> Status: pre-release (`0.1.0`). Phases 1–5b are implemented and import/export is in
-> progress on the `ui-docking` branch. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+> Status: pre-release (`0.1.0`). Phases 1–6 and Slice Mode are implemented on the
+> `ui-docking` branch. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Features
 
