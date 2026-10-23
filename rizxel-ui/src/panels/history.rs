@@ -1,7 +1,7 @@
 //! History dock panel: the undo steps of the active document by name.
 //! Clicking a step undoes or redoes to the state right after it.
 
-use egui::{RichText, Sense, Ui};
+use egui::{Sense, Ui};
 use egui_phosphor::regular as icon;
 use rizxel_app::AppState;
 
@@ -60,12 +60,23 @@ fn history_row(ui: &mut Ui, row: usize, label: &str, position: usize) -> Option<
     } else {
         icon::ARROW_BEND_DOWN_RIGHT
     };
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 0.0))));
-    child.horizontal_centered(|ui| {
-        ui.label(RichText::new(glyph).font(theme::icon(12.0)).color(color));
-        ui.label(RichText::new(label).size(12.0).color(color));
-    });
+    // Painted, not labels: labels are selectable and would take the click.
+    let painter = ui.painter();
+    let mid = rect.left_center();
+    painter.text(
+        mid + egui::vec2(8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        glyph,
+        theme::icon(12.0),
+        color,
+    );
+    painter.text(
+        mid + egui::vec2(26.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        theme::regular(12.0),
+        color,
+    );
     let response = response.on_hover_text(if row > position {
         "Undone: click to redo up to here"
     } else {
