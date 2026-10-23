@@ -12,7 +12,9 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 4.5 | `.rzxl` v3 layer data | ✅ Done | `6dbbd34` |
 | 5a | Interaction and core tools | ✅ Done | `26c24f1`, `8e4e881` |
 | 5b | Selection, fill, shape and performance | ✅ Done | `00e6924` |
-| 6 (in progress) | Import and export | 🚧 Uncommitted on `ui-docking` | — |
+| 6 | Import and export | ✅ Done | `16a8ebc` |
+| Slice | Qubicle-style Slice Mode | ✅ Done | `2b4f8e2`, `30db23c` |
+| 7 | Stabilize, CI and 0.2.0 | 🚧 In progress | `aa5d21e` (B1) |
 
 ---
 
@@ -123,11 +125,11 @@ Plan: [`rizxel_phase5b_implementation_plan.md`](rizxel_phase5b_implementation_pl
   21 ms to 4 ms per frame.
 - A randomized undo-all / redo-all test that restores grids and selections exactly.
 
-## Phase 6 (in progress) — Import and export
+## Phase 6 — Import and export
 
 Spec: [`interchange_formats.md`](interchange_formats.md)
 
-**Delivered (uncommitted)**
+**Delivered** (`16a8ebc`)
 - MagicaVoxel `.vox`: import reads the scene graph, and repeated instances become linked
   clones. Export writes one model per layer.
 - Goxel `.gox`: import reads PNG blocks and layer dicts, and groups, shapes, materials
@@ -140,3 +142,31 @@ Spec: [`interchange_formats.md`](interchange_formats.md)
   are voxelized with a parity fill.
 - `build_color_map` reduces imported colors to the palette with median cut.
 - A headless `convert` example, round-trip tests and tests with hostile inputs.
+
+## Slice Mode
+
+Analysis: [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md)
+
+**Goal:** Qubicle-style slice editing from any tool, based on hands-on tests with
+Qubicle 3.1.2.
+
+**Delivered** (`2b4f8e2`, `30db23c`)
+- A `2D` button with a 1-based slice counter, `Space` from any tool (slices at the
+  hovered voxel or restores the last slice) and *View ▸ Slice* with Next, Previous,
+  First and Last.
+- Only the slice layer can be picked and edited; Brush, Shape, Fill, box Selection and
+  Fuzzy Select stay on it, and mirroring along the slice normal still works.
+- The camera's side of the slice is hidden every frame. A viewport slider and the
+  bounds frame move the slice; slice moves aren't undo steps.
+- `/` hides the work plane and suspends Slice Mode; showing it again resumes the slice.
+
+## Phase 7 (in progress) — Stabilize, CI and 0.2.0
+
+Plan: [`rizxel_phase7_implementation_plan.md`](rizxel_phase7_implementation_plan.md)
+
+**Delivered so far**
+- B1 fixed (`aa5d21e`): the model is visible from below the ground plane. From below,
+  the grid writes no ground depth and its lines are drawn over the model as a faded
+  overlay.
+- GitHub Actions CI (`fmt`, `clippy -D warnings`, tests on Windows and Linux) and a
+  `.tmp-craft/` ignore rule.
