@@ -11,6 +11,9 @@ use crate::widgets::{icon_button, icon_label, IconStyle};
 use crate::{actions, theme};
 
 const CONTROL_WIDTH: f32 = 46.0;
+/// Shown in *Help ▸ About Rizxel*.
+const AUTHOR_NAME: &str = "Muhammad Rizky Abdillah";
+const AUTHOR_HANDLE: &str = "MRizky099";
 
 pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
     let bar = ui.max_rect();
@@ -755,7 +758,10 @@ pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut U
                 });
                 ui.add_space(6.0);
                 ui.label("Native voxel art editor built with Rust, egui and wgpu.");
-                ui.label(egui::RichText::new("© Abati Technology").color(theme::TEXT_DIM));
+                ui.label(format!("Created by {AUTHOR_NAME} ({AUTHOR_HANDLE})"));
+                ui.label(
+                    egui::RichText::new(format!("© 2026 {AUTHOR_NAME}")).color(theme::TEXT_DIM),
+                );
             });
     }
 

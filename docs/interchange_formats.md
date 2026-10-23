@@ -29,7 +29,7 @@ mirror. OBJ is Y-up like Rizxel.
 The layout follows MagicaVoxel's OBJ export (`chr_knight.obj`):
 
 ```text
-# Rizxel @ Abati Technology
+# Rizxel @ MRizky099
 
 # group
 o 

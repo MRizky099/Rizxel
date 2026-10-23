@@ -6,7 +6,7 @@
 //! layout as MagicaVoxel's OBJ export (reference: MagicaVoxel's own
 //! `chr_knight.obj` export of its `chr_knight.vox` sample):
 //!
-//! - **Text**: CRLF lines. A `# Rizxel @ Abati Technology` header, then the
+//! - **Text**: CRLF lines. A `# Rizxel @ MRizky099` header, then the
 //!   `# group`, `# material`, `# normals`, `# texcoords`, `# verts` and
 //!   `# faces` sections. Numbers are formatted like C's `%g`.
 //! - **Material**: `o ` with an empty name, `mtllib name.mtl` and
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(
             &lines[..17],
             &[
-                "# Rizxel @ Abati Technology",
+                "# Rizxel @ MRizky099",
                 "",
                 "# group",
                 "o ",
