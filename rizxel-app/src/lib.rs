@@ -4,6 +4,7 @@
 //! only through the methods below, so all behavior is testable without a window.
 
 pub mod autosave;
+pub mod box_select;
 pub mod clipboard;
 pub mod close;
 pub mod document;
@@ -29,6 +30,7 @@ use rizxel_io::RzxlError;
 use rizxel_math::BoundSize;
 
 pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
+pub use box_select::{BoxSelect, LastBox};
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{

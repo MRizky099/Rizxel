@@ -31,6 +31,12 @@
 //! edited, by every tool; dragging the thick bounds frame (any tool) or
 //! anywhere with the Plane tool moves the slice along its normal. Slice
 //! moves are view state, never undo steps.
+//!
+//! The Selection tool's *Box* mode (Phase 10c, [`box_select`]) leaves the
+//! dragged box open: its face arrows and faces move it, `Enter` (or a
+//! click outside it, or switching tools) applies it, `Esc` cancels it.
+
+mod box_select;
 
 use std::collections::HashSet;
 
@@ -137,6 +143,25 @@ enum DragKind {
         current: IVec3,
         mode: MaskMode,
         moved: bool,
+        /// Box mode: the drag sizes the document's open box.
+        boxed: bool,
+    },
+    /// Box mode: a face arrow being dragged along its axis.
+    BoxFace {
+        axis: usize,
+        positive: bool,
+        start: VoxelBox,
+        /// Face center (voxel space) whose screen axis measures the drag.
+        pivot: Vec3,
+    },
+    /// Box mode: the box dragged by a face, in its plane or (`Alt`) along
+    /// its normal.
+    BoxMove {
+        axis: usize,
+        start: VoxelBox,
+        /// Grabbed point on the face (voxel space).
+        from: Vec3,
+        along_normal: bool,
     },
     /// Shape tool: shape between the anchor and the hovered cell.
     Shape {
@@ -323,14 +348,27 @@ impl ToolInput {
         }
         self.paste_pick = None;
 
+        // Leaving the Selection tool (or its Box mode) applies the open box.
+        if !box_select::box_mode(state) && has_open_box(state) {
+            box_select::apply(state, MaskMode::Set);
+        }
+        if let Some(doc) = state.doc_mut() {
+            doc.sync_box_select();
+        }
+
         // A drag survives only on its own document and while its
         // transaction is open (undo or a tab switch may have closed it).
         if let Some(drag) = &self.drag {
+            let boxed = matches!(
+                drag.kind,
+                DragKind::BoxFace { .. } | DragKind::BoxMove { .. }
+            );
             let alive = drag.doc_id == doc_id
                 && (matches!(
                     drag.kind,
                     DragKind::Resize { .. } | DragKind::PlaneMove { .. } | DragKind::Select { .. }
-                ) || state.doc().is_some_and(Document::is_editing));
+                ) || (boxed && has_open_box(state))
+                    || state.doc().is_some_and(Document::is_editing));
             if !alive {
                 self.drag = None;
             }
@@ -360,7 +398,15 @@ impl ToolInput {
                 self.finish(state);
             }
         } else if !f.ui.ctx().egui_wants_keyboard_input() {
+            box_select::keys(f, state, mods);
             selection_keys(f, state);
+        }
+        // The open box previews the mode of the modifiers held now.
+        if self.drag.is_none() && box_select::box_mode(state) && !mods.alt {
+            let mode = mask_mode(mods, state.options.selection.mask);
+            if let Some(doc) = state.doc_mut() {
+                doc.set_box_mode(mode);
+            }
         }
 
         let hover = f.response.hover_pos();
@@ -399,10 +445,19 @@ impl ToolInput {
         }
         state.cursor_voxel = hit.map(|h| if is_voxel(&h) { h.voxel } else { h.adjacent() });
 
+        // Box mode: a face arrow or the surface of the box under the cursor.
+        let box_grab = match (&self.drag, hover, state.doc()) {
+            (None, Some(p), Some(doc)) if box_select::box_mode(state) => {
+                box_select::grab_at(f, doc, p)
+            }
+            _ => None,
+        };
         // Plane edge or (while slicing, any tool) bounds frame under the
         // cursor: grab handle for moving the plane.
         let edge = match (&self.drag, hover, state.doc()) {
-            (None, Some(p), Some(doc)) if tool == Tool::Plane || doc.plane.slice => {
+            (None, Some(p), Some(doc))
+                if box_grab.is_none() && (tool == Tool::Plane || doc.plane.slice) =>
+            {
                 plane_edge_at(f, doc, p)
             }
             _ => None,
@@ -414,7 +469,10 @@ impl ToolInput {
             && hover.is_some_and(|p| !f.blocked.iter().any(|r| r.contains(p)));
         if press {
             if let Some(p) = hover {
-                self.press(f, state, p, hit, edge, mods);
+                match box_grab {
+                    Some(grab) => self.begin_box_drag(state, p, grab, mods),
+                    None => self.press(f, state, p, hit, edge, mods),
+                }
             }
         }
 
@@ -433,6 +491,12 @@ impl ToolInput {
                     "Move: offset ({}, {}, {}), {pending} voxels changed",
                     offset.x, offset.y, offset.z
                 ),
+                DragKind::Select { boxed: true, .. }
+                | DragKind::BoxFace { .. }
+                | DragKind::BoxMove { .. } => state
+                    .doc()
+                    .and_then(box_select::feedback)
+                    .unwrap_or_default(),
                 DragKind::Select {
                     anchor,
                     current,
@@ -465,8 +529,24 @@ impl ToolInput {
             } else {
                 "Drag the plane edge to move the plane".to_owned()
             });
+        } else if let Some(grab) = box_grab {
+            f.ui.ctx().set_cursor_icon(match grab {
+                box_select::BoxGrab::Face { .. } => egui::CursorIcon::Grab,
+                box_select::BoxGrab::Body { .. } => egui::CursorIcon::Move,
+            });
+            state.tool_feedback = Some(
+                state
+                    .doc()
+                    .and_then(box_select::feedback)
+                    .unwrap_or_else(|| "Drag an arrow or a face to re-open the box".to_owned()),
+            );
         } else if let Some(hit) = hit {
             self.hover_preview(f, state, &hit, mods, &mut preview);
+            if box_select::box_mode(state) {
+                if let Some(text) = state.doc().and_then(box_select::feedback) {
+                    state.tool_feedback = Some(text);
+                }
+            }
         }
 
         // The arrow is a hint: it appears where the plane edge is hovered and
@@ -491,6 +571,9 @@ impl ToolInput {
             work_plane_overlay(f, doc, arrow_at, &mut preview);
         }
         self.selection_overlay(f, state, &mut preview);
+        if let Some(doc) = state.doc().filter(|_| box_select::box_mode(state)) {
+            box_select::overlay(f, doc, box_grab, &mut preview);
+        }
         if let Some(drag) = &self.drag {
             drag_marquee(f, drag, &mut preview);
         }
@@ -593,14 +676,20 @@ impl ToolInput {
             Tool::Brush | Tool::Move | Tool::Extrude | Tool::Shape => {
                 self.begin_drag(f, state, tool, pos, hit, mods)
             }
+            Tool::Selection if box_select::box_mode(state) && has_open_box(state) => {
+                // A click outside the open box applies it.
+                let mode = mask_mode(mods, state.options.selection.mask);
+                box_select::apply(state, mode);
+            }
             Tool::Selection => self.begin_select(state, pos, hit, mods),
             Tool::FuzzySelect => fuzzy_click(state, hit, mods),
             Tool::Fill => fill_click(state, hit),
         }
     }
 
-    /// Selection tool press: starts a box at the pressed voxel. A press off
-    /// the model in Set mode deselects.
+    /// Selection tool press: starts a box at the pressed voxel (in Box
+    /// mode also on the floor, and the box stays open after the drag). A
+    /// press off the model in Set mode deselects.
     fn begin_select(
         &mut self,
         state: &mut AppState,
@@ -609,13 +698,29 @@ impl ToolInput {
         mods: Modifiers,
     ) {
         let mode = mask_mode(mods, state.options.selection.mask);
+        let boxed = box_select::box_mode(state);
+        let all_layers = state.options.selection.all_layers;
         let Some(doc) = state.doc_mut() else { return };
-        let Some(hit) = hit.filter(is_voxel) else {
+        // Box mode starts on the floor cell too.
+        let hit = hit.filter(|h| boxed || is_voxel(h)).map(|h| {
+            if is_voxel(&h) {
+                h
+            } else {
+                RayHit {
+                    voxel: h.adjacent(),
+                    ..h
+                }
+            }
+        });
+        let Some(hit) = hit else {
             if mode == MaskMode::Set && doc.clear_selection() {
                 state.status_message = Some("Selection cleared".to_owned());
             }
             return;
         };
+        if boxed {
+            doc.begin_box_select(selection_box(hit.voxel, hit.voxel), all_layers, mode);
+        }
         // While slicing, the box is drawn on the slice.
         let axis = if doc.plane.slice {
             doc.plane.axis.min(2)
@@ -637,6 +742,7 @@ impl ToolInput {
                 current: hit.voxel,
                 mode,
                 moved: false,
+                boxed,
             },
         });
     }
@@ -826,6 +932,7 @@ impl ToolInput {
                 axis,
                 current,
                 moved,
+                boxed,
                 ..
             } => {
                 *moved |= delta.length() > 3.0;
@@ -838,6 +945,25 @@ impl ToolInput {
                 {
                     *current = cell;
                 }
+                if *boxed {
+                    if let Some(doc) = state.doc_mut() {
+                        doc.set_box_area(selection_box(*anchor, *current), false);
+                    }
+                }
+            }
+            DragKind::BoxFace {
+                axis,
+                positive,
+                start,
+                pivot,
+            } => box_select::drag_face(f, state, delta, (*axis, *positive, *start, *pivot)),
+            DragKind::BoxMove {
+                axis,
+                start,
+                from,
+                along_normal,
+            } => {
+                box_select::drag_body(f, state, &ray, delta, (*axis, *start, *from, *along_normal))
             }
             DragKind::Shape {
                 anchor,
@@ -1021,6 +1147,20 @@ impl ToolInput {
             }
             return;
         }
+        if matches!(
+            drag.kind,
+            DragKind::Select { boxed: true, .. }
+                | DragKind::BoxFace { .. }
+                | DragKind::BoxMove { .. }
+        ) {
+            // The box stays open; a large one updates now.
+            if let Some(doc) = state.doc_mut() {
+                if doc.box_select().is_some_and(|b| b.stale) {
+                    doc.refresh_box_select();
+                }
+            }
+            return;
+        }
         if let DragKind::Select {
             anchor,
             current,
@@ -1093,6 +1233,12 @@ impl ToolInput {
                 } else {
                     doc.plane.coord = start;
                 }
+            }
+            DragKind::Select { boxed: true, .. } => {
+                doc.cancel_box_select();
+            }
+            DragKind::BoxFace { start, .. } | DragKind::BoxMove { start, .. } => {
+                doc.set_box_area(start, true);
             }
             DragKind::Select { .. } => {}
             _ => doc.cancel_edit(),
@@ -1217,7 +1363,8 @@ impl ToolInput {
     /// progress. Large selections draw only their box.
     fn selection_overlay(&mut self, f: &Frame, state: &mut AppState, out: &mut Preview) {
         let Some(doc) = state.doc() else { return };
-        let Some(sel) = doc.selection().filter(|s| !s.is_empty()) else {
+        // An open box shows the selection it would make.
+        let Some(sel) = doc.shown_selection().filter(|s| !s.is_empty()) else {
             return;
         };
         let ppp = f.pixels_per_point;
@@ -1279,6 +1426,11 @@ impl ToolInput {
             ));
         }
     }
+}
+
+/// True when the active document has an open box selection.
+fn has_open_box(state: &AppState) -> bool {
+    state.doc().is_some_and(|d| d.box_select().is_some())
 }
 
 /// `Esc` deselects and `Delete`/`Backspace` deletes the selected voxels of
@@ -1651,7 +1803,10 @@ fn box_outline(lo: Vec3, hi: Vec3, color: Color32, width: f32, out: &mut Preview
 fn drag_marquee(f: &Frame, drag: &Drag, out: &mut Preview) {
     let area = match drag.kind {
         DragKind::Select {
-            anchor, current, ..
+            anchor,
+            current,
+            boxed: false,
+            ..
         } => selection_box(anchor, current),
         DragKind::Shape {
             area: Some(area), ..

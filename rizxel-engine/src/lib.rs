@@ -26,7 +26,7 @@ pub use shapes::rasterize_shape;
 pub use tools::{
     BrushOptions, BrushShape, ColorPickerOptions, CursorOptions, DragMode, ExtrudeOptions,
     FillMode, FillOptions, FuzzySelectOptions, KeepSide, MaskMode, MoveOptions, NamesMode,
-    PlaneOptions, SelectionOptions, ShapeOptions, SliceRequest, Symmetry, Tool, ToolContext,
-    ToolOptions, VoxelChange, VoxelOp, WorkPlane,
+    PlaneOptions, SelectionMode, SelectionOptions, ShapeOptions, SliceRequest, Symmetry, Tool,
+    ToolContext, ToolOptions, VoxelChange, VoxelOp, WorkPlane,
 };
 pub use voxelize::{voxelize, ColorGrid, Triangle, VoxelizeOptions};

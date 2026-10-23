@@ -42,7 +42,10 @@ pub use quality::{
     apply_op, color_distance, colors_match, filter_placeable, flood, FloodCapped, MAX_FLOOD_CELLS,
     NEIGHBORS_6,
 };
-pub use select::{select_box, selection_box};
+pub use select::{
+    box_cells, box_face_hit, fit_box, move_box, resize_face, select_box, selection_box,
+    MAX_LIVE_BOX,
+};
 pub use shape::{shape_box, shape_cells, shape_cells_toward};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
 pub use symmetry::{apply_symmetry, mirror};
@@ -167,7 +170,7 @@ impl Tool {
                 "Click a voxel to pick its color. Ctrl+click: copy it into the swatch."
             }
             Tool::Selection => {
-                "Drag a box to select. Shift: add, Ctrl: subtract, Esc: deselect, Del: delete."
+                "Click or drag a box; drag its arrows or faces to adjust it. Enter: apply, Esc: cancel. Shift: add, Ctrl: subtract."
             }
             Tool::FuzzySelect => {
                 "Click to select connected voxels of a similar color. Shift: add, Ctrl: subtract."

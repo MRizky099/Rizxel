@@ -2,8 +2,9 @@
 //! Extrude, Fill, Shape, and a randomized undo/redo round trip over all of
 //! them (extended in Phase 8 with copy, cut, paste and the transforms, and in
 //! Phase 10 with the selection operations, Mask Mode and the structure and
-//! palette operations, and in Phase 10b with the layer hierarchy and the
-//! reference images).
+//! palette operations, in Phase 10b with the layer hierarchy and the
+//! reference images, and in Phase 10c with box selection, selection to a
+//! new layer, lines and curves and the Transform tool).
 
 use glam::IVec3;
 use rizxel_app::{
@@ -494,13 +495,27 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 }
             }
         }
+        // Phase 10c: an open box selection, resized, then applied or
+        // cancelled.
+        28 => {
+            let mode = MaskMode::ALL[rng.below(3) as usize];
+            let all = rng.below(2) == 0;
+            d.begin_box_select(selection_box(rng.cell(6), rng.cell(6)), all, mode);
+            let area = selection_box(rng.cell(8), rng.cell(8));
+            d.set_box_area(area, rng.below(2) == 0);
+            if rng.below(5) == 0 {
+                d.cancel_box_select();
+            } else {
+                d.apply_box_select();
+            }
+        }
         _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 28;
+const OPS: usize = 29;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {

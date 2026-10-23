@@ -22,6 +22,7 @@ use rizxel_math::{
     MAX_PALETTE_COLORS,
 };
 
+use crate::box_select::{BoxSelect, LastBox};
 use crate::clipboard::Clipboard;
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
 use crate::layer_tree::{canonical_order, LayerTree, Link};
@@ -448,6 +449,11 @@ pub struct Document {
     edits: u64,
     /// Paste in progress (see [`Document::begin_paste`]).
     paste: Option<FloatingPaste>,
+    /// Open box selection (see [`Document::begin_box_select`]). Not part
+    /// of history until applied.
+    pub(crate) box_select: Option<BoxSelect>,
+    /// Box of the last applied box selection.
+    pub(crate) last_box: Option<LastBox>,
     /// Mask Mode: tool writes skip the selected cells of their layer. Mirrors
     /// `ToolOptions::mask_selection` (set by the app). Not part of history.
     pub mask_selection: bool,
@@ -503,6 +509,8 @@ impl Document {
             saved_revision: 0,
             edits: 0,
             paste: None,
+            box_select: None,
+            last_box: None,
             mask_selection: false,
             geometry: RefCell::new(None),
             view_cache: RefCell::new(ViewCache::default()),
@@ -878,6 +886,9 @@ impl Document {
     /// While slicing, the slice moves back to the one the step was made on.
     /// A floating paste is cancelled instead (it is the step in progress).
     pub fn undo(&mut self) -> bool {
+        if self.cancel_box_select() {
+            return true;
+        }
         if self.paste.is_some() {
             self.cancel_paste();
             return true;
@@ -934,6 +945,7 @@ impl Document {
     /// clicking an entry goes to the state right after it; 0 is the
     /// start). Returns whether anything changed.
     pub fn jump_to(&mut self, position: usize) -> bool {
+        self.cancel_box_select();
         self.cancel_paste();
         self.commit_edit();
         let mut moved = false;

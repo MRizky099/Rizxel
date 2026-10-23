@@ -8,8 +8,8 @@
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
 use rizxel_app::{AppState, ViewMode};
 use rizxel_engine::{
-    BrushShape, DragMode, ExtrudeOptions, FillMode, MaskMode, NamesMode, Symmetry, Tool, VoxelOp,
-    WorkPlane,
+    BrushShape, DragMode, ExtrudeOptions, FillMode, MaskMode, NamesMode, SelectionMode, Symmetry,
+    Tool, VoxelOp, WorkPlane,
 };
 
 use crate::icons::{self, Icon, Icons};
@@ -222,10 +222,17 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::Selection => {
             let s = &mut opts.selection;
+            let modes = SelectionMode::ALL.map(|m| (m, m.label()));
+            segmented(ui, "sel_mode", &mut s.mode, &modes);
+            gap(ui);
             mask_mode(ui, "sel_mask", &mut s.mask);
             gap(ui);
             ui.checkbox(&mut s.all_layers, "All layers")
                 .on_hover_text("Select the voxels of every visible layer inside the box");
+            let all_layers = s.all_layers;
+            if s.mode == SelectionMode::Box {
+                box_rows(ui, state, all_layers);
+            }
             selection_actions(ui, state);
         }
         Tool::FuzzySelect => {
@@ -300,6 +307,83 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             }
         }
     }
+}
+
+/// Box mode: position (min corner) and size of the open box, typed values
+/// move or resize it live; Apply / Cancel.
+fn box_rows(ui: &mut Ui, state: &mut AppState, all_layers: bool) {
+    let mask = state.options.selection.mask;
+    let Some(doc) = state.doc_mut() else { return };
+    doc.set_box_all_layers(all_layers);
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    let Some(area) = doc.box_select().map(|b| b.area) else {
+        caption(ui, "Click a voxel to place a box");
+        return;
+    };
+    let limit = doc.box_limit();
+    let (mut min, mut size) = (area.min, area.size());
+    caption(ui, "Position");
+    for axis in 0..3 {
+        axis_drag(
+            ui,
+            ["X", "Y", "Z"][axis],
+            &mut min[axis],
+            0..=limit.max[axis] - 1,
+        );
+    }
+    gap(ui);
+    caption(ui, "Size");
+    for axis in 0..3 {
+        axis_drag(
+            ui,
+            ["X", "Y", "Z"][axis],
+            &mut size[axis],
+            1..=limit.size()[axis].max(1),
+        );
+    }
+    if (min, size) != (area.min, area.size()) {
+        doc.set_box_area(
+            rizxel_math::VoxelBox {
+                min,
+                max: min + size,
+            },
+            false,
+        );
+    }
+    gap(ui);
+    let mut message = None;
+    if ui
+        .button("Apply")
+        .on_hover_text("Select the voxels in the box (Enter)")
+        .clicked()
+    {
+        doc.set_box_mode(mask);
+        doc.apply_box_select();
+        message = Some(format!(
+            "Selected: {} voxels",
+            doc.selection().map_or(0, |s| s.len())
+        ));
+    }
+    if ui
+        .button("Cancel")
+        .on_hover_text("Close the box and keep the selection (Esc)")
+        .clicked()
+    {
+        doc.cancel_box_select();
+        message = Some("Box selection cancelled".to_owned());
+    }
+    if message.is_some() {
+        state.status_message = message;
+    }
+}
+
+fn axis_drag(ui: &mut Ui, label: &str, value: &mut i32, range: std::ops::RangeInclusive<i32>) {
+    ui.label(
+        egui::RichText::new(label)
+            .size(11.0)
+            .color(theme::TEXT_MUTED),
+    );
+    ui.add(egui::DragValue::new(value).speed(0.1).range(range));
 }
 
 /// Deselect / Delete buttons of the selection tools.

@@ -220,8 +220,31 @@ pub struct ColorPickerOptions {
     pub sample_all_layers: bool,
 }
 
+/// How the Selection tool builds its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SelectionMode {
+    /// Drag a box; release selects (Phase 5b).
+    Drag,
+    /// Click or drag places a box that stays open: handles and typed values
+    /// resize it, `Enter` applies it (Qubicle's *Box Select*).
+    #[default]
+    Box,
+}
+
+impl SelectionMode {
+    pub const ALL: [SelectionMode; 2] = [SelectionMode::Drag, SelectionMode::Box];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SelectionMode::Drag => "Drag",
+            SelectionMode::Box => "Box",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SelectionOptions {
+    pub mode: SelectionMode,
     pub mask: MaskMode,
     /// Select voxels of every visible layer inside the box, not only the
     /// active layer's. The selection itself always belongs to the active layer.
