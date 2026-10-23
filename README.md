@@ -7,8 +7,9 @@ A native voxel editor written in pure Rust. Rizxel uses `egui` for the interface
 [CADCraft](https://github.com/storytold/cadcraft), and its voxel model and tools draw on
 Goxel, MagicaVoxel and Qubicle.
 
-> Status: pre-release (`0.3.0`). Phases 1–8 are in place: the editing tools, import/export,
-> Slice Mode, CI and safe editing (save prompt, autosave, clipboard, transforms). See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+> Status: pre-release (`0.4.0`). Phases 1–9 are in place: the editing tools, import/export,
+> Slice Mode, CI, safe editing (save prompt, autosave, clipboard, transforms) and visual
+> fidelity (orthographic camera, opacity, materials, ambient occlusion). See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Features
 
@@ -24,9 +25,12 @@ Goxel, MagicaVoxel and Qubicle.
 - **Safe editing**: a Save / Don't Save / Cancel prompt on every close path, autosave
   with crash recovery, and a recent files list.
 - **Layers**: groups, linked clones, procedural shape layers (cube, sphere, cylinder),
-  non-destructive crop, opacity, materials, visibility and lock.
-- **Viewport**: wgpu with 4× MSAA, an infinity grid, greedy-meshed voxels, Model and
-  Render shading, a 26-target view cube and incremental per-tile re-meshing.
+  non-destructive crop, rendered opacity and ghosts, materials, visibility and lock.
+- **Viewport**: wgpu with 4× MSAA, perspective and orthographic cameras (isometric
+  corners, frame commands), an infinity grid, an optional voxel grid on the model,
+  greedy-meshed voxels with ambient occlusion, Model and Render shading (material tint,
+  emission, roughness and metallic), a 26-target view cube, and incremental per-tile
+  re-meshing with large updates meshed in the background.
 - **Workspace**: dockable and floating panels, document tabs (`name*.rzxl` while
   unsaved), Zen mode, and a frameless window with a custom title bar.
 - **Files**: native `.rzxl` (zstd-compressed JSON). Rizxel can also import and export
