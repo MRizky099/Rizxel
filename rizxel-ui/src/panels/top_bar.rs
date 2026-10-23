@@ -3,7 +3,7 @@
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, FileFormat};
+use rizxel_app::{AppState, FileFormat, SliceStep};
 
 use super::UiState;
 use crate::dock::{self, Workspace};
@@ -156,6 +156,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             if menu_item(ui, icon::CUBE_FOCUS, "Zen Mode", "Ctrl+Shift+F", true) {
                 ui_state.zen_mode = !ui_state.zen_mode;
             }
+            slice_menu(ui, state);
             ui.separator();
 
             // Standard views: each family of targets is its own submenu.
@@ -205,6 +206,36 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui_state.show_about = true;
             }
         });
+    });
+}
+
+/// View > Slice (Qubicle's *Tools ▸ Slice*): the Slice Mode toggle and the
+/// slice navigation commands. Slice moves are not undo steps.
+fn slice_menu(ui: &mut Ui, state: &mut AppState) {
+    let has_doc = state.doc().is_some();
+    let slicing = state.slice_counter().is_some();
+    ui.menu_button(icon_label(ui, icon::STACK, "Slice", None), |ui| {
+        ui.set_min_width(180.0);
+        let glyph = if slicing {
+            icon::CHECK_SQUARE
+        } else {
+            icon::SQUARE
+        };
+        if menu_item(ui, glyph, "Slice Mode", "Space", has_doc) {
+            state.toggle_slice(None);
+        }
+        ui.separator();
+        let glyphs = [
+            icon::CARET_DOWN,
+            icon::CARET_UP,
+            icon::CARET_DOUBLE_UP,
+            icon::CARET_DOUBLE_DOWN,
+        ];
+        for (step, glyph) in SliceStep::ALL.into_iter().zip(glyphs) {
+            if menu_item(ui, glyph, step.label(), "", slicing) {
+                state.step_slice(step);
+            }
+        }
     });
 }
 

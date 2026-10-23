@@ -12,7 +12,7 @@ use std::path::Path;
 
 use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use glam::{IVec3, Mat4, Vec3};
-use rizxel_engine::{Tool, ToolOptions, VoxelOp};
+use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
 pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
@@ -25,6 +25,35 @@ pub use selection::Selection;
 
 /// File extension of mesh exports.
 pub const OBJ_EXTENSION: &str = "obj";
+
+/// Slice Mode navigation commands (Qubicle's *Tools ▸ Slice* menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceStep {
+    /// One slice away from the camera.
+    Next,
+    /// One slice toward the camera.
+    Previous,
+    /// Layer 0 of the slice axis.
+    First,
+    /// The last layer of the slice axis.
+    Last,
+}
+
+impl SliceStep {
+    pub const ALL: [SliceStep; 4] = [Self::Next, Self::Previous, Self::First, Self::Last];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Next => "Next Slice",
+            Self::Previous => "Previous Slice",
+            Self::First => "First Slice",
+            Self::Last => "Last Slice",
+        }
+    }
+}
+
+/// Axis names for status text.
+const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 
 /// Viewport presentation mode (option bar toggle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -476,6 +505,46 @@ impl AppState {
             .map_or(0, Selection::len)
     }
 
+    // ------------------------------------------------------------- slice
+
+    /// Slice Mode on/off (`2D` button, `Space`) for the active document:
+    /// over a voxel (`hover`) it slices there, otherwise it restores the
+    /// last slice. Never switches tools.
+    pub fn toggle_slice(&mut self, hover: Option<&RayHit>) {
+        let Some(doc) = self.doc_mut() else { return };
+        let bounds = doc.data.bounds;
+        let on = doc.plane.toggle_slice(hover, bounds);
+        self.status_message = Some(match (on, self.slice_counter()) {
+            (true, Some((axis, n, count))) => {
+                format!("Slice Mode: {} slice {n} / {count}", AXIS_NAMES[axis])
+            }
+            _ => "Slice Mode off".to_owned(),
+        });
+    }
+
+    /// Moves the slice of the active document (no undo step).
+    pub fn step_slice(&mut self, step: SliceStep) {
+        let Some(doc) = self.doc_mut().filter(|d| d.plane.slice) else {
+            return;
+        };
+        let bounds = doc.data.bounds;
+        let p = &mut doc.plane;
+        match step {
+            SliceStep::Next => p.step_slice(1, bounds),
+            SliceStep::Previous => p.step_slice(-1, bounds),
+            SliceStep::First => p.set_slice_layer(0, bounds),
+            SliceStep::Last => p.set_slice_layer(p.slice_count(bounds) - 1, bounds),
+        }
+    }
+
+    /// `(axis, 1-based slice number, slice count)` while slicing.
+    pub fn slice_counter(&self) -> Option<(usize, i32, i32)> {
+        let doc = self.doc().filter(|d| d.plane.slice)?;
+        let bounds = doc.data.bounds;
+        let p = doc.plane.clamped(bounds);
+        Some((p.axis, p.slice_layer(bounds) + 1, p.slice_count(bounds)))
+    }
+
     // ------------------------------------------------------------ status
 
     /// Hint text for the status bar.
@@ -501,6 +570,32 @@ mod tests {
         assert!(s
             .hint()
             .starts_with("Plane Tool: Click a face to place the work plane"));
+    }
+
+    #[test]
+    fn slice_commands_step_and_count_from_one() {
+        let mut s = AppState {
+            tool: Tool::Brush,
+            ..AppState::default()
+        };
+        assert_eq!(s.slice_counter(), None);
+        s.step_slice(SliceStep::Next);
+        assert_eq!(s.slice_counter(), None, "no-op outside Slice Mode");
+        s.toggle_slice(None);
+        let n = s.doc().unwrap().data.bounds.y() as i32;
+        assert_eq!(s.slice_counter(), Some((1, 1, n)));
+        assert_eq!(s.tool, Tool::Brush, "the tool is kept");
+        s.step_slice(SliceStep::Last);
+        assert_eq!(s.slice_counter(), Some((1, n, n)));
+        // The +Y side is hidden (camera above): Next goes down.
+        s.step_slice(SliceStep::Next);
+        assert_eq!(s.slice_counter(), Some((1, n - 1, n)));
+        s.step_slice(SliceStep::Previous);
+        s.step_slice(SliceStep::First);
+        assert_eq!(s.slice_counter(), Some((1, 1, n)));
+        s.toggle_slice(None);
+        assert_eq!(s.slice_counter(), None);
+        assert_eq!(s.status_message.as_deref(), Some("Slice Mode off"));
     }
 
     #[test]

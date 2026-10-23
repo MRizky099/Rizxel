@@ -173,7 +173,7 @@ impl Tool {
 
     /// Hint for the Plane tool while Slice is on.
     pub const PLANE_SLICE_HINT: &'static str =
-        "Drag to move the slice plane along its normal. Click a face to move it there.";
+        "Drag to move the slice along its normal. Click a voxel to slice there.";
 
     /// Status bar hint taking the slice state into account.
     pub fn hint_with(self, slicing: bool) -> &'static str {

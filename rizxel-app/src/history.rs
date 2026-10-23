@@ -11,6 +11,7 @@ use crate::selection::Selection;
 
 /// Voxel diffs are produced by the engine's tool algorithms.
 pub use rizxel_engine::VoxelChange;
+use rizxel_engine::WorkPlane;
 
 /// Maximum number of undo steps kept per document.
 const MAX_UNDO: usize = 512;
@@ -295,12 +296,24 @@ struct Transaction {
     layers: BTreeMap<usize, PendingLayer>,
 }
 
+/// One undo step and the slice it was made on.
+#[derive(Debug)]
+struct Step {
+    edit: Edit,
+    /// Work plane while slicing when the step was recorded; undo and redo
+    /// move the slice back there (Qubicle Slice Mode).
+    plane: Option<WorkPlane>,
+}
+
 /// Linear undo/redo stack.
 #[derive(Debug, Default)]
 pub struct History {
-    undo: Vec<Edit>,
-    redo: Vec<Edit>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     transaction: Option<Transaction>,
+    /// Slice recorded with the steps pushed from now on (`None` when not
+    /// slicing). Set by the document before it records edits.
+    pub tag: Option<WorkPlane>,
 }
 
 impl History {
@@ -416,12 +429,15 @@ impl History {
         self.redo.clear();
         if merge {
             if let Some(last) = self.undo.last_mut() {
-                if last.try_merge(&edit) {
+                if last.edit.try_merge(&edit) {
                     return;
                 }
             }
         }
-        self.undo.push(edit);
+        self.undo.push(Step {
+            edit,
+            plane: self.tag,
+        });
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
@@ -439,22 +455,32 @@ impl History {
     /// drag in progress is what gets undone.
     pub fn undo(&mut self, data: &mut DocData) -> bool {
         self.commit_transaction();
-        let Some(edit) = self.undo.pop() else {
+        let Some(step) = self.undo.pop() else {
             return false;
         };
-        edit.revert(data);
-        self.redo.push(edit);
+        step.edit.revert(data);
+        self.redo.push(step);
         true
     }
 
     pub fn redo(&mut self, data: &mut DocData) -> bool {
         self.commit_transaction();
-        let Some(edit) = self.redo.pop() else {
+        let Some(step) = self.redo.pop() else {
             return false;
         };
-        edit.apply(data);
-        self.undo.push(edit);
+        step.edit.apply(data);
+        self.undo.push(step);
         true
+    }
+
+    /// Slice of the step the last [`History::undo`] reverted.
+    pub fn undone_plane(&self) -> Option<WorkPlane> {
+        self.redo.last().and_then(|s| s.plane)
+    }
+
+    /// Slice of the step the last [`History::redo`] re-applied.
+    pub fn redone_plane(&self) -> Option<WorkPlane> {
+        self.undo.last().and_then(|s| s.plane)
     }
 }
 
@@ -515,7 +541,10 @@ mod tests {
         // Another layer never merges.
         h.push(voxels(1, vec![change(0, 0, 1)]), true);
         assert_eq!(h.undo.len(), 2);
-        assert_eq!(h.undo[0], voxels(0, vec![change(0, 0, 5), change(2, 0, 3)]));
+        assert_eq!(
+            h.undo[0].edit,
+            voxels(0, vec![change(0, 0, 5), change(2, 0, 3)])
+        );
     }
 
     #[test]
