@@ -21,11 +21,18 @@ The **Phase** column names the plan that closes the gap (see
 | `.tmp-craft/` is an untracked vendor checkout | Removed from the tree (an ignore rule is still added in Phase 7) |
 | No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `2b4f8e2`, `30db23c` |
 
+## Known bugs
+
+| Bug | Severity | Phase | Notes |
+|---|---|---|---|
+| B1: the model can't be seen from below | High | 7 | With the camera under the ground plane only the bottom faces of the lowest voxel row show. `fs_grid` (`render/scene.wgsl`) writes the `y = 0` ground depth even when the eye is below it, so voxels above the floor fail the depth test. |
+
 ## Data model and files
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
 | Opacity and materials are stored but not rendered | High | 9 | `.rzxl` v3 saves layer `opacity` and `materials` (metallic, roughness, emission, tint), but the renderer ignores them. Users can edit values that have no visible effect. |
+| Closing unsaved work doesn't ask first | High | 8 | The tab's close button, *File ▸ Exit*, the title bar and `Alt+F4` all discard unsaved changes without a prompt. |
 | No autosave or crash recovery | High | 8 | A crash or power loss loses everything since the last manual save. |
 | Bounds are limited to 256³ | Medium | post | `BoundSize` is clamped to `1..=256` and imports above 256 on any axis are refused. MagicaVoxel scenes can be larger. |
 | One shared grid for all layers | Medium | post | Qubicle matrices have their own size and position; needed for Align/Distribute and exact `.qb` multi-matrix layouts. |
@@ -61,7 +68,9 @@ The **Phase** column names the plan that closes the gap (see
 | No palette files (`.gpl`, `.hex`) or palette tools (sort, remap, gradient) | Medium | 10 | |
 | Bounds don't auto-fit after Slice or Cut | Low | 10 | The empty region stays inside the yellow box. |
 | No pyramid or cone shapes | Low | 10 | Shape and Brush cover cube, sphere and cylinder. |
-| No reference images or onion skin | Low | 10, post | Reference images in Phase 10; onion skin comes with animation. |
+| No reference images | Medium | 10b | No way to load, place (XZ / XY / YZ plane with an offset) or toggle a reference image, and no panel to manage them. Needs `.rzxl` v4. |
+| The Layers panel can't create or show groups | Medium | 10b | Groups exist in the data model (`parent`, `LayerKind::Group`) and survive `.gox`, but the panel is a flat list: no New Group, no indentation or collapse, no dragging into groups. Locks aren't inherited. |
+| No onion skin | Low | post | Comes with animation. |
 | No paint/lasso selection, and no sculpting or smoothing brushes | Medium | post | |
 
 ## UI and UX
@@ -73,6 +82,7 @@ The **Phase** column names the plan that closes the gap (see
 | No start screen | Low | 12 | |
 | No orthographic camera, isometric presets or frame commands | Medium | 9 | The view cube snaps angles, but the projection is always perspective. Rated High for slice work in the Qubicle analysis. |
 | No ghosts (non-active layers semi-transparent) | Low | 9 | Needs opacity rendering. |
+| Floor grid and model bounds can't be hidden, and there's no voxel grid on the model | Low | 9 | |
 | The undo history is capped at 512 steps and can't be browsed | Low | 10, 12 | History panel in Phase 10; configurable limit in Phase 12. |
 | No localization | Low | post | The UI is English only. |
 
