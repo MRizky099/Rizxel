@@ -228,3 +228,66 @@ fn clone_and_shape_sources_are_baked_on_cut() {
     assert_eq!(d.data.layers[c + 1].volume.get(IVec3::new(0, 0, 5)), 2);
     assert!(matches!(d.data.layers[c].kind(), LayerKind::Clone { .. }));
 }
+
+// ------------------------------------------------------- lines and curves
+
+/// Draws `path` with the brush settings as one undo step, like the Line
+/// tool does.
+fn draw_path(d: &mut Document, options: &rizxel_engine::ToolOptions, path: &[IVec3]) -> usize {
+    use rizxel_engine::tools::line_stroke;
+    use rizxel_engine::{ToolContext, VoxelOp};
+    let layer = d.active_layer;
+    let changes = line_stroke(
+        &ToolContext {
+            volume: &d.data.layers[layer].volume,
+            bounds: d.data.bounds,
+            color: 5,
+            op: VoxelOp::Add,
+            options,
+            hit: None,
+        },
+        path,
+    );
+    d.begin_edit();
+    let n = d.edit_voxels(layer, &changes);
+    d.labeled("Line", Document::commit_edit);
+    n
+}
+
+#[test]
+fn lines_and_curves_are_one_step_each() {
+    use rizxel_engine::tools::{bezier_path, connect, line_path, polyline_path};
+    use rizxel_engine::{Connectivity, ToolOptions};
+    let mut d = Document::new("t");
+    let mut options = ToolOptions::default();
+    let line = connect(
+        line_path(IVec3::new(0, 0, 0), IVec3::new(10, 4, 0)),
+        Connectivity::PixelPerfect,
+    );
+    assert_eq!(draw_path(&mut d, &options, &line), 11);
+    let poly = connect(
+        polyline_path(&[IVec3::ZERO, IVec3::new(0, 6, 0), IVec3::new(6, 6, 2)]),
+        Connectivity::Solid,
+    );
+    let n = draw_path(&mut d, &options, &poly);
+    assert!(n > 0);
+    // A thick, mirrored curve.
+    options.brush.size = [2; 3];
+    options.brush.symmetry.x = true;
+    let curve = bezier_path(
+        &[
+            IVec3::new(2, 2, 2),
+            IVec3::new(4, 20, 2),
+            IVec3::new(12, 2, 2),
+        ],
+        0.35,
+    );
+    assert!(draw_path(&mut d, &options, &curve) > curve.len());
+    assert_eq!(d.history_entries().0.len(), 3);
+    let count = d.data.layers[0].volume.voxel_count();
+    d.undo();
+    assert!(d.data.layers[0].volume.voxel_count() < count);
+    d.undo();
+    d.undo();
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 0);
+}

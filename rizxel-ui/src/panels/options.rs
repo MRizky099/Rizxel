@@ -8,8 +8,8 @@
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
 use rizxel_app::{AppState, ViewMode};
 use rizxel_engine::{
-    BrushShape, DragMode, ExtrudeOptions, FillMode, MaskMode, NamesMode, SelectionMode, Symmetry,
-    Tool, VoxelOp, WorkPlane,
+    BrushShape, Connectivity, DragMode, ExtrudeOptions, FillMode, LineMode, MaskMode, NamesMode,
+    SelectionMode, Symmetry, Tool, VoxelOp, WorkPlane,
 };
 
 use crate::icons::{self, Icon, Icons};
@@ -187,6 +187,26 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             antialiasing(ui, &mut b.antialiasing);
             gap(ui);
             symmetry(ui, "brush_sym", &mut b.symmetry);
+            gap(ui);
+            ui.add_enabled_ui(b.single_voxel(), |ui| {
+                connectivity(ui, "brush_connect", &mut b.connect)
+                    .on_disabled_hover_text("Line connectivity applies to size 1 strokes");
+            });
+        }
+        Tool::Line => {
+            let modes = LineMode::ALL.map(|m| (m, m.label()));
+            segmented(ui, "line_mode", &mut opts.line.mode, &modes);
+            gap(ui);
+            let b = &mut opts.brush;
+            connectivity(ui, "line_connect", &mut b.connect);
+            gap(ui);
+            caption(ui, "Brush");
+            shape_combo(ui, "line_shape", &mut b.shape);
+            for (axis, value) in ["X", "Y", "Z"].into_iter().zip(b.size.iter_mut()) {
+                labeled_drag(ui, axis, value, 1..=rizxel_engine::BrushOptions::MAX_SIZE);
+            }
+            gap(ui);
+            symmetry(ui, "line_sym", &mut b.symmetry);
         }
         Tool::Shape => {
             let s = &mut opts.shape;
@@ -586,6 +606,21 @@ fn shape_combo(ui: &mut Ui, id: &str, shape: &mut BrushShape) {
                 ui.selectable_value(shape, s, s.label());
             }
         });
+}
+
+fn connectivity(ui: &mut Ui, id: &str, value: &mut Connectivity) -> egui::Response {
+    egui::ComboBox::from_id_salt(id)
+        .width(96.0)
+        .selected_text(value.label())
+        .show_ui(ui, |ui| {
+            for c in Connectivity::ALL {
+                ui.selectable_value(value, c, c.label());
+            }
+        })
+        .response
+        .on_hover_text(
+            "Pixel perfect: no L-corners. Solid: every step along one axis, no diagonal gaps",
+        )
 }
 
 fn antialiasing(ui: &mut Ui, value: &mut u32) {

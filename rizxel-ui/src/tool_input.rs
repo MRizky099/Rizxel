@@ -35,8 +35,10 @@
 //! The Selection tool's *Box* mode (Phase 10c, [`box_select`]) leaves the
 //! dragged box open: its face arrows and faces move it, `Enter` (or a
 //! click outside it, or switching tools) applies it, `Esc` cancels it.
+//! The Line tool ([`line`]) keeps its own open line across clicks.
 
 mod box_select;
+mod line;
 
 use std::collections::HashSet;
 
@@ -45,14 +47,14 @@ use glam::{IVec3, Vec2, Vec3};
 use rizxel_app::{AppState, Document, Selection, VoxelChange};
 use rizxel_engine::raycast::{dominant_axis, raycast_face, raycast_floor, raycast_grid};
 use rizxel_engine::tools::{
-    apply_op, brush_center, brush_positions, brush_stroke, drag_axis, extrude_changes,
-    extrude_region, extruded_cells, fill_cells, fuzzy_select, mirror, move_changes,
-    move_selection_changes, pick_voxel, resize_bounds, select_box, selection_box, selection_region,
-    shape_box, shape_cells_toward, MAX_FLOOD_CELLS,
+    apply_op, brush_center, brush_positions, brush_stroke, connect, drag_axis, extrude_changes,
+    extrude_region, extruded_cells, fill_cells, fuzzy_select, line_cells, line_stroke, mirror,
+    move_changes, move_selection_changes, pick_voxel, resize_bounds, select_box, selection_box,
+    selection_region, shape_box, shape_cells_toward, MAX_FLOOD_CELLS,
 };
 use rizxel_engine::{
-    DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool, ToolContext,
-    VoxelOp, WorkPlane,
+    Connectivity, DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool,
+    ToolContext, VoxelOp, WorkPlane,
 };
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
 
@@ -85,6 +87,11 @@ pub struct ToolInput {
     /// Pick target while a floating paste follows the cursor: the model
     /// without the paste, keyed by `(document id, edit count)`.
     paste_pick: Option<((u64, u64), VoxelVolume)>,
+    /// Open line, polyline or curve of the Line tool.
+    line: Option<line::LineSession>,
+    /// Last brush stamp `(document id, layer, center)`: `Ctrl`+click draws
+    /// a line from it.
+    last_stamp: Option<(u64, usize, IVec3)>,
 }
 
 /// `(document id, revision, hit voxel, hit normal, options, selection
@@ -112,6 +119,9 @@ struct Drag {
 enum DragKind {
     Brush {
         last: IVec3,
+        /// Stamp centers so far, when the stroke is redrawn as one
+        /// connected path (size 1 with Pixel perfect or Solid).
+        path: Option<Vec<IVec3>>,
     },
     /// Plane tool with Slice on: moves the plane along its normal.
     PlaneMove {
@@ -286,7 +296,7 @@ fn pick_drag(drag: &Drag, ray: &Ray) -> Option<RayHit> {
 
 /// Whether a tool snaps onto the work plane.
 fn draws_on_plane(tool: Tool) -> bool {
-    matches!(tool, Tool::Brush | Tool::Cursor | Tool::Shape)
+    matches!(tool, Tool::Brush | Tool::Line | Tool::Cursor | Tool::Shape)
 }
 
 /// Mask mode of a selection click: `Shift` adds, `Ctrl` subtracts,
@@ -355,6 +365,7 @@ impl ToolInput {
         if let Some(doc) = state.doc_mut() {
             doc.sync_box_select();
         }
+        self.sync_line(state);
 
         // A drag survives only on its own document and while its
         // transaction is open (undo or a tab switch may have closed it).
@@ -398,6 +409,7 @@ impl ToolInput {
                 self.finish(state);
             }
         } else if !f.ui.ctx().egui_wants_keyboard_input() {
+            self.line_keys(f, state);
             box_select::keys(f, state, mods);
             selection_keys(f, state);
         }
@@ -467,7 +479,13 @@ impl ToolInput {
             && self.drag.is_none()
             && f.response.hovered()
             && hover.is_some_and(|p| !f.blocked.iter().any(|r| r.contains(p)));
-        if press {
+        // The Line tool handles its own presses and drags (the plane edge
+        // still moves the plane).
+        let line_tool = state.tool == Tool::Line && !mods.alt && self.drag.is_none();
+        if line_tool {
+            self.line_frame(f, state, press && edge.is_none(), mods, &mut preview);
+        }
+        if press && (!line_tool || edge.is_some()) {
             if let Some(p) = hover {
                 match box_grab {
                     Some(grab) => self.begin_box_drag(state, p, grab, mods),
@@ -540,7 +558,7 @@ impl ToolInput {
                     .and_then(box_select::feedback)
                     .unwrap_or_else(|| "Drag an arrow or a face to re-open the box".to_owned()),
             );
-        } else if let Some(hit) = hit {
+        } else if let Some(hit) = hit.filter(|_| !(line_tool && self.line.is_some())) {
             self.hover_preview(f, state, &hit, mods, &mut preview);
             if box_select::box_mode(state) {
                 if let Some(text) = state.doc().and_then(box_select::feedback) {
@@ -663,7 +681,8 @@ impl ToolInput {
             return;
         }
         match tool {
-            Tool::Cursor => {}
+            // The Line tool takes its presses in `line_frame`.
+            Tool::Cursor | Tool::Line => {}
             Tool::ColorPicker => pick_color(f, state, pos, mods.command),
             Tool::Plane => {
                 let slicing = state.doc().is_some_and(|d| d.plane.slice);
@@ -775,11 +794,24 @@ impl ToolInput {
         }
         let bounds = doc.data.bounds;
         let center = bounds.0.as_vec3() * 0.5;
+        // Ctrl+click draws a line from the last stamp on this layer.
+        let line_from = self
+            .last_stamp
+            .filter(|&(id, l, _)| mods.command && id == doc.id() && l == layer)
+            .map(|(_, _, c)| c);
         let kind = match tool {
             Tool::Brush => {
                 let Some(hit) = hit else { return };
+                let center = brush_center(&hit, op);
+                let brush = &options.brush;
+                let connected = brush.single_voxel() && brush.connect != Connectivity::Diagonal;
+                let start = match line_from {
+                    Some(from) => line_cells(from, center),
+                    None => vec![center],
+                };
                 DragKind::Brush {
-                    last: brush_center(&hit, op),
+                    last: center,
+                    path: connected.then_some(start),
                 }
             }
             Tool::Move if resize => DragKind::Resize {
@@ -863,10 +895,21 @@ impl ToolInput {
             op,
             kind,
         });
-        // Apply the press itself (first stamp, 1×1 plane, base extrude).
-        if let Some(DragKind::Brush { last }) = self.drag.as_ref().map(|d| &d.kind) {
+        // Apply the press itself (first stamp or the Ctrl+click line, 1×1
+        // plane, base extrude).
+        if let Some(DragKind::Brush { last, path }) = self.drag.as_ref().map(|d| &d.kind) {
             let last = *last;
-            write(state, layer, op, |ctx| brush_stroke(ctx, None, last));
+            let connect_mode = options.brush.connect;
+            match (path, line_from) {
+                (Some(path), _) => {
+                    let p = connect(path.clone(), connect_mode);
+                    write(state, layer, op, |ctx| line_stroke(ctx, &p));
+                }
+                (None, Some(from)) => {
+                    write(state, layer, op, |ctx| brush_stroke(ctx, Some(from), last));
+                }
+                (None, None) => write(state, layer, op, |ctx| brush_stroke(ctx, None, last)),
+            }
         }
         self.drag_frame(f, state, pos);
     }
@@ -995,7 +1038,7 @@ impl ToolInput {
                     apply_op(ctx.volume, cells, ctx.op, ctx.color)
                 });
             }
-            DragKind::Brush { last } => {
+            DragKind::Brush { last, path } => {
                 let Some(hit) = pick_with(
                     &ray,
                     drag.snapshot.bounds(),
@@ -1011,9 +1054,17 @@ impl ToolInput {
                     return;
                 }
                 let from = std::mem::replace(last, center);
-                write(state, layer, op, |ctx| {
-                    brush_stroke(ctx, Some(from), center)
-                });
+                match path {
+                    // The whole stroke is redrawn so corners can go.
+                    Some(path) => {
+                        path.extend(line_cells(from, center).into_iter().skip(1));
+                        let p = connect(path.clone(), state.options.brush.connect);
+                        rewrite(state, layer, op, |ctx| line_stroke(ctx, &p));
+                    }
+                    None => write(state, layer, op, |ctx| {
+                        brush_stroke(ctx, Some(from), center)
+                    }),
+                }
             }
             DragKind::PlaneMove {
                 pivot,
@@ -1134,6 +1185,9 @@ impl ToolInput {
 
     fn finish(&mut self, state: &mut AppState) {
         let Some(drag) = self.drag.take() else { return };
+        if let DragKind::Brush { last, .. } = drag.kind {
+            self.last_stamp = Some((drag.doc_id, drag.layer, last));
+        }
         if let DragKind::PlaneMove {
             moved: false,
             click: Some(hit),
@@ -1275,7 +1329,7 @@ impl ToolInput {
             _ => paint.gamma_multiply(0.55),
         };
         match tool {
-            Tool::Brush => {
+            Tool::Brush | Tool::Line => {
                 let cells = ghost_cells(
                     brush_positions(brush_center(hit, op), &state.options.brush, bounds),
                     &clip,
@@ -1579,7 +1633,7 @@ fn write(
 ) {
     let options = state.options;
     let symmetry = match state.tool {
-        Tool::Brush => options.brush.symmetry,
+        Tool::Brush | Tool::Line => options.brush.symmetry,
         Tool::Shape => options.shape.symmetry,
         _ => Symmetry::default(),
     };

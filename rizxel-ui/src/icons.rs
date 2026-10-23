@@ -9,9 +9,11 @@ use rizxel_engine::{Tool, VoxelOp};
 pub enum Icon {
     Cursor,
     Brush,
+    Line,
     Shape,
     Plane,
     Move,
+    Transform,
     ColorPicker,
     Selection,
     FuzzySelect,
@@ -47,9 +49,11 @@ macro_rules! icon_sources {
 icon_sources! {
     Cursor => "cursor",
     Brush => "brush",
+    Line => "line",
     Shape => "shape",
     Plane => "plane",
     Move => "move",
+    Transform => "transform",
     ColorPicker => "color_picker",
     Selection => "selection",
     FuzzySelect => "fuzzy_select",
@@ -69,6 +73,7 @@ impl From<Tool> for Icon {
         match tool {
             Tool::Cursor => Icon::Cursor,
             Tool::Brush => Icon::Brush,
+            Tool::Line => Icon::Line,
             Tool::Shape => Icon::Shape,
             Tool::Plane => Icon::Plane,
             Tool::Move => Icon::Move,

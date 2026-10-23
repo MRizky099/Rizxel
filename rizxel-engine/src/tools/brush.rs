@@ -156,11 +156,19 @@ fn on_surface(volume: &VoxelVolume, p: IVec3) -> bool {
 /// Changes for one brush segment from the previous stamp center `from`
 /// (`None` at the start of a drag) to `to`.
 pub fn brush_stroke(ctx: &ToolContext, from: Option<IVec3>, to: IVec3) -> Vec<VoxelChange> {
-    let opts = &ctx.options.brush;
     let centers = match from {
         Some(a) => line_cells(a, to),
         None => vec![to],
     };
+    stamp_path(ctx, centers)
+}
+
+/// Changes of one brush stamp at each of `centers` (Brush and Line).
+pub(super) fn stamp_path(
+    ctx: &ToolContext,
+    centers: impl IntoIterator<Item = IVec3>,
+) -> Vec<VoxelChange> {
+    let opts = &ctx.options.brush;
     let mut seen = HashSet::new();
     let mut cells = Vec::new();
     for c in centers {

@@ -13,6 +13,7 @@ mod core_ops;
 mod extrude;
 mod fill;
 mod fuzzy;
+mod line;
 mod moving;
 mod options;
 mod pick;
@@ -35,6 +36,10 @@ pub use core_ops::{fill_hollows, hollow, hollow_advanced, MAX_CORE_CELLS};
 pub use extrude::{extrude_changes, extrude_region, extruded_cells, selection_region};
 pub use fill::{fill_cells, FillError};
 pub use fuzzy::fuzzy_select;
+pub use line::{
+    bezier_at, bezier_path, connect, line_cells_stamped, line_path, line_stroke, pixel_perfect,
+    polyline_path, solid,
+};
 pub use moving::{drag_axis, move_changes, move_selection_changes, resize_bounds};
 pub use options::*;
 pub use pick::pick_voxel;
@@ -82,6 +87,7 @@ pub struct ToolContext<'a> {
 pub enum Tool {
     Cursor,
     Brush,
+    Line,
     Shape,
     #[default]
     Plane,
@@ -95,7 +101,13 @@ pub enum Tool {
 
 impl Tool {
     /// Primary drawing tools (above the toolbar separator).
-    pub const PRIMARY: [Tool; 4] = [Tool::Cursor, Tool::Brush, Tool::Shape, Tool::Plane];
+    pub const PRIMARY: [Tool; 5] = [
+        Tool::Cursor,
+        Tool::Brush,
+        Tool::Line,
+        Tool::Shape,
+        Tool::Plane,
+    ];
 
     /// Secondary manipulation tools (below the toolbar separator).
     pub const SECONDARY: [Tool; 6] = [
@@ -111,6 +123,7 @@ impl Tool {
         match self {
             Tool::Cursor => "Cursor",
             Tool::Brush => "Brush",
+            Tool::Line => "Line",
             Tool::Shape => "Shape",
             Tool::Plane => "Plane",
             Tool::Move => "Move",
@@ -123,9 +136,10 @@ impl Tool {
     }
 
     /// Every tool, in toolbar order.
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 11] = [
         Tool::Cursor,
         Tool::Brush,
+        Tool::Line,
         Tool::Shape,
         Tool::Plane,
         Tool::Move,
@@ -137,12 +151,13 @@ impl Tool {
     ];
 
     /// Single-letter keyboard shortcut (Goxel / Photoshop conventions:
-    /// B brush, S shape, P plane, M move, C color picker, R rectangle
-    /// select, W magic wand, E extrude, F fill, V cursor).
+    /// B brush, L line, S shape, P plane, M move, C color picker, R
+    /// rectangle select, W magic wand, E extrude, F fill, V cursor).
     pub const fn shortcut(self) -> char {
         match self {
             Tool::Cursor => 'V',
             Tool::Brush => 'B',
+            Tool::Line => 'L',
             Tool::Shape => 'S',
             Tool::Plane => 'P',
             Tool::Move => 'M',
@@ -158,7 +173,12 @@ impl Tool {
     pub const fn hint(self) -> &'static str {
         match self {
             Tool::Cursor => "Hover to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
-            Tool::Brush => "Click and drag to paint. Shift: erase, Alt: pick color, Esc: cancel.",
+            Tool::Brush => {
+                "Click and drag to paint. Ctrl+click: line from the last click. Shift: erase, Alt: pick color."
+            }
+            Tool::Line => {
+                "Drag a line. Polyline: click points, Enter or right-click ends. Curve: drag, then drag to bend. Shift: erase."
+            }
             Tool::Shape => {
                 "Drag on a face to draw a cube, sphere, cylinder, pyramid or cone. Shift: carve, Esc: cancel."
             }
@@ -257,7 +277,7 @@ mod tests {
             .chain(&Tool::SECONDARY)
             .copied()
             .collect();
-        assert_eq!(all.len(), 10);
+        assert_eq!(all.len(), Tool::ALL.len());
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate tool {a:?}");
         }

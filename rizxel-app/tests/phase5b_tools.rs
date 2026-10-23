@@ -519,13 +519,43 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 let _ = d.selection_to_new_layer(rng.below(2) == 0);
             }
         }
+        // A line, polyline or curve stamped with a random brush.
+        30 => {
+            use rizxel_engine::tools::{bezier_path, connect, line_stroke, polyline_path};
+            use rizxel_engine::{Connectivity, ToolContext, ToolOptions};
+            let points: Vec<IVec3> = (0..2 + rng.below(3)).map(|_| rng.cell(10)).collect();
+            let path = if rng.below(2) == 0 {
+                polyline_path(&points)
+            } else {
+                bezier_path(&points, 0.35)
+            };
+            let path = connect(path, Connectivity::ALL[rng.below(3) as usize]);
+            let mut options = ToolOptions::default();
+            options.brush.size = [1 + rng.below(2) as u32; 3];
+            options.brush.symmetry.x = rng.below(3) == 0;
+            let op = [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Paint][rng.below(3) as usize];
+            let changes = line_stroke(
+                &ToolContext {
+                    volume: &d.data.layers[layer].volume,
+                    bounds: d.data.bounds,
+                    color,
+                    op,
+                    options: &options,
+                    hit: None,
+                },
+                &path,
+            );
+            d.begin_edit();
+            d.edit_voxels(layer, &changes);
+            d.commit_edit();
+        }
         _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 30;
+const OPS: usize = 31;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {
