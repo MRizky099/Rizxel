@@ -779,6 +779,58 @@ impl AppState {
             .map_or(0, Selection::len)
     }
 
+    // ------------------------------------------------------ edit menu
+
+    /// The active layer stores voxels and has some (Select All, Invert,
+    /// Copy, transforms).
+    pub fn active_layer_has_voxels(&self) -> bool {
+        self.doc()
+            .and_then(Document::active_layer)
+            .is_some_and(|l| l.kind().stores_voxels() && !l.volume.is_empty())
+    }
+
+    /// Tools may write into the active layer (hidden counts as writable).
+    pub fn active_layer_editable(&self) -> bool {
+        self.doc().is_some_and(|d| {
+            matches!(
+                d.editable_layer(d.active_layer),
+                Ok(()) | Err(EditBlock::Hidden)
+            )
+        })
+    }
+
+    pub fn select_all(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.select_all();
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selected {n} voxels"));
+        }
+    }
+
+    pub fn invert_selection(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.invert_selection();
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selection inverted: {n} voxels"));
+        }
+    }
+
+    pub fn deselect(&mut self) {
+        if self.doc_mut().is_some_and(Document::clear_selection) {
+            self.status_message = Some("Selection cleared".to_owned());
+        }
+    }
+
+    /// Deletes the selected voxels of the active layer (`Delete`).
+    pub fn delete_selected(&mut self) {
+        let Some(doc) = self.doc_mut() else { return };
+        let removed = doc.delete_selected();
+        self.status_message = Some(match doc.editable_layer(doc.active_layer) {
+            Err(e) if removed == 0 && e != EditBlock::Hidden => e.message().to_owned(),
+            _ => format!("Deleted {removed} selected voxels"),
+        });
+    }
+
     // --------------------------------------------------------- clipboard
 
     /// Copies the selection (or the whole active layer) to the clipboard.

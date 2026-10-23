@@ -792,6 +792,25 @@ impl Document {
         self.set_selection(self.active_layer, new)
     }
 
+    /// Selects every voxel of the active layer (`Ctrl+A`).
+    pub fn select_all(&mut self) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let all: Selection = l.volume.iter().map(|(p, _)| p).collect();
+        self.set_selection(self.active_layer, all)
+    }
+
+    /// Selects the active layer's voxels that are not selected, and
+    /// deselects the rest (`Ctrl+I`).
+    pub fn invert_selection(&mut self) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let inverted = l.selection.inverted(l.volume.iter().map(|(p, _)| p));
+        self.set_selection(self.active_layer, inverted)
+    }
+
     /// Deselects everything on the active layer (`Esc`).
     pub fn clear_selection(&mut self) -> bool {
         self.set_selection(self.active_layer, Selection::default())

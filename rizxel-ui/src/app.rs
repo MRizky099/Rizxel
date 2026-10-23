@@ -143,6 +143,16 @@ impl RizxelApp {
             Some(ClipboardCommand::FlipX) => self.state.flip(0),
             None => {}
         }
+        // Selection.
+        if pressed(KeyboardShortcut::new(CMD, Key::A)) {
+            self.state.select_all();
+        }
+        if pressed(KeyboardShortcut::new(CMD, Key::I)) {
+            self.state.invert_selection();
+        }
+        if pressed(KeyboardShortcut::new(CMD, Key::D)) {
+            self.state.deselect();
+        }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::S)) {
             actions::save_as(&mut self.state);
         }

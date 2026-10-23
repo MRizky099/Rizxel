@@ -130,28 +130,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             }
         });
 
-        ui.menu_button("Edit", |ui| {
-            ui.set_min_width(200.0);
-            let (can_undo, can_redo) = (state.can_undo(), state.can_redo());
-            if menu_item(
-                ui,
-                icon::ARROW_COUNTER_CLOCKWISE,
-                "Undo",
-                "Ctrl+Z",
-                can_undo,
-            ) {
-                state.undo();
-            }
-            if menu_item(ui, icon::ARROW_CLOCKWISE, "Redo", "Ctrl+Y", can_redo) {
-                state.redo();
-            }
-            ui.separator();
-            if menu_item(ui, icon::STACK_PLUS, "New Layer", "", true) {
-                if let Some(d) = state.doc_mut() {
-                    d.add_layer();
-                }
-            }
-        });
+        ui.menu_button("Edit", |ui| edit_menu(ui, state));
 
         ui.menu_button("View", |ui| {
             ui.set_min_width(220.0);
@@ -209,6 +188,178 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui_state.show_about = true;
             }
         });
+    });
+}
+
+/// Edit menu: history, clipboard, selection, layer and transform commands.
+/// Every item shows its shortcut and is disabled when it can't apply.
+fn edit_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.set_min_width(240.0);
+    let (can_undo, can_redo) = (state.can_undo(), state.can_redo());
+    let has_voxels = state.active_layer_has_voxels();
+    let editable = state.active_layer_editable();
+    let selected = state.selected_voxels() > 0;
+    let clip = state.clipboard.is_some();
+    let has_doc = state.doc().is_some();
+
+    if menu_item(
+        ui,
+        icon::ARROW_COUNTER_CLOCKWISE,
+        "Undo",
+        "Ctrl+Z",
+        can_undo,
+    ) {
+        state.undo();
+    }
+    if menu_item(ui, icon::ARROW_CLOCKWISE, "Redo", "Ctrl+Y", can_redo) {
+        state.redo();
+    }
+    ui.separator();
+    if menu_item(ui, icon::SCISSORS, "Cut", "Ctrl+X", has_voxels && editable) {
+        state.cut();
+    }
+    if menu_item(ui, icon::COPY, "Copy", "Ctrl+C", has_voxels) {
+        state.copy();
+    }
+    if menu_item(ui, icon::CLIPBOARD, "Paste", "Ctrl+V", clip && editable) {
+        let at = state.cursor_voxel;
+        state.paste(at);
+    }
+    if menu_item(
+        ui,
+        icon::CLIPBOARD_TEXT,
+        "Paste in Place",
+        "Ctrl+Alt+V",
+        clip && editable,
+    ) {
+        state.paste_in_place();
+    }
+    if menu_item(
+        ui,
+        icon::STACK_PLUS,
+        "Paste to New Layer",
+        "Ctrl+Shift+V",
+        clip && has_doc,
+    ) {
+        state.paste_to_new_layer();
+    }
+    ui.separator();
+    if menu_item(ui, icon::SELECTION_ALL, "Select All", "Ctrl+A", has_voxels) {
+        state.select_all();
+    }
+    if menu_item(ui, icon::SELECTION_SLASH, "Deselect", "Ctrl+D", selected) {
+        state.deselect();
+    }
+    if menu_item(
+        ui,
+        icon::SELECTION_INVERSE,
+        "Invert Selection",
+        "Ctrl+I",
+        has_voxels,
+    ) {
+        state.invert_selection();
+    }
+    if menu_item(ui, icon::TRASH, "Delete", "Delete", selected && editable) {
+        state.delete_selected();
+    }
+    ui.separator();
+    if menu_item(ui, icon::STACK_PLUS, "New Layer", "", has_doc) {
+        if let Some(d) = state.doc_mut() {
+            d.add_layer();
+        }
+    }
+    if menu_item(ui, icon::STACK_SIMPLE, "Duplicate Layer", "", has_doc) {
+        if let Some(d) = state.doc_mut() {
+            d.duplicate_active_layer();
+        }
+    }
+    ui.separator();
+    let can_transform = has_voxels && editable;
+    ui.add_enabled_ui(can_transform, |ui| transform_menus(ui, state));
+}
+
+/// Edit > Rotate 90°, Flip and Mirror. They act on the selection, or the
+/// whole active layer without one.
+fn transform_menus(ui: &mut Ui, state: &mut AppState) {
+    const AXES: [&str; 3] = ["X", "Y", "Z"];
+    ui.menu_button(
+        icon_label(ui, icon::ARROW_ARC_LEFT, "Rotate 90°", None),
+        |ui| {
+            ui.set_min_width(240.0);
+            let facing = AXES[state.facing_axis()];
+            if menu_item(
+                ui,
+                icon::ARROW_ARC_LEFT,
+                &format!("Counterclockwise (facing {facing})"),
+                "Ctrl+R",
+                true,
+            ) {
+                state.rotate_facing(false);
+            }
+            if menu_item(
+                ui,
+                icon::ARROW_ARC_RIGHT,
+                &format!("Clockwise (facing {facing})"),
+                "Ctrl+Shift+R",
+                true,
+            ) {
+                state.rotate_facing(true);
+            }
+            ui.separator();
+            for (axis, name) in AXES.iter().enumerate() {
+                if menu_item(
+                    ui,
+                    icon::ARROW_ARC_LEFT,
+                    &format!("+90° about {name}"),
+                    "",
+                    true,
+                ) {
+                    state.rotate(axis, 1);
+                }
+                if menu_item(
+                    ui,
+                    icon::ARROW_ARC_RIGHT,
+                    &format!("-90° about {name}"),
+                    "",
+                    true,
+                ) {
+                    state.rotate(axis, -1);
+                }
+            }
+        },
+    );
+    ui.menu_button(icon_label(ui, icon::FLIP_HORIZONTAL, "Flip", None), |ui| {
+        ui.set_min_width(180.0);
+        for (axis, name) in AXES.iter().enumerate() {
+            let glyph = if axis == 1 {
+                icon::FLIP_VERTICAL
+            } else {
+                icon::FLIP_HORIZONTAL
+            };
+            if menu_item(
+                ui,
+                glyph,
+                &format!("Flip {name}"),
+                &format!("Ctrl+Alt+{name}"),
+                true,
+            ) {
+                state.flip(axis);
+            }
+        }
+    });
+    ui.menu_button(icon_label(ui, icon::SQUARE_HALF, "Mirror", None), |ui| {
+        ui.set_min_width(240.0);
+        for (axis, name) in AXES.iter().enumerate() {
+            if menu_item(
+                ui,
+                icon::SQUARE_HALF,
+                &format!("Mirror -{name} onto +{name}"),
+                "",
+                true,
+            ) {
+                state.mirror(axis);
+            }
+        }
     });
 }
 
@@ -555,24 +706,55 @@ pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut U
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                egui::Grid::new("shortcuts").striped(true).show(ui, |ui| {
-                    for (keys, action) in [
-                        ("Ctrl+N", "New project"),
-                        ("Ctrl+O", "Open project"),
-                        ("Ctrl+S", "Save"),
-                        ("Ctrl+Shift+S", "Save as"),
-                        ("Ctrl+Z", "Undo"),
-                        ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
-                        ("Right drag (viewport)", "Orbit camera"),
-                        ("Middle drag (viewport)", "Pan camera"),
-                        ("Middle double-click", "Reset camera"),
-                        ("Scroll (viewport)", "Zoom"),
-                    ] {
-                        ui.label(egui::RichText::new(keys).color(theme::TEXT_STRONG));
-                        ui.label(action);
-                        ui.end_row();
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(440.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("shortcuts")
+                            .striped(true)
+                            .show(ui, shortcut_rows);
+                    });
             });
+    }
+}
+
+/// Rows of the Keyboard Shortcuts window: commands, then the tool keys.
+fn shortcut_rows(ui: &mut Ui) {
+    for (keys, action) in [
+        ("Ctrl+N", "New project"),
+        ("Ctrl+O", "Open project"),
+        ("Ctrl+S", "Save"),
+        ("Ctrl+Shift+S", "Save as"),
+        ("Ctrl+Z", "Undo"),
+        ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
+        ("Ctrl+X", "Cut (selection or layer)"),
+        ("Ctrl+C", "Copy (selection or layer)"),
+        ("Ctrl+V", "Paste at the cursor"),
+        ("Ctrl+Alt+V", "Paste in place"),
+        ("Ctrl+Shift+V", "Paste to new layer"),
+        ("Enter / click", "Place the paste"),
+        ("Esc", "Cancel paste or drag, deselect"),
+        ("Ctrl+A", "Select all"),
+        ("Ctrl+D", "Deselect"),
+        ("Ctrl+I", "Invert selection"),
+        ("Delete", "Delete selected voxels"),
+        ("Ctrl+R", "Rotate 90° counterclockwise (facing axis)"),
+        ("Ctrl+Shift+R", "Rotate 90° clockwise (facing axis)"),
+        ("Ctrl+Alt+X / Y / Z", "Flip X / Y / Z"),
+        ("Space", "Slice Mode on / off"),
+        ("/", "Show or hide the work plane"),
+        ("Ctrl+Shift+F", "Zen mode"),
+        ("Right drag (viewport)", "Orbit camera"),
+        ("Middle drag (viewport)", "Pan camera"),
+        ("Middle double-click", "Reset camera"),
+        ("Scroll (viewport)", "Zoom"),
+    ] {
+        ui.label(egui::RichText::new(keys).color(theme::TEXT_STRONG));
+        ui.label(action);
+        ui.end_row();
+    }
+    for tool in rizxel_engine::Tool::ALL {
+        ui.label(egui::RichText::new(tool.shortcut().to_string()).color(theme::TEXT_STRONG));
+        ui.label(format!("{} tool", tool.label()));
+        ui.end_row();
     }
 }

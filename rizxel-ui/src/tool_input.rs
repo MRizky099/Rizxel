@@ -1292,15 +1292,10 @@ fn selection_keys(f: &Frame, state: &mut AppState) {
                 || i.consume_key(Modifiers::NONE, Key::Backspace),
         )
     });
-    let Some(doc) = state.doc_mut() else { return };
     if del {
-        let removed = doc.delete_selected();
-        state.status_message = Some(match doc.editable_layer(doc.active_layer) {
-            Err(e) if removed == 0 => e.message().to_owned(),
-            _ => format!("Deleted {removed} selected voxels"),
-        });
-    } else if esc && doc.clear_selection() {
-        state.status_message = Some("Selection cleared".to_owned());
+        state.delete_selected();
+    } else if esc {
+        state.deselect();
     }
 }
 

@@ -137,6 +137,12 @@ impl Selection {
         }
     }
 
+    /// Cells of `within` that are not selected (Invert Selection; the app
+    /// passes the active layer's voxels).
+    pub fn inverted(&self, within: impl IntoIterator<Item = IVec3>) -> Selection {
+        within.into_iter().filter(|p| !self.contains(*p)).collect()
+    }
+
     /// Selected solid cells of `volume` with at least one exposed face (an
     /// empty or out-of-bounds neighbour): what is visible of the selection.
     pub fn visible_shell(&self, volume: &VoxelVolume) -> Vec<IVec3> {
@@ -253,6 +259,13 @@ mod tests {
         assert!(!s.visible_shell(&v).contains(&IVec3::splat(2)));
         // 3³ selected cube: 9 faces per side; the lone cell adds 6.
         assert_eq!(s.boundary_faces().len(), 6 * 9 + 6);
+    }
+
+    #[test]
+    fn invert_within_a_set() {
+        let s = sel(&[0, 2]);
+        assert_eq!(s.inverted(sel(&[0, 1, 2, 3]).iter()), sel(&[1, 3]));
+        assert!(s.inverted(sel(&[0, 2]).iter()).is_empty());
     }
 
     #[test]

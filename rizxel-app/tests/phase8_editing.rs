@@ -257,3 +257,18 @@ fn rotate_facing_uses_the_camera_axis() {
     assert!(d.undo() && d.undo());
     assert!(!d.can_undo(), "two steps");
 }
+
+#[test]
+fn select_all_and_invert_are_undoable() {
+    let mut d = Document::with_layers("t", vec![l_layer()]);
+    assert!(d.select_all());
+    assert_eq!(d.selection().unwrap().len(), 3);
+    assert!(!d.select_all(), "already all selected");
+    d.select([IVec3::new(1, 0, 0)], MaskMode::Set);
+    assert!(d.invert_selection());
+    let sel = d.selection().unwrap();
+    assert_eq!(sel.len(), 2);
+    assert!(!sel.contains(IVec3::new(1, 0, 0)));
+    assert!(d.undo());
+    assert_eq!(d.selection().unwrap().len(), 1);
+}
