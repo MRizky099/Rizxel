@@ -17,10 +17,10 @@ The **Phase** column names the plan that closes the gap (see
 
 | Gap | Closed by |
 |---|---|
-| Phase 6 work is uncommitted | `02ac63d` |
+| Phase 6 work is uncommitted | `363f73d` |
 | `.tmp-craft/` is an untracked vendor checkout | Removed from the tree; ignored since Phase 7 |
-| No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `14d6d52`, `70d9bbd` |
-| B1: the model can't be seen from below | `555bbc4` |
+| No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `04bbdf7`, `d6f13b2` |
+| B1: the model can't be seen from below | `c68aa10` |
 | No CI | `.github/workflows/ci.yml` (Phase 7): fmt, clippy and tests on Windows and Linux |
 | `main` is at Phase 4 | Merged in Phase 7 (PR #2, `v0.2.0`) |
 
