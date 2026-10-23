@@ -198,6 +198,9 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::B)) {
             view.model_bounds = !view.model_bounds;
         }
+        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::H)) {
+            view.ghosts = !view.ghosts;
+        }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
         for tool in rizxel_engine::Tool::ALL {

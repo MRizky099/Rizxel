@@ -14,6 +14,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
 use rizxel_math::volume::local_index;
@@ -139,11 +140,34 @@ pub struct TileMeshCache {
     tiles: HashMap<IVec3, Mesh>,
     /// Tiles re-meshed by the last call (diagnostics and tests).
     last_rebuilt: usize,
+    /// Concatenated output of the last call, shared while nothing changes.
+    output: Option<Arc<Mesh>>,
 }
 
 impl TileMeshCache {
     /// Mesh of `volume`, reusing the cached tiles that did not change.
     pub fn mesh(&mut self, volume: &VoxelVolume, palette: &Palette) -> Mesh {
+        (*self.mesh_shared(volume, palette)).clone()
+    }
+
+    /// Like [`TileMeshCache::mesh`], but returns the previous `Arc` when no
+    /// tile changed, so callers can skip uploading an identical mesh.
+    pub fn mesh_shared(&mut self, volume: &VoxelVolume, palette: &Palette) -> Arc<Mesh> {
+        let before = self.tiles.len();
+        self.update(volume, palette);
+        let changed = self.last_rebuilt > 0 || self.tiles.len() != before;
+        match &self.output {
+            Some(out) if !changed => out.clone(),
+            _ => {
+                let out = Arc::new(self.concatenate(volume));
+                self.output = Some(out.clone());
+                out
+            }
+        }
+    }
+
+    /// Re-meshes the tiles that changed since the last call.
+    fn update(&mut self, volume: &VoxelVolume, palette: &Palette) {
         let full = self.palette.as_ref() != Some(palette)
             || self
                 .source
@@ -191,7 +215,11 @@ impl TileMeshCache {
         self.last_rebuilt = rebuilt;
         self.source = Some(volume.clone());
         self.palette = Some(palette.clone());
+    }
 
+    /// The cached tiles of `volume` in sorted order, as one mesh.
+    fn concatenate(&self, volume: &VoxelVolume) -> Mesh {
+        let origins = volume.sorted_tile_origins();
         let mut out = Mesh::default();
         for o in &origins {
             if let Some(m) = self.tiles.get(o) {

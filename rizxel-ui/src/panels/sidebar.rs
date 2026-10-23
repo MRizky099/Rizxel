@@ -221,6 +221,8 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         }
 
         ui.add_space(6.0);
+        layer_properties(ui, doc);
+        ui.add_space(6.0);
         layer_operations(ui, doc, ui_state);
     });
 
@@ -304,6 +306,31 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             .clicked()
         {
             doc.duplicate_active_layer();
+        }
+    });
+}
+
+/// Opacity of the active layer. One undo step per drag; the viewport
+/// updates the same frame without re-meshing.
+fn layer_properties(ui: &mut Ui, doc: &mut Document) {
+    let index = doc.active_layer;
+    let Some(props) = doc.data.layers.get(index).map(|l| l.props.clone()) else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Opacity").size(12.0).color(theme::TEXT));
+        let mut percent = props.opacity * 100.0;
+        let response = ui.add(
+            egui::Slider::new(&mut percent, 0.0..=100.0)
+                .suffix("%")
+                .fixed_decimals(0),
+        );
+        if response.changed() {
+            let new = rizxel_app::LayerProps {
+                opacity: (percent / 100.0).clamp(0.0, 1.0),
+                ..props
+            };
+            doc.set_layer_props(index, new, !response.drag_started());
         }
     });
 }

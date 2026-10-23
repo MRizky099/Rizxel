@@ -289,6 +289,8 @@ struct VoxelOut {
     @location(0) normal: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) world: vec3<f32>,
+    // Layer opacity (1 in the opaque pass).
+    @location(3) alpha: f32,
 };
 
 /// Key light: above, slightly front-right of the default camera, so the top
@@ -296,14 +298,26 @@ struct VoxelOut {
 const KEY_LIGHT: vec3<f32> = vec3<f32>(0.4, 0.85, 0.35);
 const AMBIENT: f32 = 0.35;
 
-@vertex
-fn vs_voxel(v: VoxelIn) -> VoxelOut {
+fn voxel_out(v: VoxelIn, alpha: f32) -> VoxelOut {
     var out: VoxelOut;
     out.pos = cam.view_proj * vec4<f32>(v.pos, 1.0);
     out.normal = v.normal;
     out.color = v.color;
     out.world = v.pos;
+    out.alpha = alpha;
     return out;
+}
+
+@vertex
+fn vs_voxel(v: VoxelIn) -> VoxelOut {
+    return voxel_out(v, 1.0);
+}
+
+/// Translucent layers: one instance per layer, its alpha in an
+/// instance-rate attribute so opacity changes never touch the mesh.
+@vertex
+fn vs_voxel_translucent(v: VoxelIn, @location(7) alpha: f32) -> VoxelOut {
+    return voxel_out(v, alpha);
 }
 
 /// Darkening of the voxel edge lines drawn on the model (Voxel Grid).
@@ -335,8 +349,8 @@ fn voxel_grid_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
     return line * (1.0 - smoothstep(0.15, 0.3, lod));
 }
 
-@fragment
-fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
+/// Lit color of a voxel fragment (shared by both passes).
+fn voxel_color(in: VoxelOut) -> vec3<f32> {
     let n = normalize(in.normal);
     let grid = voxel_grid_coverage(in.world, n) * cam.options.y * VOXEL_GRID_STRENGTH;
     var shade: f32;
@@ -352,5 +366,16 @@ fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
         // so adjacent faces of one color stay distinguishable.
         shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
     }
-    return vec4<f32>(min(in.color.rgb * shade * (1.0 - grid), vec3<f32>(1.0)), 1.0);
+    return min(in.color.rgb * shade * (1.0 - grid), vec3<f32>(1.0));
+}
+
+@fragment
+fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(voxel_color(in), 1.0);
+}
+
+/// Straight alpha, blended over what the opaque pass drew.
+@fragment
+fn fs_voxel_translucent(in: VoxelOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(voxel_color(in), in.alpha);
 }

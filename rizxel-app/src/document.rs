@@ -1,10 +1,12 @@
 //! A single open project (one tab) and its undoable data.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use glam::IVec3;
+use glam::{IVec3, Vec3};
 use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
 use rizxel_engine::{
     greedy_mesh, rasterize_shape, MaskMode, Mesh, SliceRequest, TileMeshCache, WorkPlane,
@@ -252,6 +254,39 @@ enum Derived {
     Owned(VoxelVolume),
 }
 
+/// Alpha of the layers drawn as ghosts (*View ▸ Ghosts*).
+pub const GHOST_ALPHA: f32 = 0.25;
+
+/// A layer drawn in the viewport's transparent pass.
+#[derive(Debug, Clone)]
+pub struct TransparentMesh {
+    pub layer: LayerId,
+    pub mesh: Arc<Mesh>,
+    /// Opacity in `0..1` (exclusive); comes from the layer, so changing it
+    /// does not touch the mesh.
+    pub alpha: f32,
+    /// Center of the layer's voxels in model space, for back-to-front sorting.
+    pub center: Vec3,
+}
+
+/// Viewport meshes of a document: every fully opaque layer merged into one
+/// mesh, and one mesh per translucent layer. A part that did not change
+/// keeps its `Arc`, so the renderer can skip the upload.
+#[derive(Debug, Clone, Default)]
+pub struct ViewMeshes {
+    pub opaque: Arc<Mesh>,
+    /// Bottom to top in layer order; the viewport sorts them by depth.
+    pub transparent: Vec<TransparentMesh>,
+}
+
+/// Incremental meshing state behind [`Document::view_meshes`].
+#[derive(Debug, Default)]
+struct ViewCache {
+    opaque: TileMeshCache,
+    /// Per translucent layer.
+    layers: HashMap<LayerId, TileMeshCache>,
+}
+
 /// Geometry of the effectively visible layers for one revision, in layer
 /// order. `None` entries mean "use the layer's own volume".
 #[derive(Debug)]
@@ -286,9 +321,9 @@ pub struct Document {
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
-    /// Per-tile meshes of the last [`Document::view_mesh`], so a drag
+    /// Per-tile meshes of the last [`Document::view_meshes`], so a drag
     /// re-meshes only the tiles it touched.
-    view_tiles: RefCell<TileMeshCache>,
+    view_cache: RefCell<ViewCache>,
 }
 
 impl Document {
@@ -334,7 +369,7 @@ impl Document {
             edits: 0,
             paste: None,
             geometry: RefCell::new(None),
-            view_tiles: RefCell::new(TileMeshCache::default()),
+            view_cache: RefCell::new(ViewCache::default()),
         }
     }
 
@@ -366,6 +401,14 @@ impl Document {
     /// clones, each clipped by its crop box. Groups contribute nothing; a
     /// hidden group hides its children. Cached per revision.
     pub fn with_visible_geometry<R>(&self, f: impl FnOnce(&[&VoxelVolume]) -> R) -> R {
+        self.with_visible_layers(|layers| {
+            let volumes: Vec<&VoxelVolume> = layers.iter().map(|(_, v)| *v).collect();
+            f(&volumes)
+        })
+    }
+
+    /// [`Document::with_visible_geometry`] with each volume's layer index.
+    fn with_visible_layers<R>(&self, f: impl FnOnce(&[(usize, &VoxelVolume)]) -> R) -> R {
         let mut cache = self.geometry.borrow_mut();
         if cache.as_ref().is_none_or(|c| c.revision != self.revision) {
             let layers = (0..self.data.layers.len())
@@ -382,16 +425,40 @@ impl Document {
                 layers,
             });
         }
-        let volumes: Vec<&VoxelVolume> = cache
+        let layers: Vec<(usize, &VoxelVolume)> = cache
             .as_ref()
             .map(|c| {
                 c.layers
                     .iter()
-                    .filter_map(|(i, v)| v.as_ref().or(self.data.layers.get(*i).map(|l| &l.volume)))
+                    .filter_map(|(i, v)| {
+                        let volume = v.as_ref().or(self.data.layers.get(*i).map(|l| &l.volume));
+                        volume.map(|v| (*i, v))
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        f(&volumes)
+        f(&layers)
+    }
+
+    /// Opacity a layer is drawn with: its own times every enclosing
+    /// group's. With `ghosts`, layers other than the active one are drawn at
+    /// most [`GHOST_ALPHA`].
+    pub fn view_alpha(&self, index: usize, ghosts: bool) -> f32 {
+        let mut alpha = 1.0;
+        let mut layer = self.data.layers.get(index);
+        for _ in 0..=rizxel_io::MAX_GROUP_DEPTH {
+            let Some(l) = layer else { break };
+            alpha *= l.props.opacity;
+            layer = l
+                .props
+                .parent
+                .and_then(|p| self.data.layer_index(p))
+                .and_then(|i| self.data.layers.get(i));
+        }
+        if ghosts && index != self.active_layer {
+            alpha = alpha.min(GHOST_ALPHA);
+        }
+        alpha.clamp(0.0, 1.0)
     }
 
     /// Greedy mesh of the visible layers, in model space.
@@ -414,33 +481,78 @@ impl Document {
         self.plane.slice_box(self.data.bounds)
     }
 
-    /// Viewport mesh: like [`Document::visible_mesh`] but clipped to
-    /// [`Document::view_clip`]. The mesher closes the cut, so the sliced
-    /// model shows a solid cut face. Incremental: only tiles that changed
-    /// since the previous call are re-meshed (same output as a full mesh).
+    /// Opaque viewport mesh: [`ViewMeshes::opaque`] without ghosts. Equals
+    /// [`Document::visible_mesh`] clipped to [`Document::view_clip`] while
+    /// every layer is fully opaque.
     pub fn view_mesh(&self) -> Mesh {
+        (*self.view_meshes(false).opaque).clone()
+    }
+
+    /// Viewport meshes clipped to [`Document::view_clip`]: fully opaque
+    /// layers merged into one mesh (later layers win), and one mesh per
+    /// translucent layer ([`Document::view_alpha`] below 1; fully
+    /// transparent layers are skipped). The mesher closes the cut, so the
+    /// sliced model shows a solid cut face. Incremental: only tiles that
+    /// changed since the previous call are re-meshed (same output as a full
+    /// mesh), and an opacity change alone re-meshes nothing.
+    pub fn view_meshes(&self, ghosts: bool) -> ViewMeshes {
         let clip = self.view_clip();
-        self.with_visible_geometry(|volumes| {
+        let clipped = |v: &VoxelVolume| match clip {
+            Some(c) => v.cropped(&c),
+            None => v.clone(),
+        };
+        self.with_visible_layers(|layers| {
             let palette = &self.data.palette;
-            let mut tiles = self.view_tiles.borrow_mut();
+            let mut cache = self.view_cache.borrow_mut();
+            let cache = &mut *cache;
+            let mut opaque = Vec::new();
+            let mut out = ViewMeshes::default();
+            let mut kept = Vec::new();
+            for &(index, volume) in layers {
+                let alpha = self.view_alpha(index, ghosts);
+                if alpha >= 1.0 {
+                    opaque.push(volume);
+                    continue;
+                }
+                let Some(layer) = self.data.layers.get(index).filter(|_| alpha > 0.0) else {
+                    continue;
+                };
+                let volume = clipped(volume);
+                let Some((lo, hi)) = volume.occupied_bounds() else {
+                    continue;
+                };
+                let tiles = cache.layers.entry(layer.id).or_default();
+                out.transparent.push(TransparentMesh {
+                    layer: layer.id,
+                    mesh: tiles.mesh_shared(&volume, palette),
+                    alpha,
+                    center: (lo + hi).as_vec3() * 0.5,
+                });
+                kept.push(layer.id);
+            }
+            cache.layers.retain(|id, _| kept.contains(id));
+
             let merged;
-            let volume = match (volumes, clip) {
-                ([], _) => return Mesh::default(),
-                ([single], None) => *single,
+            let volume = match (opaque.as_slice(), clip) {
+                ([], _) => None,
+                ([single], None) => Some(*single),
                 _ => {
-                    let mut out = VoxelVolume::new(self.data.bounds);
-                    for v in volumes {
+                    let mut all = VoxelVolume::new(self.data.bounds);
+                    for v in &opaque {
                         for (pos, value) in v.iter() {
                             if clip.is_none_or(|c| c.contains(pos)) {
-                                out.set(pos, value);
+                                all.set(pos, value);
                             }
                         }
                     }
-                    merged = out;
-                    &merged
+                    merged = all;
+                    Some(&merged)
                 }
             };
-            tiles.mesh(volume, palette)
+            if let Some(volume) = volume {
+                out.opaque = cache.opaque.mesh_shared(volume, palette);
+            }
+            out
         })
     }
 
@@ -2063,6 +2175,43 @@ mod tests {
         assert!(d.visible_mesh().is_empty());
         assert_eq!(d.visible_voxel_count(), 0);
         assert_eq!(d.occupied_bounds(), None);
+    }
+
+    #[test]
+    fn view_alpha_multiplies_groups_and_caps_ghosts() {
+        let mut d = Document::new("t");
+        d.set_voxels(0, [(IVec3::ZERO, 4)], false);
+        let group = d.add_group();
+        let g = d.data.layer_index(group).unwrap();
+        let set = |d: &mut Document, i: usize, f: &dyn Fn(&mut LayerProps)| {
+            let mut props = d.data.layers[i].props.clone();
+            f(&mut props);
+            assert!(d.set_layer_props(i, props, false));
+        };
+        set(&mut d, g, &|p| p.opacity = 0.5);
+        set(&mut d, 0, &|p| {
+            p.opacity = 0.5;
+            p.parent = Some(group);
+        });
+        assert_eq!(d.view_alpha(0, false), 0.25);
+        d.active_layer = 0;
+        assert_eq!(
+            d.view_alpha(0, true),
+            0.25,
+            "the active layer is not ghosted"
+        );
+        set(&mut d, 0, &|p| p.opacity = 1.0);
+        set(&mut d, g, &|p| p.opacity = 1.0);
+        assert_eq!(d.view_alpha(0, false), 1.0);
+        d.active_layer = g;
+        assert_eq!(d.view_alpha(0, true), GHOST_ALPHA);
+
+        // The translucent part matches meshing the layer alone.
+        set(&mut d, 0, &|p| p.opacity = 0.6);
+        let view = d.view_meshes(false);
+        assert!(view.opaque.is_empty());
+        assert_eq!(*view.transparent[0].mesh, d.visible_mesh());
+        assert_eq!(view.transparent[0].center, Vec3::splat(0.5));
     }
 
     #[test]

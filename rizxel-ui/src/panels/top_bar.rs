@@ -233,6 +233,10 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
             }
         }
     });
+    let ghosts = state.view.ghosts;
+    if menu_item(ui, check_glyph(ghosts), "Ghosts", "Shift+H", true) {
+        state.view.ghosts = !ghosts;
+    }
 }
 
 /// Leading glyph of a menu toggle.
@@ -797,6 +801,7 @@ fn shortcut_rows(ui: &mut Ui) {
         ("G", "Show or hide the floor grid"),
         ("Shift+G", "Show or hide the voxel grid on the model"),
         ("Shift+B", "Show or hide the model bounds"),
+        ("Shift+H", "Ghosts: other layers semi-transparent"),
         ("Right drag (viewport)", "Orbit camera"),
         ("Middle drag (viewport)", "Pan camera"),
         ("Middle double-click", "Reset camera"),

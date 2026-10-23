@@ -34,41 +34,107 @@ use crate::render::{GpuMesh, LineInstance, SceneFrame, ViewportCallback};
 use crate::theme;
 use crate::tool_input::{self, ToolInput};
 
+/// Viewport meshes of one document in world space.
+#[derive(Clone, Default)]
+pub struct DocMeshes {
+    /// Every fully opaque layer.
+    pub opaque: Arc<GpuMesh>,
+    /// Translucent (or ghosted) layers in layer order.
+    pub transparent: Vec<LayerMesh>,
+}
+
+/// One translucent layer.
+#[derive(Clone)]
+pub struct LayerMesh {
+    pub mesh: Arc<GpuMesh>,
+    pub alpha: f32,
+    /// World-space center of the layer's voxels (depth sorting).
+    pub center: Vec3,
+}
+
+/// What a document's meshes were built for: revision, slice clip, ghosts
+/// and (with ghosts) the active layer.
+type BuildKey = (u64, Option<VoxelBox>, bool, Option<usize>);
+
+/// A document's last build, with the source mesh behind each GPU mesh.
+struct CacheEntry {
+    key: BuildKey,
+    meshes: DocMeshes,
+    sources: Vec<(Arc<rizxel_app::Mesh>, Arc<GpuMesh>)>,
+}
+
 /// Viewport meshes per open document, rebuilt only when the document's
-/// revision changes (edits, undo/redo, load, visibility, palette, bounds)
-/// or its slice clip moves. Switching tabs therefore never re-meshes.
+/// revision changes (edits, undo/redo, load, visibility, opacity, palette,
+/// bounds), its slice clip moves or ghosts change. Switching tabs therefore
+/// never re-meshes, and parts the document did not re-mesh (e.g. after an
+/// opacity change) keep their GPU mesh.
 #[derive(Default)]
 pub struct MeshCache {
-    /// Per document: `(revision, slice clip, mesh)` the mesh was built for.
-    entries: HashMap<u64, (u64, Option<VoxelBox>, Arc<GpuMesh>)>,
+    entries: HashMap<u64, CacheEntry>,
     /// Source of unique [`GpuMesh::key`]s. The renderer re-uploads only
-    /// when the key changes, so every rebuild needs a fresh one: a moved
+    /// when the key changes, so every new mesh needs a fresh one: a moved
     /// slice plane changes the mesh without changing the revision.
     next_build: u64,
 }
 
 impl MeshCache {
-    /// Mesh of `doc`'s visible (slice-clipped) layers in world space.
-    pub fn get(&mut self, doc: &Document) -> Arc<GpuMesh> {
-        let revision = doc.revision();
-        let clip = doc.view_clip();
-        match self.entries.get(&doc.id()) {
-            Some((r, c, m)) if *r == revision && *c == clip => m.clone(),
-            _ => {
-                self.next_build += 1;
-                let key = (doc.id(), self.next_build);
-                let (bmin, _) = bounds_box(doc.data.bounds);
-                let mesh = Arc::new(GpuMesh::from_mesh(key, &doc.view_mesh(), bmin));
-                log::debug!(
-                    "meshed {} rev {revision}: {} triangles",
-                    doc.title(),
-                    mesh.triangle_count()
-                );
-                self.entries
-                    .insert(doc.id(), (revision, clip, mesh.clone()));
-                mesh
-            }
+    /// Meshes of `doc`'s visible (slice-clipped) layers in world space.
+    pub fn get(&mut self, doc: &Document, ghosts: bool) -> DocMeshes {
+        let key = (
+            doc.revision(),
+            doc.view_clip(),
+            ghosts,
+            ghosts.then_some(doc.active_layer),
+        );
+        if let Some(entry) = self.entries.get(&doc.id()).filter(|e| e.key == key) {
+            return entry.meshes.clone();
         }
+        let old = self.entries.remove(&doc.id());
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        let view = doc.view_meshes(ghosts);
+        let mut sources = Vec::new();
+        let mut gpu = |mesh: &Arc<rizxel_app::Mesh>| {
+            let reused = old.as_ref().and_then(|e| {
+                e.sources
+                    .iter()
+                    .find(|(m, _)| Arc::ptr_eq(m, mesh))
+                    .map(|(_, g)| g.clone())
+            });
+            let g = reused.unwrap_or_else(|| {
+                self.next_build += 1;
+                Arc::new(GpuMesh::from_mesh((doc.id(), self.next_build), mesh, bmin))
+            });
+            sources.push((mesh.clone(), g.clone()));
+            g
+        };
+        let meshes = DocMeshes {
+            opaque: gpu(&view.opaque),
+            transparent: view
+                .transparent
+                .iter()
+                .map(|t| LayerMesh {
+                    mesh: gpu(&t.mesh),
+                    alpha: t.alpha,
+                    center: t.center + bmin,
+                })
+                .collect(),
+        };
+        log::debug!(
+            "meshed {} rev {}: {} opaque triangles, {} translucent layers",
+            doc.title(),
+            doc.revision(),
+            meshes.opaque.triangle_count(),
+            meshes.transparent.len()
+        );
+        self.entries.insert(
+            doc.id(),
+            CacheEntry {
+                key,
+                meshes: meshes.clone(),
+                sources,
+            },
+        );
+        meshes
     }
 
     /// Drops meshes of documents that are no longer open.
@@ -225,7 +291,8 @@ pub fn show(
     }
     let slider = slice_slider(ui, state, rect);
 
-    let voxels = state.doc().map(|d| meshes.get(d));
+    let ghosts = state.view.ghosts;
+    let voxels = state.doc().map(|d| meshes.get(d, ghosts));
     // Box around the visible voxels, in world space, when it is smaller than
     // the bounds (shows how much of the editable volume the model uses).
     let occupied = state
@@ -258,7 +325,7 @@ pub fn show(
         state,
     );
     // Tool edits may have changed the document this frame.
-    let voxels = state.doc().map(|d| meshes.get(d)).or(voxels);
+    let voxels = state.doc().map(|d| meshes.get(d, ghosts)).or(voxels);
 
     // --- Scene (wgpu) -------------------------------------------------------
     let mut frame = scene_frame(state, &proj, target, bmin, bmax, ppp);
@@ -272,7 +339,10 @@ pub fn show(
                 .map(|(a, b)| LineInstance::new(a, b, color, ppp)),
         );
     }
-    frame.voxels = voxels;
+    if let Some(meshes) = voxels {
+        frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
+        frame.voxels = Some(meshes.opaque);
+    }
     match target_format {
         Some(format) => {
             let size_px = [
@@ -315,6 +385,19 @@ pub fn show(
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
+}
+
+/// Translucent layers ordered farthest first by the depth of their box
+/// center along the view direction. No per-triangle sort: voxel layers
+/// rarely interpenetrate.
+fn sorted_back_to_front(proj: &Projection, layers: &[LayerMesh]) -> Vec<(Arc<GpuMesh>, f32)> {
+    let depth = |l: &LayerMesh| (l.center - proj.eye).dot(proj.forward);
+    let mut sorted: Vec<&LayerMesh> = layers.iter().collect();
+    sorted.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
+    sorted
+        .into_iter()
+        .map(|l| (l.mesh.clone(), l.alpha))
+        .collect()
 }
 
 /// Width of the slice slider, in logical points.
@@ -482,6 +565,7 @@ fn scene_frame(
         lines,
         fills: Vec::new(),
         voxels: None,
+        translucent: Vec::new(),
     }
 }
 
@@ -932,6 +1016,7 @@ fn paint_axis_gizmo(painter: &egui::Painter, camera: &OrbitCamera, center: Pos2)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rizxel_app::LayerProps;
 
     #[test]
     fn front_view_looks_down_negative_z() {
@@ -1048,12 +1133,15 @@ mod tests {
     fn mesh_cache_rebuilds_only_on_new_revision() {
         let mut doc = Document::new("t");
         let mut cache = MeshCache::default();
-        let a = cache.get(&doc);
+        let a = cache.get(&doc, false).opaque;
         assert!(a.indices.is_empty());
-        assert!(Arc::ptr_eq(&a, &cache.get(&doc)), "same revision is cached");
+        assert!(
+            Arc::ptr_eq(&a, &cache.get(&doc, false).opaque),
+            "same revision is cached"
+        );
 
         doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
-        let b = cache.get(&doc);
+        let b = cache.get(&doc, false).opaque;
         assert_eq!(b.triangle_count(), 12);
         // Voxel (0,0,0) sits at the bounds' min corner in world space.
         let (bmin, _) = bounds_box(doc.data.bounds);
@@ -1067,18 +1155,25 @@ mod tests {
     #[test]
     fn moving_the_slice_plane_gives_a_new_upload_key() {
         // Four voxels along X; slide the plane through them, then untick
-        // Slice. Every step must produce a mesh with a fresh key (the GPU
-        // re-uploads on key change only) and the right extent.
+        // Slice. Every step that changes the mesh must give it a fresh key
+        // (the GPU re-uploads on key change only) and the right extent; the
+        // plane at x = 4 shows the whole model, so that mesh keeps its key.
         let mut doc = Document::new("t");
         doc.set_voxels(0, (0..4).map(|x| (IVec3::new(x, 0, 0), 5)), false);
         let mut cache = MeshCache::default();
-        let mut keys = vec![cache.get(&doc).key];
+        let mut keys = vec![cache.get(&doc, false).opaque.key];
         doc.plane.axis = 0;
         doc.plane.slice = true;
+        doc.plane.coord = 4;
+        assert_eq!(
+            cache.get(&doc, false).opaque.key,
+            keys[0],
+            "same mesh, same key"
+        );
         let (bmin, _) = bounds_box(doc.data.bounds);
-        for coord in (1..=4).rev() {
+        for coord in (1..=3).rev() {
             doc.plane.coord = coord;
-            let mesh = cache.get(&doc);
+            let mesh = cache.get(&doc, false).opaque;
             let max_x = mesh
                 .vertices
                 .iter()
@@ -1090,7 +1185,7 @@ mod tests {
             keys.push(mesh.key);
         }
         doc.plane.slice = false;
-        let full = cache.get(&doc);
+        let full = cache.get(&doc, false).opaque;
         let max_x = full
             .vertices
             .iter()
@@ -1100,6 +1195,90 @@ mod tests {
         keys.push(full.key);
         let unique: std::collections::HashSet<_> = keys.iter().collect();
         assert_eq!(unique.len(), keys.len());
+    }
+
+    #[test]
+    fn opacity_changes_keep_the_uploaded_meshes() {
+        // Two layers; making the top one translucent moves it into its own
+        // mesh. Further opacity changes only change the alpha.
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
+        doc.add_layer();
+        doc.set_voxels(1, [(IVec3::new(3, 0, 0), 6)], false);
+        let mut cache = MeshCache::default();
+        let all = cache.get(&doc, false);
+        assert_eq!(all.opaque.triangle_count(), 24);
+        assert!(all.transparent.is_empty());
+
+        let set_opacity = |doc: &mut Document, opacity: f32| {
+            let props = LayerProps {
+                opacity,
+                ..doc.data.layers[1].props.clone()
+            };
+            assert!(doc.set_layer_props(1, props, false));
+        };
+        set_opacity(&mut doc, 0.5);
+        let half = cache.get(&doc, false);
+        assert_eq!(half.opaque.triangle_count(), 12);
+        assert_eq!(half.transparent.len(), 1);
+        assert_eq!(half.transparent[0].alpha, 0.5);
+        assert_eq!(half.transparent[0].mesh.triangle_count(), 12);
+
+        set_opacity(&mut doc, 0.3);
+        let less = cache.get(&doc, false);
+        assert_eq!(less.transparent[0].alpha, 0.3);
+        assert!(Arc::ptr_eq(&less.opaque, &half.opaque), "no re-mesh");
+        assert!(Arc::ptr_eq(
+            &less.transparent[0].mesh,
+            &half.transparent[0].mesh
+        ));
+
+        // Fully transparent layers are not drawn at all.
+        set_opacity(&mut doc, 0.0);
+        assert!(cache.get(&doc, false).transparent.is_empty());
+    }
+
+    #[test]
+    fn ghosts_dim_every_layer_but_the_active_one() {
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
+        doc.add_layer();
+        doc.set_voxels(1, [(IVec3::new(3, 0, 0), 6)], false);
+        doc.active_layer = 1;
+        let mut cache = MeshCache::default();
+        let ghosted = cache.get(&doc, true);
+        assert_eq!(ghosted.opaque.triangle_count(), 12);
+        assert_eq!(ghosted.transparent.len(), 1);
+        assert_eq!(ghosted.transparent[0].alpha, rizxel_app::GHOST_ALPHA);
+        // Switching the active layer swaps them without an edit.
+        doc.active_layer = 0;
+        let swapped = cache.get(&doc, true);
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        assert_eq!(
+            swapped.transparent[0].center,
+            bmin + Vec3::new(3.5, 0.5, 0.5)
+        );
+        assert!(cache.get(&doc, false).transparent.is_empty());
+    }
+
+    #[test]
+    fn translucent_layers_sort_back_to_front() {
+        let rect = test_rect();
+        let mut cam = OrbitCamera::default();
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        let proj = Projection::new(&cam, Vec3::ZERO, rect);
+        let layer = |z: f32, key: u64| LayerMesh {
+            mesh: Arc::new(GpuMesh {
+                key: (0, key),
+                ..GpuMesh::default()
+            }),
+            alpha: 0.5,
+            center: Vec3::new(0.0, 0.0, z),
+        };
+        // The camera looks down -Z: lower z is farther away.
+        let sorted = sorted_back_to_front(&proj, &[layer(5.0, 1), layer(-5.0, 2), layer(0.0, 3)]);
+        let keys: Vec<u64> = sorted.iter().map(|(m, _)| m.key.1).collect();
+        assert_eq!(keys, [2, 3, 1]);
     }
 
     #[test]

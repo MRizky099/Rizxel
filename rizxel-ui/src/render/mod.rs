@@ -19,6 +19,7 @@
 //! GPU resources live in egui-wgpu's `CallbackResources`; each frame the UI
 //! submits a [`SceneFrame`] describing what to draw.
 
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
@@ -174,6 +175,8 @@ pub struct SceneFrame {
     pub fills: Vec<FillVertex>,
     /// Opaque voxel mesh in world space (`None` = nothing to draw).
     pub voxels: Option<Arc<GpuMesh>>,
+    /// Translucent layer meshes with their alpha, farthest first.
+    pub translucent: Vec<(Arc<GpuMesh>, f32)>,
 }
 
 impl SceneFrame {
@@ -283,6 +286,64 @@ struct Targets {
     blit_bind_group: wgpu::BindGroup,
 }
 
+/// Vertex and index buffers of one uploaded voxel mesh.
+struct MeshSlot {
+    vertices: DynBuffer,
+    indices: DynBuffer,
+    /// Key of the mesh in the buffers (`None` = empty).
+    key: Option<(u64, u64)>,
+    index_count: u32,
+}
+
+impl MeshSlot {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            vertices: DynBuffer::new(
+                device,
+                "rizxel_voxel_vertices",
+                std::mem::size_of::<VoxelVertex>() as u64,
+            ),
+            indices: DynBuffer::with_usage(
+                device,
+                "rizxel_voxel_indices",
+                std::mem::size_of::<u32>() as u64,
+                wgpu::BufferUsages::INDEX,
+            ),
+            key: None,
+            index_count: 0,
+        }
+    }
+
+    /// Uploads `mesh` when its key differs from the one in the buffers.
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mesh: Option<&GpuMesh>) {
+        let Some(mesh) = mesh.filter(|m| !m.indices.is_empty()) else {
+            self.key = None;
+            self.index_count = 0;
+            return;
+        };
+        if self.key == Some(mesh.key) {
+            return;
+        }
+        self.vertices
+            .upload(device, queue, bytemuck::cast_slice(&mesh.vertices));
+        self.indices
+            .upload(device, queue, bytemuck::cast_slice(&mesh.indices));
+        self.key = Some(mesh.key);
+        self.index_count = mesh.indices.len() as u32;
+    }
+
+    /// Draws the mesh as instance `instance` (the translucent pass reads its
+    /// alpha from the instance buffer).
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32) {
+        if self.index_count == 0 {
+            return;
+        }
+        pass.set_vertex_buffer(0, self.vertices.buffer.slice(..));
+        pass.set_index_buffer(self.indices.buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, instance..instance + 1);
+    }
+}
+
 /// Persistent GPU state, stored in egui-wgpu's `CallbackResources`.
 pub struct ViewportRenderer {
     uniform_buffer: wgpu::Buffer,
@@ -293,19 +354,23 @@ pub struct ViewportRenderer {
     line_pipeline: wgpu::RenderPipeline,
     fill_pipeline: wgpu::RenderPipeline,
     voxel_pipeline: wgpu::RenderPipeline,
+    /// Translucent layers: alpha blended, depth tested, no depth write.
+    translucent_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     lines: DynBuffer,
     fills: DynBuffer,
-    voxel_vertices: DynBuffer,
-    voxel_indices: DynBuffer,
+    opaque: MeshSlot,
+    /// Translucent layer meshes by key.
+    translucent: HashMap<(u64, u64), MeshSlot>,
+    /// Keys of this frame's translucent meshes, farthest first.
+    translucent_order: Vec<(u64, u64)>,
+    /// One alpha per translucent draw (instance-rate vertex buffer).
+    alphas: DynBuffer,
     targets: Option<Targets>,
     line_count: u32,
     fill_count: u32,
-    /// Key of the mesh currently in the voxel buffers.
-    voxel_key: Option<(u64, u64)>,
-    voxel_index_count: u32,
 }
 
 impl ViewportRenderer {
@@ -485,6 +550,17 @@ impl ViewportRenderer {
         let voxel_attrs = wgpu::vertex_attr_array![
             0 => Float32x3, 1 => Float32x3, 2 => Float32x4
         ];
+        let voxel_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VoxelVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &voxel_attrs,
+        };
+        // The mesher emits CCW quads seen from outside: cull the backs.
+        let voxel_primitive = wgpu::PrimitiveState {
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        };
         let voxel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("rizxel_voxels"),
             layout: Some(&scene_pipeline_layout),
@@ -492,18 +568,9 @@ impl ViewportRenderer {
                 module: &scene_shader,
                 entry_point: Some("vs_voxel"),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<VoxelVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &voxel_attrs,
-                })],
+                buffers: &[Some(voxel_layout.clone())],
             },
-            // The mesher emits CCW quads seen from outside: cull the backs.
-            primitive: wgpu::PrimitiveState {
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
+            primitive: voxel_primitive,
             depth_stencil: depth(true, wgpu::CompareFunction::Less),
             multisample: msaa,
             fragment: Some(wgpu::FragmentState {
@@ -511,6 +578,35 @@ impl ViewportRenderer {
                 entry_point: Some("fs_voxel"),
                 compilation_options: Default::default(),
                 targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let alpha_attrs = wgpu::vertex_attr_array![7 => Float32];
+        let translucent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rizxel_voxels_translucent"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_voxel_translucent"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(voxel_layout),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<f32>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &alpha_attrs,
+                    }),
+                ],
+            },
+            primitive: voxel_primitive,
+            depth_stencil: depth(false, wgpu::CompareFunction::Less),
+            multisample: msaa,
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_voxel_translucent"),
+                compilation_options: Default::default(),
+                targets: &alpha,
             }),
             multiview_mask: None,
             cache: None,
@@ -579,6 +675,7 @@ impl ViewportRenderer {
             line_pipeline,
             fill_pipeline,
             voxel_pipeline,
+            translucent_pipeline,
             blit_pipeline,
             blit_layout,
             sampler,
@@ -592,46 +689,38 @@ impl ViewportRenderer {
                 "rizxel_fills",
                 std::mem::size_of::<FillVertex>() as u64,
             ),
-            voxel_vertices: DynBuffer::new(
-                device,
-                "rizxel_voxel_vertices",
-                std::mem::size_of::<VoxelVertex>() as u64,
-            ),
-            voxel_indices: DynBuffer::with_usage(
-                device,
-                "rizxel_voxel_indices",
-                std::mem::size_of::<u32>() as u64,
-                wgpu::BufferUsages::INDEX,
-            ),
+            opaque: MeshSlot::new(device),
+            translucent: HashMap::new(),
+            translucent_order: Vec::new(),
+            alphas: DynBuffer::new(device, "rizxel_alphas", std::mem::size_of::<f32>() as u64),
             targets: None,
             line_count: 0,
             fill_count: 0,
-            voxel_key: None,
-            voxel_index_count: 0,
         }
     }
 
-    /// Uploads the voxel mesh when its key differs from the one on the GPU.
-    fn upload_voxels(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        mesh: Option<&GpuMesh>,
-    ) {
-        let Some(mesh) = mesh.filter(|m| !m.indices.is_empty()) else {
-            self.voxel_key = None;
-            self.voxel_index_count = 0;
-            return;
-        };
-        if self.voxel_key == Some(mesh.key) {
-            return;
+    /// Uploads the frame's voxel meshes whose keys are not on the GPU yet and
+    /// frees the slots of meshes no longer drawn. Translucent slots are kept
+    /// by key, so re-sorting them never re-uploads.
+    fn upload_voxels(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &SceneFrame) {
+        self.opaque.upload(device, queue, frame.voxels.as_deref());
+        self.translucent
+            .retain(|key, _| frame.translucent.iter().any(|(m, _)| m.key == *key));
+        self.translucent_order.clear();
+        let mut alphas = Vec::new();
+        for (mesh, alpha) in &frame.translucent {
+            if mesh.indices.is_empty() {
+                continue;
+            }
+            self.translucent
+                .entry(mesh.key)
+                .or_insert_with(|| MeshSlot::new(device))
+                .upload(device, queue, Some(mesh));
+            self.translucent_order.push(mesh.key);
+            alphas.push(*alpha);
         }
-        self.voxel_vertices
-            .upload(device, queue, bytemuck::cast_slice(&mesh.vertices));
-        self.voxel_indices
-            .upload(device, queue, bytemuck::cast_slice(&mesh.indices));
-        self.voxel_key = Some(mesh.key);
-        self.voxel_index_count = mesh.indices.len() as u32;
+        self.alphas
+            .upload(device, queue, bytemuck::cast_slice(&alphas));
     }
 
     /// (Re)creates the offscreen targets when the viewport size changes.
@@ -726,7 +815,7 @@ impl ViewportRenderer {
             .upload(device, queue, bytemuck::cast_slice(&frame.fills));
         self.line_count = frame.lines.len() as u32;
         self.fill_count = frame.fills.len() as u32;
-        self.upload_voxels(device, queue, frame.voxels.as_deref());
+        self.upload_voxels(device, queue, frame);
 
         let Some(targets) = &self.targets else {
             return;
@@ -767,14 +856,20 @@ impl ViewportRenderer {
 
         // Voxels after the grid so the depth test orders them against the
         // ground; overlays after the voxels so voxels hide what is behind them.
-        if self.voxel_index_count > 0 {
+        if self.opaque.index_count > 0 {
             pass.set_pipeline(&self.voxel_pipeline);
-            pass.set_vertex_buffer(0, self.voxel_vertices.buffer.slice(..));
-            pass.set_index_buffer(
-                self.voxel_indices.buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-            pass.draw_indexed(0..self.voxel_index_count, 0, 0..1);
+            self.opaque.draw(&mut pass, 0);
+        }
+        // Translucent layers after every opaque one, farthest first; each
+        // draw is one instance whose alpha comes from the instance buffer.
+        if !self.translucent_order.is_empty() {
+            pass.set_pipeline(&self.translucent_pipeline);
+            pass.set_vertex_buffer(1, self.alphas.buffer.slice(..));
+            for (i, key) in self.translucent_order.iter().enumerate() {
+                if let Some(slot) = self.translucent.get(key) {
+                    slot.draw(&mut pass, i as u32);
+                }
+            }
         }
         if frame.floor_grid && eye_below_ground(frame.eye) {
             pass.set_pipeline(&self.grid_under_pipeline);
@@ -976,6 +1071,7 @@ mod tests {
             lines: Vec::new(),
             fills: Vec::new(),
             voxels: None,
+            translucent: Vec::new(),
         };
         let u = frame.uniform([100, 100]);
         assert_eq!(u.options[..2], [1.0, 0.0]);

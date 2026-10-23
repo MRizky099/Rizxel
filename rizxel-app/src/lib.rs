@@ -31,6 +31,7 @@ pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
     DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
+    TransparentMesh, ViewMeshes, GHOST_ALPHA,
 };
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
@@ -491,6 +492,8 @@ pub struct ViewOptions {
     /// The bounds wireframe, the occupied-region box and the slice frame
     /// (`Shift+B`). The slice frame's drag handle works either way.
     pub model_bounds: bool,
+    /// Layers other than the active one drawn at [`GHOST_ALPHA`].
+    pub ghosts: bool,
 }
 
 impl Default for ViewOptions {
@@ -500,6 +503,7 @@ impl Default for ViewOptions {
             floor_grid: true,
             voxel_grid: false,
             model_bounds: true,
+            ghosts: false,
         }
     }
 }
