@@ -103,6 +103,48 @@ pub struct VoxelVertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub color: [f32; 4],
+    /// Index into the material table (see [`MaterialTable`]).
+    pub material: u32,
+}
+
+/// Number of entries in the material table: slot 0 is the default
+/// material, slot `n` the document's material `n - 1`.
+pub const MATERIAL_SLOTS: usize = rizxel_app::MAX_MATERIAL_SLOT + 1;
+
+/// One material table entry. Layout must match `Material` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct GpuMaterial {
+    /// RGBA multiplier of the palette color.
+    pub tint: [f32; 4],
+    /// rgb = emission, a unused.
+    pub emission: [f32; 4],
+    /// x = metallic, y = roughness.
+    pub params: [f32; 4],
+}
+
+impl GpuMaterial {
+    pub fn new(m: &rizxel_math::Material) -> Self {
+        Self {
+            tint: m.tint,
+            emission: [m.emission[0], m.emission[1], m.emission[2], 0.0],
+            params: [m.metallic, m.roughness, 0.0, 0.0],
+        }
+    }
+}
+
+/// The renderer's material table for a document's materials.
+pub type MaterialTable = [GpuMaterial; MATERIAL_SLOTS];
+
+/// Material table: the default material, then `materials` (extra ones
+/// beyond the last slot are dropped, matching [`rizxel_app::Document::material_slot`]).
+pub fn material_table(materials: &[rizxel_math::Material]) -> Box<MaterialTable> {
+    let default = GpuMaterial::new(&rizxel_math::Material::default());
+    let mut table = Box::new([default; MATERIAL_SLOTS]);
+    for (slot, m) in table[1..].iter_mut().zip(materials) {
+        *slot = GpuMaterial::new(m);
+    }
+    table
 }
 
 /// Voxel mesh ready for upload, identified by `key` so the renderer uploads
@@ -128,6 +170,7 @@ impl GpuMesh {
                     pos: (*p + offset).to_array(),
                     normal: n.to_array(),
                     color: [c.r, c.g, c.b, c.a].map(|v| v as f32 / 255.0),
+                    material: mesh.materials.get(i).copied().unwrap_or(0) as u32,
                 }
             })
             .collect();
@@ -177,6 +220,8 @@ pub struct SceneFrame {
     pub voxels: Option<Arc<GpuMesh>>,
     /// Translucent layer meshes with their alpha, farthest first.
     pub translucent: Vec<(Arc<GpuMesh>, f32)>,
+    /// The document's materials (Render mode).
+    pub materials: Vec<rizxel_math::Material>,
 }
 
 impl SceneFrame {
@@ -347,6 +392,9 @@ impl MeshSlot {
 /// Persistent GPU state, stored in egui-wgpu's `CallbackResources`.
 pub struct ViewportRenderer {
     uniform_buffer: wgpu::Buffer,
+    material_buffer: wgpu::Buffer,
+    /// Material table on the GPU (re-uploaded only when it changes).
+    materials: Option<Box<MaterialTable>>,
     scene_bind_group: wgpu::BindGroup,
     grid_pipeline: wgpu::RenderPipeline,
     /// Grid lines over the voxels when the eye is below the ground.
@@ -395,26 +443,43 @@ impl ViewportRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let material_size = std::mem::size_of::<MaterialTable>() as u64;
+        let material_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rizxel_materials"),
+            size: material_size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniform_entry = |binding, size| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(size),
+            },
+            count: None,
+        };
         let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rizxel_scene_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(uniform_size),
-                },
-                count: None,
-            }],
+            entries: &[
+                uniform_entry(0, uniform_size),
+                uniform_entry(1, material_size),
+            ],
         });
         let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rizxel_scene"),
             layout: &scene_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: material_buffer.as_entire_binding(),
+                },
+            ],
         });
         let scene_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -548,7 +613,7 @@ impl ViewportRenderer {
         });
 
         let voxel_attrs = wgpu::vertex_attr_array![
-            0 => Float32x3, 1 => Float32x3, 2 => Float32x4
+            0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Uint32
         ];
         let voxel_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<VoxelVertex>() as u64,
@@ -669,6 +734,8 @@ impl ViewportRenderer {
 
         Self {
             uniform_buffer,
+            material_buffer,
+            materials: None,
             scene_bind_group,
             grid_pipeline,
             grid_under_pipeline,
@@ -816,6 +883,11 @@ impl ViewportRenderer {
         self.line_count = frame.lines.len() as u32;
         self.fill_count = frame.fills.len() as u32;
         self.upload_voxels(device, queue, frame);
+        let table = material_table(&frame.materials);
+        if self.materials.as_ref() != Some(&table) {
+            queue.write_buffer(&self.material_buffer, 0, bytemuck::cast_slice(&table[..]));
+            self.materials = Some(table);
+        }
 
         let Some(targets) = &self.targets else {
             return;
@@ -948,8 +1020,10 @@ mod tests {
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
-        // vec3 + vec3 + vec4.
-        assert_eq!(std::mem::size_of::<VoxelVertex>(), 40);
+        // vec3 + vec3 + vec4 + u32.
+        assert_eq!(std::mem::size_of::<VoxelVertex>(), 44);
+        // 3 vec4 per material, 256 slots.
+        assert_eq!(std::mem::size_of::<MaterialTable>(), 48 * 256);
     }
 
     #[test]
@@ -1072,6 +1146,7 @@ mod tests {
             fills: Vec::new(),
             voxels: None,
             translucent: Vec::new(),
+            materials: Vec::new(),
         };
         let u = frame.uniform([100, 100]);
         assert_eq!(u.options[..2], [1.0, 0.0]);
@@ -1092,6 +1167,26 @@ mod tests {
             [4.0, 5.0, 6.0],
             "ortho fades around the target"
         );
+    }
+
+    #[test]
+    fn material_table_puts_the_default_first() {
+        let glow = rizxel_math::Material {
+            emission: [0.2, 0.8, 1.0],
+            ..rizxel_math::Material::new("Neon")
+        };
+        let table = material_table(std::slice::from_ref(&glow));
+        assert_eq!(
+            table[0],
+            GpuMaterial::new(&rizxel_math::Material::default())
+        );
+        assert_eq!(table[1].emission, [0.2, 0.8, 1.0, 0.0]);
+        assert_eq!(table[2], table[0], "unused slots hold the default");
+        // Vertices carry the slot.
+        let mut mesh = Mesh::unit_cube(rizxel_math::Rgba8::WHITE);
+        mesh.materials = vec![1; 8];
+        let gpu = GpuMesh::from_mesh((0, 0), &mesh, Vec3::ZERO);
+        assert!(gpu.vertices.iter().all(|v| v.material == 1));
     }
 
     #[test]

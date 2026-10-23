@@ -9,7 +9,8 @@ use std::sync::Arc;
 use glam::{IVec3, Vec3};
 use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
 use rizxel_engine::{
-    greedy_mesh, rasterize_shape, MaskMode, Mesh, SliceRequest, TileMeshCache, WorkPlane,
+    greedy_mesh, rasterize_shape, MaskMode, MaterialSlots, Mesh, MeshParams, SliceRequest,
+    TileMeshCache, WorkPlane,
 };
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
@@ -254,6 +255,10 @@ enum Derived {
     Owned(VoxelVolume),
 }
 
+/// Highest material slot ([`Document::material_slot`]); slot 0 is the
+/// default material.
+pub const MAX_MATERIAL_SLOT: usize = 255;
+
 /// Alpha of the layers drawn as ghosts (*View ▸ Ghosts*).
 pub const GHOST_ALPHA: f32 = 0.25;
 
@@ -455,10 +460,32 @@ impl Document {
                 .and_then(|p| self.data.layer_index(p))
                 .and_then(|i| self.data.layers.get(i));
         }
+        // The material tint's alpha is the material opacity.
+        if let Some(m) = self.layer_material(index) {
+            alpha *= m.tint[3];
+        }
         if ghosts && index != self.active_layer {
             alpha = alpha.min(GHOST_ALPHA);
         }
         alpha.clamp(0.0, 1.0)
+    }
+
+    /// The material a layer uses (`None` = the default material).
+    pub fn layer_material(&self, index: usize) -> Option<&Material> {
+        let m = self.data.layers.get(index)?.props.material?;
+        self.data.materials.get(m as usize)
+    }
+
+    /// Material slot of a layer for the mesher and the renderer's material
+    /// table: 0 = default, `m + 1` = material `m`. The table has 256 slots,
+    /// so the 256th material shares the last one (see [`MAX_MATERIAL_SLOT`]).
+    pub fn material_slot(&self, index: usize) -> u8 {
+        self.data
+            .layers
+            .get(index)
+            .and_then(|l| l.props.material)
+            .filter(|&m| (m as usize) < self.data.materials.len())
+            .map_or(0, |m| (m + 1).min(MAX_MATERIAL_SLOT as u32) as u8)
     }
 
     /// Greedy mesh of the visible layers, in model space.
@@ -511,7 +538,7 @@ impl Document {
             for &(index, volume) in layers {
                 let alpha = self.view_alpha(index, ghosts);
                 if alpha >= 1.0 {
-                    opaque.push(volume);
+                    opaque.push((volume, self.material_slot(index)));
                     continue;
                 }
                 let Some(layer) = self.data.layers.get(index).filter(|_| alpha > 0.0) else {
@@ -522,9 +549,10 @@ impl Document {
                     continue;
                 };
                 let tiles = cache.layers.entry(layer.id).or_default();
+                let slots = MaterialSlots::Uniform(self.material_slot(index));
                 out.transparent.push(TransparentMesh {
                     layer: layer.id,
-                    mesh: tiles.mesh_shared(&volume, palette),
+                    mesh: tiles.mesh_shared(&volume, &MeshParams::new(palette).slots(slots)),
                     alpha,
                     center: (lo + hi).as_vec3() * 0.5,
                 });
@@ -532,25 +560,38 @@ impl Document {
             }
             cache.layers.retain(|id, _| kept.contains(id));
 
-            let merged;
-            let volume = match (opaque.as_slice(), clip) {
-                ([], _) => None,
-                ([single], None) => Some(*single),
+            // Later layers win, for the palette index and for the material.
+            let (merged, merged_slots);
+            let (volume, slots) = match (opaque.as_slice(), clip) {
+                ([], _) => (None, MaterialSlots::Uniform(0)),
+                ([(single, slot)], None) => (Some(*single), MaterialSlots::Uniform(*slot)),
                 _ => {
                     let mut all = VoxelVolume::new(self.data.bounds);
-                    for v in &opaque {
+                    let per_voxel = opaque.iter().any(|(_, s)| *s != opaque[0].1);
+                    let mut slots = VoxelVolume::new(self.data.bounds);
+                    for (v, slot) in &opaque {
                         for (pos, value) in v.iter() {
                             if clip.is_none_or(|c| c.contains(pos)) {
                                 all.set(pos, value);
+                                if per_voxel {
+                                    slots.set(pos, *slot);
+                                }
                             }
                         }
                     }
                     merged = all;
-                    Some(&merged)
+                    merged_slots = slots;
+                    let slots = if per_voxel {
+                        MaterialSlots::PerVoxel(&merged_slots)
+                    } else {
+                        MaterialSlots::Uniform(opaque[0].1)
+                    };
+                    (Some(&merged), slots)
                 }
             };
             if let Some(volume) = volume {
-                out.opaque = cache.opaque.mesh_shared(volume, palette);
+                let params = MeshParams::new(palette).slots(slots);
+                out.opaque = cache.opaque.mesh_shared(volume, &params);
             }
             out
         })
@@ -1532,6 +1573,40 @@ impl Document {
         true
     }
 
+    /// Replaces material `index` (`merge` folds slider drags into one undo
+    /// step). Refused for a missing index or invalid channels.
+    pub fn set_material(&mut self, index: usize, material: Material, merge: bool) -> bool {
+        if self.data.materials.get(index) == Some(&material) || !material.is_valid() {
+            return false;
+        }
+        let Some(_) = self.data.materials.get(index) else {
+            return false;
+        };
+        let mut new = self.data.materials.clone();
+        new[index] = material;
+        self.apply(
+            Edit::SetMaterials {
+                old: self.data.materials.clone(),
+                new,
+            },
+            merge,
+        );
+        true
+    }
+
+    /// Appends a default material named after its number and returns its
+    /// index (`None` when the list is full).
+    pub fn add_material(&mut self) -> Option<u32> {
+        if self.data.materials.len() >= rizxel_io::MAX_MATERIALS {
+            return None;
+        }
+        let index = self.data.materials.len();
+        let mut new = self.data.materials.clone();
+        new.push(Material::new(format!("Material {}", index + 1)));
+        self.set_materials(new);
+        Some(index as u32)
+    }
+
     /// The active layer can be deleted unless it is the last layer or linked
     /// clones still point at it.
     pub fn can_delete_active_layer(&self) -> bool {
@@ -2212,6 +2287,48 @@ mod tests {
         assert!(view.opaque.is_empty());
         assert_eq!(*view.transparent[0].mesh, d.visible_mesh());
         assert_eq!(view.transparent[0].center, Vec3::splat(0.5));
+    }
+
+    #[test]
+    fn opaque_layers_carry_their_material_slots() {
+        let mut d = Document::new("t");
+        d.set_voxels(0, [(IVec3::ZERO, 4), (IVec3::X, 4)], false);
+        assert_eq!(d.add_material(), Some(0));
+        let glow = Material {
+            emission: [1.0, 0.5, 0.0],
+            ..d.data.materials[0].clone()
+        };
+        assert!(d.set_material(0, glow.clone(), false));
+        assert_eq!(d.data.materials[0], glow);
+        let props = LayerProps {
+            material: Some(0),
+            ..d.data.layers[0].props.clone()
+        };
+        assert!(d.set_layer_props(0, props, false));
+        assert_eq!(d.material_slot(0), 1);
+        let one = d.view_meshes(false);
+        assert!(one.opaque.materials.iter().all(|&s| s == 1));
+
+        // A later default-material layer wins where it overlaps.
+        d.add_layer();
+        d.set_voxels(1, [(IVec3::X, 6)], false);
+        let two = d.view_meshes(false);
+        assert!(two.opaque.materials.contains(&0) && two.opaque.materials.contains(&1));
+        // Different colors already split the quads: no extra triangles.
+        assert_eq!(
+            two.opaque.triangle_count(),
+            d.visible_mesh().triangle_count()
+        );
+
+        // Tint alpha acts as opacity; undo restores the material.
+        let faded = Material {
+            tint: [1.0, 1.0, 1.0, 0.5],
+            ..glow
+        };
+        assert!(d.set_material(0, faded, false));
+        assert_eq!(d.view_alpha(0, false), 0.5);
+        assert!(d.undo());
+        assert_eq!(d.view_alpha(0, false), 1.0);
     }
 
     #[test]

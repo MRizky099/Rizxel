@@ -317,6 +317,7 @@ fn layer_properties(ui: &mut Ui, doc: &mut Document) {
     let Some(props) = doc.data.layers.get(index).map(|l| l.props.clone()) else {
         return;
     };
+    ui.spacing_mut().slider_width = (ui.available_width() - 130.0).max(60.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Opacity").size(12.0).color(theme::TEXT));
         let mut percent = props.opacity * 100.0;
@@ -333,6 +334,83 @@ fn layer_properties(ui: &mut Ui, doc: &mut Document) {
             doc.set_layer_props(index, new, !response.drag_started());
         }
     });
+    layer_material(ui, doc, index);
+}
+
+/// Material of the active layer: pick one, add one, and edit the picked
+/// material. Visible in Render mode (emission, roughness, metallic, tint);
+/// the tint's alpha also acts as opacity in both modes.
+fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
+    let Some(props) = doc.data.layers.get(index).map(|l| l.props.clone()) else {
+        return;
+    };
+    let name =
+        |doc: &Document, m: Option<u32>| match m.and_then(|m| doc.data.materials.get(m as usize)) {
+            Some(mat) => mat.name.clone(),
+            None => "Default".to_owned(),
+        };
+    let mut picked = props.material;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Material").size(12.0).color(theme::TEXT));
+        egui::ComboBox::from_id_salt(("layer_material", index))
+            .selected_text(name(doc, picked))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut picked, None, "Default");
+                for (i, m) in doc.data.materials.iter().enumerate() {
+                    ui.selectable_value(&mut picked, Some(i as u32), &m.name);
+                }
+            });
+        if icon_button(ui, icon::PLUS, IconStyle::small(), true)
+            .on_hover_text("New material for this layer")
+            .clicked()
+        {
+            picked = doc.add_material();
+        }
+    });
+    if picked != props.material {
+        let new = rizxel_app::LayerProps {
+            material: picked,
+            ..props
+        };
+        doc.set_layer_props(index, new, false);
+    }
+
+    let Some(m) = picked else {
+        return;
+    };
+    let Some(mut mat) = doc.data.materials.get(m as usize).cloned() else {
+        return;
+    };
+    let mut changed = false;
+    let mut started = false;
+    egui::Grid::new(("material_editor", m))
+        .num_columns(2)
+        .show(ui, |ui| {
+            let mut slider = |ui: &mut Ui, label: &str, value: &mut f32| {
+                ui.label(RichText::new(label).size(12.0).color(theme::TEXT));
+                let r = ui.add(egui::Slider::new(value, 0.0..=1.0).fixed_decimals(2));
+                changed |= r.changed();
+                started |= r.drag_started();
+                ui.end_row();
+            };
+            slider(ui, "Metallic", &mut mat.metallic);
+            slider(ui, "Roughness", &mut mat.roughness);
+            ui.label(RichText::new("Emission").size(12.0).color(theme::TEXT));
+            changed |= ui.color_edit_button_rgb(&mut mat.emission).changed();
+            ui.end_row();
+            ui.label(RichText::new("Tint").size(12.0).color(theme::TEXT));
+            let [r, g, b, a] = mat.tint;
+            let mut tint = egui::Rgba::from_rgba_unmultiplied(r, g, b, a);
+            let alpha = egui::color_picker::Alpha::OnlyBlend;
+            if egui::color_picker::color_edit_button_rgba(ui, &mut tint, alpha).changed() {
+                mat.tint = tint.to_rgba_unmultiplied().map(|v| v.clamp(0.0, 1.0));
+                changed = true;
+            }
+            ui.end_row();
+        });
+    if changed {
+        doc.set_material(m as usize, mat, !started);
+    }
 }
 
 /// Full-width button for an operation spanning several layers.

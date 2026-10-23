@@ -26,6 +26,19 @@ struct Camera {
 
 @group(0) @binding(0) var<uniform> cam: Camera;
 
+/// Material table entry (Render mode). Must match `GpuMaterial` in Rust.
+struct Material {
+    // RGBA multiplier of the palette color.
+    tint: vec4<f32>,
+    // rgb = emission.
+    emission: vec4<f32>,
+    // x = metallic, y = roughness.
+    params: vec4<f32>,
+};
+
+/// Slot 0 is the default material, slot n the document's material n - 1.
+@group(0) @binding(1) var<uniform> materials: array<Material, 256>;
+
 /// Clip-space w of the near plane (must match `NEAR` in Rust).
 const NEAR_W: f32 = 0.1;
 /// Fraction of the eye distance by which overlays are pulled toward the
@@ -282,6 +295,7 @@ struct VoxelIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) material: u32,
 };
 
 struct VoxelOut {
@@ -291,6 +305,7 @@ struct VoxelOut {
     @location(2) world: vec3<f32>,
     // Layer opacity (1 in the opaque pass).
     @location(3) alpha: f32,
+    @location(4) @interpolate(flat) material: u32,
 };
 
 /// Key light: above, slightly front-right of the default camera, so the top
@@ -305,6 +320,7 @@ fn voxel_out(v: VoxelIn, alpha: f32) -> VoxelOut {
     out.color = v.color;
     out.world = v.pos;
     out.alpha = alpha;
+    out.material = min(v.material, 255u);
     return out;
 }
 
@@ -349,24 +365,57 @@ fn voxel_grid_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
     return line * (1.0 - smoothstep(0.15, 0.3, lod));
 }
 
+/// Unit vector from a fragment toward the viewer.
+fn view_dir(world: vec3<f32>) -> vec3<f32> {
+    if is_ortho() {
+        return -cam.forward.xyz;
+    }
+    return normalize(cam.eye.xyz - world);
+}
+
+/// Render mode: palette color times the material tint, lit by the key light
+/// with a Blinn-Phong highlight (roughness sets its size, metallic tints it
+/// and darkens the diffuse part, Schlick Fresnel), plus emission.
+fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) -> vec3<f32> {
+    let l = normalize(KEY_LIGHT);
+    let v = view_dir(world);
+    let h = normalize(l + v);
+    let metallic = m.params.x;
+    let roughness = clamp(m.params.y, 0.02, 1.0);
+
+    // Lambert key light + ambient + a half-Lambert fill so faces turned away
+    // from the light never go fully black.
+    let ndl = dot(n, l);
+    let lambert = max(ndl, 0.0);
+    let half_lambert = ndl * 0.5 + 0.5;
+    let light = AMBIENT + 0.6 * lambert + 0.15 * half_lambert * half_lambert;
+    let diffuse = albedo * light * (1.0 - 0.75 * metallic);
+
+    let shininess = mix(512.0, 4.0, roughness);
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+    // Normalized so rough highlights get wider, not brighter.
+    let spec = pow(max(dot(n, h), 0.0), shininess) * (shininess + 8.0) / 64.0;
+    let specular = fresnel * spec * lambert * (1.0 - 0.6 * roughness);
+
+    return diffuse + specular + m.emission.rgb * m.tint.rgb;
+}
+
 /// Lit color of a voxel fragment (shared by both passes).
 fn voxel_color(in: VoxelOut) -> vec3<f32> {
     let n = normalize(in.normal);
     let grid = voxel_grid_coverage(in.world, n) * cam.options.y * VOXEL_GRID_STRENGTH;
-    var shade: f32;
+    var color: vec3<f32>;
     if cam.viewport.z > 0.5 {
-        // Render: Lambert key light + ambient + a half-Lambert fill so faces
-        // turned away from the light never go fully black.
-        let ndl = dot(n, normalize(KEY_LIGHT));
-        let lambert = max(ndl, 0.0);
-        let half_lambert = ndl * 0.5 + 0.5;
-        shade = AMBIENT + 0.6 * lambert + 0.15 * half_lambert * half_lambert;
+        let m = materials[in.material];
+        color = render_shade(in.color.rgb * m.tint.rgb, n, in.world, m);
     } else {
         // Model: palette colors kept almost flat, with a fixed per-axis tint
         // so adjacent faces of one color stay distinguishable.
-        shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
+        let shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
+        color = in.color.rgb * shade;
     }
-    return min(in.color.rgb * shade * (1.0 - grid), vec3<f32>(1.0));
+    return min(color * (1.0 - grid), vec3<f32>(1.0));
 }
 
 @fragment

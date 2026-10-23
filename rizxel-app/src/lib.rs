@@ -31,7 +31,7 @@ pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
     DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
-    TransparentMesh, ViewMeshes, GHOST_ALPHA,
+    TransparentMesh, ViewMeshes, GHOST_ALPHA, MAX_MATERIAL_SLOT,
 };
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;

@@ -5,12 +5,12 @@
 //! the three axes in both directions; faces whose neighbour across the face is
 //! empty (or outside the bounds, so the shell is always closed) are collected
 //! into a 16×16 mask per slice and merged greedily into rectangles of one
-//! palette index. Quads never merge across tile borders.
+//! palette index and material slot. Quads never merge across tile borders.
 //!
 //! Because a tile's quads depend only on that tile and the boundary voxels
 //! of its face neighbours, [`TileMeshCache`] can re-mesh just the tiles a
 //! drag changed and concatenate the rest from its cache; the result is
-//! identical to a full [`mesh_volume`].
+//! identical to a full [`mesh_volume_with`].
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,8 @@ pub struct Mesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub colors: Vec<Rgba8>,
+    /// Material slot per vertex (see [`MaterialSlots`]); may be empty.
+    pub materials: Vec<u8>,
     /// Triangle list; every 3 indices form one triangle.
     pub indices: Vec<u32>,
 }
@@ -48,8 +50,19 @@ impl Mesh {
         let n = self.positions.len();
         (self.normals.is_empty() || self.normals.len() == n)
             && (self.colors.is_empty() || self.colors.len() == n)
+            && (self.materials.is_empty() || self.materials.len() == n)
             && self.indices.len() % 3 == 0
             && self.indices.iter().all(|&i| (i as usize) < n)
+    }
+
+    /// Appends `other`, shifting its indices.
+    pub fn append(&mut self, other: &Mesh) {
+        let base = self.positions.len() as u32;
+        self.positions.extend_from_slice(&other.positions);
+        self.normals.extend_from_slice(&other.normals);
+        self.colors.extend_from_slice(&other.colors);
+        self.materials.extend_from_slice(&other.materials);
+        self.indices.extend(other.indices.iter().map(|i| base + i));
     }
 
     /// Unit cube with 8 shared vertices and 12 triangles (no normals).
@@ -74,8 +87,86 @@ impl Mesh {
             colors: vec![color; positions.len()],
             positions,
             normals: Vec::new(),
+            materials: Vec::new(),
             indices,
         }
+    }
+}
+
+/// Material slot of each voxel, copied to its vertices. The renderer looks
+/// slots up in its material table: 0 is the default material, `n` the
+/// document's material `n - 1`. Quads never merge across slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterialSlots<'a> {
+    /// Every voxel uses this slot.
+    Uniform(u8),
+    /// Slot per cell (empty cells read as slot 0).
+    PerVoxel(&'a VoxelVolume),
+}
+
+impl MaterialSlots<'_> {
+    fn get(&self, pos: IVec3) -> u8 {
+        match self {
+            MaterialSlots::Uniform(slot) => *slot,
+            MaterialSlots::PerVoxel(volume) => volume.get(pos),
+        }
+    }
+}
+
+/// Owned copy of [`MaterialSlots`], kept by [`TileMeshCache`].
+#[derive(Debug, Clone, PartialEq)]
+enum SlotSource {
+    Uniform(u8),
+    PerVoxel(VoxelVolume),
+}
+
+impl SlotSource {
+    fn new(slots: MaterialSlots<'_>) -> Self {
+        match slots {
+            MaterialSlots::Uniform(slot) => SlotSource::Uniform(slot),
+            MaterialSlots::PerVoxel(v) => SlotSource::PerVoxel(v.clone()),
+        }
+    }
+
+    /// Same kind (and the same slot when uniform): only per-voxel tiles can
+    /// differ.
+    fn compatible(&self, slots: MaterialSlots<'_>) -> bool {
+        match (self, slots) {
+            (SlotSource::Uniform(a), MaterialSlots::Uniform(b)) => *a == b,
+            (SlotSource::PerVoxel(a), MaterialSlots::PerVoxel(b)) => a.bounds() == b.bounds(),
+            _ => false,
+        }
+    }
+
+    fn tile_differs(&self, slots: MaterialSlots<'_>, origin: IVec3) -> bool {
+        match (self, slots) {
+            (SlotSource::PerVoxel(a), MaterialSlots::PerVoxel(b)) => {
+                a.tile(origin) != b.tile(origin)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Everything besides the voxels that decides a mesh.
+#[derive(Debug, Clone, Copy)]
+pub struct MeshParams<'a> {
+    /// Vertex colors.
+    pub palette: &'a Palette,
+    pub slots: MaterialSlots<'a>,
+}
+
+impl<'a> MeshParams<'a> {
+    /// Plain mesh: palette colors, every voxel in material slot 0.
+    pub fn new(palette: &'a Palette) -> Self {
+        Self {
+            palette,
+            slots: MaterialSlots::Uniform(0),
+        }
+    }
+
+    pub fn slots(self, slots: MaterialSlots<'a>) -> Self {
+        Self { slots, ..self }
     }
 }
 
@@ -102,12 +193,14 @@ pub fn greedy_mesh(layers: &[(&VoxelVolume, bool)], palette: &Palette) -> Mesh {
     }
 }
 
-/// Greedy-meshes a single volume (see the module docs).
+/// Greedy-meshes a single volume with [`MeshParams::new`].
 pub fn mesh_volume(volume: &VoxelVolume, palette: &Palette) -> Mesh {
-    let mut mesher = Mesher {
-        mesh: Mesh::default(),
-        palette,
-    };
+    mesh_volume_with(volume, &MeshParams::new(palette))
+}
+
+/// Greedy-meshes a single volume (see the module docs).
+pub fn mesh_volume_with(volume: &VoxelVolume, params: &MeshParams<'_>) -> Mesh {
+    let mut mesher = Mesher::new(params);
     // Sorted tiles keep the output byte-identical across runs.
     for origin in volume.sorted_tile_origins() {
         mesher.tile(volume, origin);
@@ -116,11 +209,8 @@ pub fn mesh_volume(volume: &VoxelVolume, palette: &Palette) -> Mesh {
 }
 
 /// Quads of the single tile at `origin` (in model space).
-pub fn mesh_tile(volume: &VoxelVolume, origin: IVec3, palette: &Palette) -> Mesh {
-    let mut mesher = Mesher {
-        mesh: Mesh::default(),
-        palette,
-    };
+pub fn mesh_tile(volume: &VoxelVolume, origin: IVec3, params: &MeshParams<'_>) -> Mesh {
+    let mut mesher = Mesher::new(params);
     mesher.tile(volume, origin);
     mesher.mesh
 }
@@ -128,15 +218,16 @@ pub fn mesh_tile(volume: &VoxelVolume, origin: IVec3, palette: &Palette) -> Mesh
 /// Per-tile meshes of the last volume meshed, for incremental re-meshing
 /// while a drag edits a few tiles per frame.
 ///
-/// [`TileMeshCache::mesh`] compares each tile with the previous volume and
-/// re-meshes only the changed ones and their face neighbours (their border
-/// faces may have appeared or vanished). A palette or bounds change, or the
-/// first call, rebuilds everything. The output always equals
-/// [`mesh_volume`] of the same volume.
+/// [`TileMeshCache::mesh_shared`] compares each tile with the previous
+/// volume and re-meshes only the changed ones and their face neighbours
+/// (their border faces may have appeared or vanished). A palette, bounds or
+/// slot-kind change, or the first call, rebuilds everything. The output
+/// always equals [`mesh_volume_with`] of the same volume.
 #[derive(Debug, Default)]
 pub struct TileMeshCache {
     source: Option<VoxelVolume>,
     palette: Option<Palette>,
+    slots: Option<SlotSource>,
     tiles: HashMap<IVec3, Mesh>,
     /// Tiles re-meshed by the last call (diagnostics and tests).
     last_rebuilt: usize,
@@ -145,16 +236,17 @@ pub struct TileMeshCache {
 }
 
 impl TileMeshCache {
-    /// Mesh of `volume`, reusing the cached tiles that did not change.
+    /// Mesh of `volume` with [`MeshParams::new`], reusing the cached tiles
+    /// that did not change.
     pub fn mesh(&mut self, volume: &VoxelVolume, palette: &Palette) -> Mesh {
-        (*self.mesh_shared(volume, palette)).clone()
+        (*self.mesh_shared(volume, &MeshParams::new(palette))).clone()
     }
 
-    /// Like [`TileMeshCache::mesh`], but returns the previous `Arc` when no
-    /// tile changed, so callers can skip uploading an identical mesh.
-    pub fn mesh_shared(&mut self, volume: &VoxelVolume, palette: &Palette) -> Arc<Mesh> {
+    /// Mesh of `volume`; returns the previous `Arc` when no tile changed, so
+    /// callers can skip uploading an identical mesh.
+    pub fn mesh_shared(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>) -> Arc<Mesh> {
         let before = self.tiles.len();
-        self.update(volume, palette);
+        self.update(volume, params);
         let changed = self.last_rebuilt > 0 || self.tiles.len() != before;
         match &self.output {
             Some(out) if !changed => out.clone(),
@@ -167,20 +259,26 @@ impl TileMeshCache {
     }
 
     /// Re-meshes the tiles that changed since the last call.
-    fn update(&mut self, volume: &VoxelVolume, palette: &Palette) {
-        let full = self.palette.as_ref() != Some(palette)
+    fn update(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>) {
+        let full = self.palette.as_ref() != Some(params.palette)
+            || self
+                .slots
+                .as_ref()
+                .is_none_or(|s| !s.compatible(params.slots))
             || self
                 .source
                 .as_ref()
                 .is_none_or(|s| s.bounds() != volume.bounds());
         let origins = volume.sorted_tile_origins();
-        let dirty: HashSet<IVec3> = match (&self.source, full) {
-            (Some(old), false) => {
+        let dirty: HashSet<IVec3> = match (&self.source, &self.slots, full) {
+            (Some(old), Some(old_slots), false) => {
                 let mut candidates: HashSet<IVec3> = origins.iter().copied().collect();
                 candidates.extend(old.sorted_tile_origins());
                 let changed: Vec<IVec3> = candidates
                     .into_iter()
-                    .filter(|&o| old.tile(o) != volume.tile(o))
+                    .filter(|&o| {
+                        old.tile(o) != volume.tile(o) || old_slots.tile_differs(params.slots, o)
+                    })
                     .collect();
                 let step = TILE_SIZE;
                 changed
@@ -208,32 +306,28 @@ impl TileMeshCache {
         let mut rebuilt = 0;
         for &o in &origins {
             if let Entry::Vacant(slot) = self.tiles.entry(o) {
-                slot.insert(mesh_tile(volume, o, palette));
+                slot.insert(mesh_tile(volume, o, params));
                 rebuilt += 1;
             }
         }
         self.last_rebuilt = rebuilt;
         self.source = Some(volume.clone());
-        self.palette = Some(palette.clone());
+        self.palette = Some(params.palette.clone());
+        self.slots = Some(SlotSource::new(params.slots));
     }
 
     /// The cached tiles of `volume` in sorted order, as one mesh.
     fn concatenate(&self, volume: &VoxelVolume) -> Mesh {
-        let origins = volume.sorted_tile_origins();
         let mut out = Mesh::default();
-        for o in &origins {
+        for o in &volume.sorted_tile_origins() {
             if let Some(m) = self.tiles.get(o) {
-                let base = out.positions.len() as u32;
-                out.positions.extend_from_slice(&m.positions);
-                out.normals.extend_from_slice(&m.normals);
-                out.colors.extend_from_slice(&m.colors);
-                out.indices.extend(m.indices.iter().map(|i| base + i));
+                out.append(m);
             }
         }
         out
     }
 
-    /// Number of tiles the last [`TileMeshCache::mesh`] call re-meshed.
+    /// Number of tiles the last call re-meshed.
     pub fn last_rebuilt(&self) -> usize {
         self.last_rebuilt
     }
@@ -266,12 +360,27 @@ impl Face {
     }
 }
 
-struct Mesher<'p> {
-    mesh: Mesh,
-    palette: &'p Palette,
+/// One mask cell: palette index in the low byte, material slot above it;
+/// 0 = no face. Only equal keys merge.
+type FaceKey = u32;
+
+fn face_key(value: Voxel, slot: u8) -> FaceKey {
+    value as u32 | (slot as u32) << 8
 }
 
-impl Mesher<'_> {
+struct Mesher<'p> {
+    mesh: Mesh,
+    params: MeshParams<'p>,
+}
+
+impl<'p> Mesher<'p> {
+    fn new(params: &MeshParams<'p>) -> Self {
+        Self {
+            mesh: Mesh::default(),
+            params: *params,
+        }
+    }
+
     /// Emits every face of the tile at `origin`.
     fn tile(&mut self, volume: &VoxelVolume, origin: IVec3) {
         let tile = volume.tile(origin);
@@ -287,7 +396,7 @@ impl Mesher<'_> {
         let (axis, u_axis, v_axis) = (face.axis, face.u(), face.v());
         let mut normal = IVec3::ZERO;
         normal[axis] = face.sign();
-        let mut mask = [EMPTY_VOXEL; N * N];
+        let mut mask: [FaceKey; N * N] = [0; N * N];
 
         for slice in 0..N {
             let mut any = false;
@@ -308,7 +417,11 @@ impl Mesher<'_> {
                         };
                         neighbour == EMPTY_VOXEL
                     };
-                    mask[v * N + u] = if visible { value } else { EMPTY_VOXEL };
+                    mask[v * N + u] = if visible {
+                        face_key(value, self.params.slots.get(origin + l))
+                    } else {
+                        0
+                    };
                     any |= visible;
                 }
             }
@@ -318,30 +431,30 @@ impl Mesher<'_> {
         }
     }
 
-    /// Greedily covers the mask with rectangles of equal value and emits them.
-    fn merge_mask(&mut self, mask: &mut [Voxel; N * N], origin: IVec3, face: Face, slice: usize) {
+    /// Greedily covers the mask with rectangles of equal key and emits them.
+    fn merge_mask(&mut self, mask: &mut [FaceKey; N * N], origin: IVec3, face: Face, slice: usize) {
         for v in 0..N {
             let mut u = 0;
             while u < N {
-                let value = mask[v * N + u];
-                if value == EMPTY_VOXEL {
+                let key = mask[v * N + u];
+                if key == 0 {
                     u += 1;
                     continue;
                 }
                 let mut w = 1;
-                while u + w < N && mask[v * N + u + w] == value {
+                while u + w < N && mask[v * N + u + w] == key {
                     w += 1;
                 }
                 let mut h = 1;
                 while v + h < N
                     && mask[(v + h) * N + u..(v + h) * N + u + w]
                         .iter()
-                        .all(|&m| m == value)
+                        .all(|&m| m == key)
                 {
                     h += 1;
                 }
                 for row in v..v + h {
-                    mask[row * N + u..row * N + u + w].fill(EMPTY_VOXEL);
+                    mask[row * N + u..row * N + u + w].fill(0);
                 }
 
                 let mut base = origin.as_vec3();
@@ -352,7 +465,7 @@ impl Mesher<'_> {
                 du[face.u()] = w as f32;
                 let mut dv = Vec3::ZERO;
                 dv[face.v()] = h as f32;
-                self.quad(base, du, dv, face, value);
+                self.quad(base, du, dv, face, key);
                 u += w;
             }
         }
@@ -360,7 +473,7 @@ impl Mesher<'_> {
 
     /// Appends one quad (4 vertices, 2 triangles), counter-clockwise when seen
     /// from the side its normal points to.
-    fn quad(&mut self, base: Vec3, du: Vec3, dv: Vec3, face: Face, value: Voxel) {
+    fn quad(&mut self, base: Vec3, du: Vec3, dv: Vec3, face: Face, key: FaceKey) {
         let mut normal = Vec3::ZERO;
         normal[face.axis] = face.sign() as f32;
         // `u x v` points along +axis, so (0, u, u+v, v) is CCW seen from +axis.
@@ -369,11 +482,18 @@ impl Mesher<'_> {
         } else {
             [base, base + dv, base + du + dv, base + du]
         };
-        let color = self.palette.get(value as usize).unwrap_or(Rgba8::WHITE);
+        let value = (key & 0xff) as Voxel;
+        let slot = (key >> 8) as u8;
+        let color = self
+            .params
+            .palette
+            .get(value as usize)
+            .unwrap_or(Rgba8::WHITE);
         let first = self.mesh.positions.len() as u32;
         self.mesh.positions.extend(corners);
         self.mesh.normals.extend([normal; 4]);
         self.mesh.colors.extend([color; 4]);
+        self.mesh.materials.extend([slot; 4]);
         self.mesh
             .indices
             .extend([0, 1, 2, 0, 2, 3].map(|i| first + i));
@@ -571,6 +691,67 @@ mod tests {
         let mut other = palette.clone();
         other.set(1, Rgba8::rgb(1, 2, 3));
         assert_eq!(cache.mesh(&v, &other), mesh_volume(&v, &other));
+        assert_eq!(cache.last_rebuilt(), v.tile_count());
+    }
+
+    #[test]
+    fn material_slots_split_quads_and_reach_the_vertices() {
+        let palette = Palette::default();
+        let cells: Vec<_> = (0..4).map(|x| (IVec3::new(x, 0, 0), 5)).collect();
+        let v = volume(&cells);
+        // One slot for all: same quads as the plain mesh, slot on every vertex.
+        let uniform = mesh_volume_with(
+            &v,
+            &MeshParams::new(&palette).slots(MaterialSlots::Uniform(3)),
+        );
+        assert_eq!(quads(&uniform), 6);
+        assert!(uniform.materials.iter().all(|&s| s == 3));
+        // Half the row in another slot: the long sides split in two.
+        let mut slots = VoxelVolume::new(v.bounds());
+        slots.set(IVec3::new(2, 0, 0), 7);
+        slots.set(IVec3::new(3, 0, 0), 7);
+        let split = mesh_volume_with(
+            &v,
+            &MeshParams::new(&palette).slots(MaterialSlots::PerVoxel(&slots)),
+        );
+        assert_eq!(quads(&split), 2 + 4 * 2);
+        assert!(split.materials.contains(&0) && split.materials.contains(&7));
+        assert!(split.is_valid());
+    }
+
+    #[test]
+    fn tile_cache_follows_material_slots() {
+        let palette = Palette::default();
+        let mut v = VoxelVolume::new(BoundSize::new(40, 20, 40));
+        for i in 0..300 {
+            v.set(
+                IVec3::new((i * 7) % 40, (i * 3) % 20, (i * 11) % 40),
+                1 + (i % 3) as Voxel,
+            );
+        }
+        let mut slots = VoxelVolume::new(v.bounds());
+        let mut cache = TileMeshCache::default();
+        fn params<'a>(palette: &'a Palette, s: &'a VoxelVolume) -> MeshParams<'a> {
+            MeshParams::new(palette).slots(MaterialSlots::PerVoxel(s))
+        }
+        let full = |s: &VoxelVolume| mesh_volume_with(&v, &params(&palette, s));
+        assert_eq!(
+            *cache.mesh_shared(&v, &params(&palette, &slots)),
+            full(&slots)
+        );
+        // A slot change alone re-meshes its tile (and neighbours) only.
+        slots.set(IVec3::new(7, 3, 11), 4);
+        assert_eq!(
+            *cache.mesh_shared(&v, &params(&palette, &slots)),
+            full(&slots)
+        );
+        assert!(cache.last_rebuilt() < v.tile_count());
+        // Switching to a uniform slot rebuilds everything.
+        let uniform = MeshParams::new(&palette).slots(MaterialSlots::Uniform(2));
+        assert_eq!(
+            *cache.mesh_shared(&v, &uniform),
+            mesh_volume_with(&v, &uniform)
+        );
         assert_eq!(cache.last_rebuilt(), v.tile_count());
     }
 

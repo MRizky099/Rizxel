@@ -13,7 +13,10 @@ pub mod shapes;
 pub mod tools;
 pub mod voxelize;
 
-pub use mesher::{greedy_mesh, mesh_tile, mesh_volume, Mesh, TileMeshCache};
+pub use mesher::{
+    greedy_mesh, mesh_tile, mesh_volume, mesh_volume_with, MaterialSlots, Mesh, MeshParams,
+    TileMeshCache,
+};
 pub use quads::{greedy_quads, Quad};
 pub use quantize::{build_color_map, nearest, ColorMap};
 pub use raycast::{Ray, RayHit};

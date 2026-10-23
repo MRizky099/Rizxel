@@ -566,6 +566,10 @@ fn scene_frame(
         fills: Vec::new(),
         voxels: None,
         translucent: Vec::new(),
+        materials: state
+            .doc()
+            .map(|d| d.data.materials.clone())
+            .unwrap_or_default(),
     }
 }
 
