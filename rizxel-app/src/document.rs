@@ -508,9 +508,9 @@ impl Document {
         self.plane.slice_box(self.data.bounds)
     }
 
-    /// Opaque viewport mesh: [`ViewMeshes::opaque`] without ghosts. Equals
-    /// [`Document::visible_mesh`] clipped to [`Document::view_clip`] while
-    /// every layer is fully opaque.
+    /// Opaque viewport mesh: [`ViewMeshes::opaque`] without ghosts (with
+    /// ambient occlusion, so it has more quads than
+    /// [`Document::visible_mesh`], which exports use).
     pub fn view_mesh(&self) -> Mesh {
         (*self.view_meshes(false).opaque).clone()
     }
@@ -519,9 +519,11 @@ impl Document {
     /// layers merged into one mesh (later layers win), and one mesh per
     /// translucent layer ([`Document::view_alpha`] below 1; fully
     /// transparent layers are skipped). The mesher closes the cut, so the
-    /// sliced model shows a solid cut face. Incremental: only tiles that
-    /// changed since the previous call are re-meshed (same output as a full
-    /// mesh), and an opacity change alone re-meshes nothing.
+    /// sliced model shows a solid cut face. Meshes carry per-vertex ambient
+    /// occlusion (the renderer decides whether to show it). Incremental:
+    /// only tiles that changed since the previous call are re-meshed (same
+    /// output as a full mesh), and an opacity change alone re-meshes
+    /// nothing.
     pub fn view_meshes(&self, ghosts: bool) -> ViewMeshes {
         let clip = self.view_clip();
         let clipped = |v: &VoxelVolume| match clip {
@@ -552,7 +554,8 @@ impl Document {
                 let slots = MaterialSlots::Uniform(self.material_slot(index));
                 out.transparent.push(TransparentMesh {
                     layer: layer.id,
-                    mesh: tiles.mesh_shared(&volume, &MeshParams::new(palette).slots(slots)),
+                    mesh: tiles
+                        .mesh_shared(&volume, &MeshParams::new(palette).slots(slots).ao(true)),
                     alpha,
                     center: (lo + hi).as_vec3() * 0.5,
                 });
@@ -590,7 +593,7 @@ impl Document {
                 }
             };
             if let Some(volume) = volume {
-                let params = MeshParams::new(palette).slots(slots);
+                let params = MeshParams::new(palette).slots(slots).ao(true);
                 out.opaque = cache.opaque.mesh_shared(volume, &params);
             }
             out

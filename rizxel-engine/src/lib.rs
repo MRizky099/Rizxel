@@ -15,7 +15,7 @@ pub mod voxelize;
 
 pub use mesher::{
     greedy_mesh, mesh_tile, mesh_volume, mesh_volume_with, MaterialSlots, Mesh, MeshParams,
-    TileMeshCache,
+    TileMeshCache, AO_OPEN,
 };
 pub use quads::{greedy_quads, Quad};
 pub use quantize::{build_color_map, nearest, ColorMap};

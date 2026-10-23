@@ -105,6 +105,8 @@ pub struct VoxelVertex {
     pub color: [f32; 4],
     /// Index into the material table (see [`MaterialTable`]).
     pub material: u32,
+    /// Ambient occlusion: 0 (most occluded) to 1 (open).
+    pub ao: f32,
 }
 
 /// Number of entries in the material table: slot 0 is the default
@@ -171,6 +173,10 @@ impl GpuMesh {
                     normal: n.to_array(),
                     color: [c.r, c.g, c.b, c.a].map(|v| v as f32 / 255.0),
                     material: mesh.materials.get(i).copied().unwrap_or(0) as u32,
+                    ao: mesh
+                        .ao
+                        .get(i)
+                        .map_or(1.0, |&a| f32::from(a) / f32::from(rizxel_engine::AO_OPEN)),
                 }
             })
             .collect();
@@ -210,6 +216,8 @@ pub struct SceneFrame {
     pub floor_grid: bool,
     /// Draw voxel edge lines on the model.
     pub voxel_grid: bool,
+    /// Shade with the meshes' ambient occlusion.
+    pub ao: bool,
     pub background: Color32,
     pub grid_color: Color32,
     pub axis_x: Color32,
@@ -247,7 +255,12 @@ impl SceneFrame {
             focus: if self.ortho { self.target } else { self.eye }
                 .extend(0.0)
                 .to_array(),
-            options: [flag(self.floor_grid), flag(self.voxel_grid), 0.0, 0.0],
+            options: [
+                flag(self.floor_grid),
+                flag(self.voxel_grid),
+                flag(self.ao),
+                0.0,
+            ],
         }
     }
 }
@@ -613,7 +626,7 @@ impl ViewportRenderer {
         });
 
         let voxel_attrs = wgpu::vertex_attr_array![
-            0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Uint32
+            0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Uint32, 4 => Float32
         ];
         let voxel_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<VoxelVertex>() as u64,
@@ -1020,8 +1033,8 @@ mod tests {
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
-        // vec3 + vec3 + vec4 + u32.
-        assert_eq!(std::mem::size_of::<VoxelVertex>(), 44);
+        // vec3 + vec3 + vec4 + u32 + f32.
+        assert_eq!(std::mem::size_of::<VoxelVertex>(), 48);
         // 3 vec4 per material, 256 slots.
         assert_eq!(std::mem::size_of::<MaterialTable>(), 48 * 256);
     }
@@ -1138,6 +1151,7 @@ mod tests {
             render_mode: false,
             floor_grid: true,
             voxel_grid: false,
+            ao: false,
             background: Color32::BLACK,
             grid_color: Color32::WHITE,
             axis_x: Color32::RED,

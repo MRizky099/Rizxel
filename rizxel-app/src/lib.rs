@@ -494,6 +494,29 @@ pub struct ViewOptions {
     pub model_bounds: bool,
     /// Layers other than the active one drawn at [`GHOST_ALPHA`].
     pub ghosts: bool,
+    /// Ambient occlusion in Model mode (off by default: flat colors read
+    /// better while editing).
+    pub ao_model: bool,
+    /// Ambient occlusion in Render mode.
+    pub ao_render: bool,
+}
+
+impl ViewOptions {
+    /// Whether ambient occlusion is shown in `mode`.
+    pub fn ao(&self, mode: ViewMode) -> bool {
+        match mode {
+            ViewMode::Model => self.ao_model,
+            ViewMode::Render => self.ao_render,
+        }
+    }
+
+    /// Toggles ambient occlusion for `mode` only.
+    pub fn toggle_ao(&mut self, mode: ViewMode) {
+        match mode {
+            ViewMode::Model => self.ao_model = !self.ao_model,
+            ViewMode::Render => self.ao_render = !self.ao_render,
+        }
+    }
 }
 
 impl Default for ViewOptions {
@@ -504,6 +527,8 @@ impl Default for ViewOptions {
             voxel_grid: false,
             model_bounds: true,
             ghosts: false,
+            ao_model: false,
+            ao_render: true,
         }
     }
 }

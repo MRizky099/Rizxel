@@ -237,6 +237,15 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
     if menu_item(ui, check_glyph(ghosts), "Ghosts", "Shift+H", true) {
         state.view.ghosts = !ghosts;
     }
+    // Per view mode: on in Render, off in Model by default.
+    let mode = state.view_mode;
+    let label = match mode {
+        rizxel_app::ViewMode::Model => "Ambient Occlusion (Model)",
+        rizxel_app::ViewMode::Render => "Ambient Occlusion (Render)",
+    };
+    if menu_item(ui, check_glyph(state.view.ao(mode)), label, "", true) {
+        state.view.toggle_ao(mode);
+    }
 }
 
 /// Leading glyph of a menu toggle.

@@ -7,17 +7,23 @@
 //! into a 16×16 mask per slice and merged greedily into rectangles of one
 //! palette index and material slot. Quads never merge across tile borders.
 //!
+//! With [`MeshParams::ao`] every face corner also gets a classic 4-level
+//! ambient occlusion value from the three voxels around it in front of the
+//! face; only cells with the same four values merge, and each quad's
+//! diagonal is chosen so the occlusion interpolates without anisotropy.
+//!
 //! Because a tile's quads depend only on that tile and the boundary voxels
-//! of its face neighbours, [`TileMeshCache`] can re-mesh just the tiles a
-//! drag changed and concatenate the rest from its cache; the result is
-//! identical to a full [`mesh_volume_with`].
+//! of its neighbours (face neighbours, plus edge and corner neighbours for
+//! AO), [`TileMeshCache`] can re-mesh just the tiles a drag changed and
+//! concatenate the rest from its cache; the result is identical to a full
+//! [`mesh_volume_with`].
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
-use rizxel_math::volume::local_index;
+use rizxel_math::volume::{local_coord, local_index};
 use rizxel_math::{Palette, Rgba8, Tile, Voxel, VoxelVolume, EMPTY_VOXEL, TILE_SIZE};
 
 /// Indexed triangle mesh. All per-vertex arrays have the same length.
@@ -28,6 +34,9 @@ pub struct Mesh {
     pub colors: Vec<Rgba8>,
     /// Material slot per vertex (see [`MaterialSlots`]); may be empty.
     pub materials: Vec<u8>,
+    /// Ambient occlusion per vertex: 0 (most occluded) to [`AO_OPEN`]
+    /// (open); may be empty.
+    pub ao: Vec<u8>,
     /// Triangle list; every 3 indices form one triangle.
     pub indices: Vec<u32>,
 }
@@ -51,6 +60,7 @@ impl Mesh {
         (self.normals.is_empty() || self.normals.len() == n)
             && (self.colors.is_empty() || self.colors.len() == n)
             && (self.materials.is_empty() || self.materials.len() == n)
+            && (self.ao.is_empty() || self.ao.len() == n)
             && self.indices.len() % 3 == 0
             && self.indices.iter().all(|&i| (i as usize) < n)
     }
@@ -62,6 +72,7 @@ impl Mesh {
         self.normals.extend_from_slice(&other.normals);
         self.colors.extend_from_slice(&other.colors);
         self.materials.extend_from_slice(&other.materials);
+        self.ao.extend_from_slice(&other.ao);
         self.indices.extend(other.indices.iter().map(|i| base + i));
     }
 
@@ -88,6 +99,7 @@ impl Mesh {
             positions,
             normals: Vec::new(),
             materials: Vec::new(),
+            ao: Vec::new(),
             indices,
         }
     }
@@ -148,25 +160,36 @@ impl SlotSource {
     }
 }
 
+/// AO value of an unoccluded vertex.
+pub const AO_OPEN: u8 = 3;
+
 /// Everything besides the voxels that decides a mesh.
 #[derive(Debug, Clone, Copy)]
 pub struct MeshParams<'a> {
     /// Vertex colors.
     pub palette: &'a Palette,
     pub slots: MaterialSlots<'a>,
+    /// Per-vertex ambient occlusion (viewport). Off, every vertex is
+    /// [`AO_OPEN`] and quads merge as large as possible (exports).
+    pub ao: bool,
 }
 
 impl<'a> MeshParams<'a> {
-    /// Plain mesh: palette colors, every voxel in material slot 0.
+    /// Plain mesh: palette colors, every voxel in material slot 0, no AO.
     pub fn new(palette: &'a Palette) -> Self {
         Self {
             palette,
             slots: MaterialSlots::Uniform(0),
+            ao: false,
         }
     }
 
     pub fn slots(self, slots: MaterialSlots<'a>) -> Self {
         Self { slots, ..self }
+    }
+
+    pub fn ao(self, ao: bool) -> Self {
+        Self { ao, ..self }
     }
 }
 
@@ -219,15 +242,17 @@ pub fn mesh_tile(volume: &VoxelVolume, origin: IVec3, params: &MeshParams<'_>) -
 /// while a drag edits a few tiles per frame.
 ///
 /// [`TileMeshCache::mesh_shared`] compares each tile with the previous
-/// volume and re-meshes only the changed ones and their face neighbours
-/// (their border faces may have appeared or vanished). A palette, bounds or
-/// slot-kind change, or the first call, rebuilds everything. The output
+/// volume and re-meshes only the changed ones and their neighbours (border
+/// faces may have appeared or vanished; with AO, corner values read the
+/// edge and corner neighbours too). A palette, bounds, slot-kind or AO
+/// change, or the first call, rebuilds everything. The output
 /// always equals [`mesh_volume_with`] of the same volume.
 #[derive(Debug, Default)]
 pub struct TileMeshCache {
     source: Option<VoxelVolume>,
     palette: Option<Palette>,
     slots: Option<SlotSource>,
+    ao: bool,
     tiles: HashMap<IVec3, Mesh>,
     /// Tiles re-meshed by the last call (diagnostics and tests).
     last_rebuilt: usize,
@@ -261,6 +286,7 @@ impl TileMeshCache {
     /// Re-meshes the tiles that changed since the last call.
     fn update(&mut self, volume: &VoxelVolume, params: &MeshParams<'_>) {
         let full = self.palette.as_ref() != Some(params.palette)
+            || self.ao != params.ao
             || self
                 .slots
                 .as_ref()
@@ -274,28 +300,25 @@ impl TileMeshCache {
             (Some(old), Some(old_slots), false) => {
                 let mut candidates: HashSet<IVec3> = origins.iter().copied().collect();
                 candidates.extend(old.sorted_tile_origins());
-                let changed: Vec<IVec3> = candidates
-                    .into_iter()
-                    .filter(|&o| {
-                        old.tile(o) != volume.tile(o) || old_slots.tile_differs(params.slots, o)
-                    })
-                    .collect();
-                let step = TILE_SIZE;
-                changed
-                    .iter()
-                    .flat_map(|&o| {
-                        [
-                            IVec3::ZERO,
-                            IVec3::X * step,
-                            IVec3::NEG_X * step,
-                            IVec3::Y * step,
-                            IVec3::NEG_Y * step,
-                            IVec3::Z * step,
-                            IVec3::NEG_Z * step,
-                        ]
-                        .map(|d| o + d)
-                    })
-                    .collect()
+                let near = neighbour_offsets(params.ao);
+                let mut dirty = HashSet::new();
+                for o in candidates {
+                    let (before, after) = (old.tile(o), volume.tile(o));
+                    if before != after {
+                        // Neighbours read one voxel into this tile: only
+                        // those whose side the changes touch need a re-mesh.
+                        let (lo, hi) = diff_box(before, after);
+                        dirty.extend(
+                            near.iter()
+                                .filter(|&&d| touches_side(d, lo, hi))
+                                .map(|&d| o + d * TILE_SIZE),
+                        );
+                    } else if old_slots.tile_differs(params.slots, o) {
+                        // Slots only affect the tile's own quads.
+                        dirty.insert(o);
+                    }
+                }
+                dirty
             }
             _ => {
                 self.tiles.clear();
@@ -314,6 +337,7 @@ impl TileMeshCache {
         self.source = Some(volume.clone());
         self.palette = Some(params.palette.clone());
         self.slots = Some(SlotSource::new(params.slots));
+        self.ao = params.ao;
     }
 
     /// The cached tiles of `volume` in sorted order, as one mesh.
@@ -334,6 +358,48 @@ impl TileMeshCache {
 }
 
 const N: usize = TILE_SIZE as usize;
+
+/// Directions (in tiles) of the tiles whose mesh can depend on a tile:
+/// itself and its 6 face neighbours, or all 26 neighbours with AO (corner
+/// values read diagonally).
+fn neighbour_offsets(ao: bool) -> Vec<IVec3> {
+    let mut out = Vec::new();
+    for z in -1..=1 {
+        for y in -1..=1 {
+            for x in -1..=1 {
+                if ao || i32::abs(x) + i32::abs(y) + i32::abs(z) <= 1 {
+                    out.push(IVec3::new(x, y, z));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Box (local coordinates, inclusive) around the cells where two tiles
+/// differ. Only called for tiles that differ.
+fn diff_box(a: &Tile, b: &Tile) -> (IVec3, IVec3) {
+    let mut lo = IVec3::splat(TILE_SIZE);
+    let mut hi = IVec3::splat(-1);
+    for i in 0..(N * N * N) {
+        if a.get(i) != b.get(i) {
+            let l = local_coord(i);
+            lo = lo.min(l);
+            hi = hi.max(l);
+        }
+    }
+    (lo, hi)
+}
+
+/// True when changes inside `lo..=hi` reach the side of the tile facing the
+/// neighbour in direction `d` (meshes read one voxel across tile borders).
+fn touches_side(d: IVec3, lo: IVec3, hi: IVec3) -> bool {
+    (0..3).all(|k| match d[k] {
+        -1 => lo[k] == 0,
+        1 => hi[k] == TILE_SIZE - 1,
+        _ => true,
+    })
+}
 
 /// A face direction: `±axis`.
 #[derive(Clone, Copy)]
@@ -360,12 +426,27 @@ impl Face {
     }
 }
 
-/// One mask cell: palette index in the low byte, material slot above it;
-/// 0 = no face. Only equal keys merge.
+/// One mask cell: palette index in the low byte, material slot in the
+/// next, then the four corner AO values (2 bits each, corners in `(u, v)`
+/// order 00, 10, 11, 01); 0 = no face. Only equal keys merge.
 type FaceKey = u32;
 
-fn face_key(value: Voxel, slot: u8) -> FaceKey {
-    value as u32 | (slot as u32) << 8
+fn face_key(value: Voxel, slot: u8, ao: [u8; 4]) -> FaceKey {
+    let ao = ao
+        .iter()
+        .enumerate()
+        .fold(0u32, |acc, (i, &a)| acc | (a as u32) << (2 * i));
+    value as u32 | (slot as u32) << 8 | ao << 16
+}
+
+/// Classic voxel AO of one face corner from the two edge neighbours and the
+/// diagonal one in front of the face: both sides solid is fully occluded.
+fn corner_ao(side_a: bool, side_b: bool, corner: bool) -> u8 {
+    if side_a && side_b {
+        0
+    } else {
+        AO_OPEN - side_a as u8 - side_b as u8 - corner as u8
+    }
 }
 
 struct Mesher<'p> {
@@ -418,7 +499,13 @@ impl<'p> Mesher<'p> {
                         neighbour == EMPTY_VOXEL
                     };
                     mask[v * N + u] = if visible {
-                        face_key(value, self.params.slots.get(origin + l))
+                        let p = origin + l;
+                        let ao = if self.params.ao {
+                            face_ao(volume, tile, origin, p + normal, u_axis, v_axis)
+                        } else {
+                            [AO_OPEN; 4]
+                        };
+                        face_key(value, self.params.slots.get(p), ao)
                     } else {
                         0
                     };
@@ -484,6 +571,14 @@ impl<'p> Mesher<'p> {
         };
         let value = (key & 0xff) as Voxel;
         let slot = (key >> 8) as u8;
+        let uv_ao: [u8; 4] = std::array::from_fn(|i| ((key >> (16 + 2 * i)) & 3) as u8);
+        // Same corner order as `corners`: (u, v) = 00, 10, 11, 01, or
+        // 00, 01, 11, 10 on negative faces.
+        let ao = if face.positive {
+            uv_ao
+        } else {
+            [uv_ao[0], uv_ao[3], uv_ao[2], uv_ao[1]]
+        };
         let color = self
             .params
             .palette
@@ -494,9 +589,54 @@ impl<'p> Mesher<'p> {
         self.mesh.normals.extend([normal; 4]);
         self.mesh.colors.extend([color; 4]);
         self.mesh.materials.extend([slot; 4]);
+        self.mesh.ao.extend(ao);
         self.mesh
             .indices
-            .extend([0, 1, 2, 0, 2, 3].map(|i| first + i));
+            .extend(quad_indices(ao).map(|i| first + i));
+    }
+}
+
+/// AO of the four corners (`(u, v)` order 00, 10, 11, 01) of a face whose
+/// front cell is `front`, from the 8 cells around `front` in the face's
+/// plane. Reads inside `tile` (at `origin`) skip the volume's tile lookup.
+fn face_ao(
+    volume: &VoxelVolume,
+    tile: &Tile,
+    origin: IVec3,
+    front: IVec3,
+    u_axis: usize,
+    v_axis: usize,
+) -> [u8; 4] {
+    let solid = |du: i32, dv: i32| {
+        let mut p = front;
+        p[u_axis] += du;
+        p[v_axis] += dv;
+        let l = p - origin;
+        let value = if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(TILE_SIZE)).all() {
+            tile.get(local_index(l))
+        } else {
+            volume.get(p)
+        };
+        value != EMPTY_VOXEL
+    };
+    // ring[dv + 1][du + 1]; the centre is the front cell itself (empty).
+    let ring: [[bool; 3]; 3] = std::array::from_fn(|j| {
+        std::array::from_fn(|i| (i, j) != (1, 1) && solid(i as i32 - 1, j as i32 - 1))
+    });
+    [(-1i32, -1i32), (1, -1), (1, 1), (-1, 1)].map(|(du, dv)| {
+        let (i, j) = ((du + 1) as usize, (dv + 1) as usize);
+        corner_ao(ring[1][i], ring[j][1], ring[j][i])
+    })
+}
+
+/// Two CCW triangles over corners 0..4. The diagonal joins the brighter
+/// pair, so a dark corner darkens only its own triangle instead of
+/// streaking along the diagonal (the classic AO anisotropy fix).
+fn quad_indices(ao: [u8; 4]) -> [u32; 6] {
+    if ao[1] + ao[3] > ao[0] + ao[2] {
+        [1, 2, 3, 1, 3, 0]
+    } else {
+        [0, 1, 2, 0, 2, 3]
     }
 }
 
@@ -752,6 +892,148 @@ mod tests {
             *cache.mesh_shared(&v, &uniform),
             mesh_volume_with(&v, &uniform)
         );
+        assert_eq!(cache.last_rebuilt(), v.tile_count());
+    }
+
+    fn ao_mesh(v: &VoxelVolume) -> Mesh {
+        mesh_volume_with(v, &MeshParams::new(&Palette::default()).ao(true))
+    }
+
+    /// AO values of the quads facing `normal` whose corners all lie on
+    /// the plane `normal . p = plane`.
+    fn face_ao_values(m: &Mesh, normal: Vec3, plane: f32) -> Vec<u8> {
+        m.positions
+            .iter()
+            .zip(&m.normals)
+            .zip(&m.ao)
+            .filter(|((p, n), _)| **n == normal && p.dot(normal) == plane)
+            .map(|(_, &a)| a)
+            .collect()
+    }
+
+    #[test]
+    fn single_voxel_has_no_occlusion() {
+        let m = ao_mesh(&volume(&[(IVec3::new(3, 4, 5), 9)]));
+        assert_eq!(quads(&m), 6);
+        assert!(m.ao.iter().all(|&a| a == AO_OPEN));
+        // Without AO the mesh is the plain one, every vertex open.
+        assert_eq!(
+            m.positions,
+            mesh(&volume(&[(IVec3::new(3, 4, 5), 9)])).positions
+        );
+    }
+
+    #[test]
+    fn inner_corner_gets_level_two_or_less() {
+        // An L: floor voxel (0,0,0) and (1,0,0) with a wall on top of (1,0,0).
+        // The floor's top face meets the wall: its two corners at x = 1 have
+        // the wall as one side neighbour, so they drop to level 2.
+        let m = ao_mesh(&volume(&[
+            (IVec3::new(0, 0, 0), 4),
+            (IVec3::new(1, 0, 0), 4),
+            (IVec3::new(1, 1, 0), 4),
+        ]));
+        let top = face_ao_values(&m, Vec3::Y, 1.0);
+        assert_eq!(top.len(), 4, "one quad on the floor's free top");
+        let mut sorted = top.clone();
+        sorted.sort();
+        assert_eq!(sorted, [2, 2, 3, 3]);
+        assert!(m.is_valid());
+
+        // A voxel in a corner of two walls and the floor: the corner vertex
+        // has both sides solid, so it is fully occluded.
+        let m = ao_mesh(&volume(&[
+            (IVec3::new(1, 0, 1), 4),
+            (IVec3::new(0, 1, 1), 4),
+            (IVec3::new(1, 1, 0), 4),
+        ]));
+        assert!(face_ao_values(&m, Vec3::Y, 1.0).contains(&0));
+    }
+
+    #[test]
+    fn flat_plane_merges_to_one_quad_with_ao() {
+        let cells: Vec<_> = (0..16)
+            .flat_map(|x| (0..16).map(move |z| (IVec3::new(x, 0, z), 7)))
+            .collect();
+        let m = ao_mesh(&volume(&cells));
+        // Top and bottom are one quad each: nothing occludes a flat plane.
+        assert_eq!(face_ao_values(&m, Vec3::Y, 1.0).len(), 4);
+        assert_eq!(face_ao_values(&m, Vec3::NEG_Y, 0.0).len(), 4);
+        assert_eq!(quads(&m), 6);
+    }
+
+    #[test]
+    fn ao_splits_quads_only_where_values_differ() {
+        // A wall on a floor row: the row's top face splits around the wall.
+        let mut cells: Vec<_> = (0..6).map(|x| (IVec3::new(x, 0, 0), 2)).collect();
+        cells.push((IVec3::new(3, 1, 0), 2));
+        let plain = mesh(&volume(&cells));
+        let ao = ao_mesh(&volume(&cells));
+        assert!(
+            quads(&ao) > quads(&plain),
+            "{} vs {}",
+            quads(&ao),
+            quads(&plain)
+        );
+    }
+
+    #[test]
+    fn diagonal_joins_the_brighter_corners() {
+        // One dark corner (0): the diagonal must avoid it.
+        assert_eq!(quad_indices([0, 3, 3, 3]), [1, 2, 3, 1, 3, 0]);
+        assert_eq!(quad_indices([3, 0, 3, 3]), [0, 1, 2, 0, 2, 3]);
+        assert_eq!(quad_indices([3, 3, 3, 3]), [0, 1, 2, 0, 2, 3]);
+        // Both triangulations stay counter-clockwise from outside.
+        let cells = [
+            (IVec3::new(1, 0, 1), 4),
+            (IVec3::new(0, 1, 1), 4),
+            (IVec3::new(1, 1, 0), 4),
+        ];
+        let m = ao_mesh(&volume(&cells));
+        for tri in m.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|i| m.positions[tri[i] as usize]);
+            let n = m.normals[tri[0] as usize];
+            assert!((b - a).cross(c - a).dot(n) > 0.0);
+        }
+    }
+
+    #[test]
+    fn tile_cache_matches_full_meshing_with_ao() {
+        // AO reads edge and corner neighbours: a voxel at a tile corner
+        // changes the AO of up to 8 tiles, and the cache must follow.
+        let palette = Palette::default();
+        let params = MeshParams::new(&palette).ao(true);
+        let mut v = VoxelVolume::new(BoundSize::new(96, 48, 96));
+        for i in 0..600 {
+            let p = IVec3::new((i * 7) % 96, (i * 13) % 40, (i * 5) % 96);
+            v.set(p, 1 + (i % 3) as Voxel);
+        }
+        let mut cache = TileMeshCache::default();
+        assert_eq!(
+            *cache.mesh_shared(&v, &params),
+            mesh_volume_with(&v, &params)
+        );
+        for p in [
+            IVec3::new(16, 16, 16),
+            IVec3::new(15, 15, 15),
+            IVec3::new(31, 16, 0),
+            IVec3::new(32, 0, 31),
+        ] {
+            v.set(p, 9);
+            assert_eq!(
+                *cache.mesh_shared(&v, &params),
+                mesh_volume_with(&v, &params)
+            );
+            assert!(cache.last_rebuilt() < v.tile_count());
+            v.clear_at(p);
+            assert_eq!(
+                *cache.mesh_shared(&v, &params),
+                mesh_volume_with(&v, &params)
+            );
+        }
+        // Turning AO off rebuilds everything and matches the plain mesher.
+        let plain = MeshParams::new(&palette);
+        assert_eq!(*cache.mesh_shared(&v, &plain), mesh_volume(&v, &palette));
         assert_eq!(cache.last_rebuilt(), v.tile_count());
     }
 

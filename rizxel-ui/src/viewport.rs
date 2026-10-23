@@ -558,6 +558,7 @@ fn scene_frame(
         render_mode: state.view_mode == ViewMode::Render,
         floor_grid: view.floor_grid,
         voxel_grid: view.voxel_grid,
+        ao: view.ao(state.view_mode),
         background: theme::WORKSPACE,
         grid_color: theme::GRID_LINE,
         axis_x: theme::AXIS_X,

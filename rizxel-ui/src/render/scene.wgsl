@@ -296,6 +296,7 @@ struct VoxelIn {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
     @location(3) material: u32,
+    @location(4) ao: f32,
 };
 
 struct VoxelOut {
@@ -306,6 +307,8 @@ struct VoxelOut {
     // Layer opacity (1 in the opaque pass).
     @location(3) alpha: f32,
     @location(4) @interpolate(flat) material: u32,
+    // 0 = most occluded, 1 = open (interpolated across the quad).
+    @location(5) ao: f32,
 };
 
 /// Key light: above, slightly front-right of the default camera, so the top
@@ -321,6 +324,7 @@ fn voxel_out(v: VoxelIn, alpha: f32) -> VoxelOut {
     out.world = v.pos;
     out.alpha = alpha;
     out.material = min(v.material, 255u);
+    out.ao = v.ao;
     return out;
 }
 
@@ -335,6 +339,9 @@ fn vs_voxel(v: VoxelIn) -> VoxelOut {
 fn vs_voxel_translucent(v: VoxelIn, @location(7) alpha: f32) -> VoxelOut {
     return voxel_out(v, alpha);
 }
+
+/// Brightness of a fully occluded vertex.
+const AO_MIN: f32 = 0.5;
 
 /// Darkening of the voxel edge lines drawn on the model (Voxel Grid).
 const VOXEL_GRID_STRENGTH: f32 = 0.35;
@@ -415,7 +422,9 @@ fn voxel_color(in: VoxelOut) -> vec3<f32> {
         let shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
         color = in.color.rgb * shade;
     }
-    return min(color * (1.0 - grid), vec3<f32>(1.0));
+    // Ambient occlusion darkens corners and creases, never below half.
+    let ao = mix(1.0, AO_MIN + (1.0 - AO_MIN) * in.ao, cam.options.z);
+    return min(color * ao * (1.0 - grid), vec3<f32>(1.0));
 }
 
 @fragment
