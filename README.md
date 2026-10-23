@@ -1,8 +1,6 @@
 # Rizxel
 
-<!-- TODO(Phase 7): no GitHub remote is configured yet. Once it exists, replace this
-comment with the CI badge:
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml) -->
+[![CI](https://github.com/MRizky099/Rizxel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MRizky099/Rizxel/actions/workflows/ci.yml)
 
 A native voxel editor written in pure Rust. Rizxel uses `egui` for the interface and
 `wgpu` for the 3D viewport. Its layered architecture follows
