@@ -163,3 +163,97 @@ fn paste_to_new_layer_is_one_step() {
     assert_eq!(doc.data.layers.len(), 1);
     assert!(doc.data.layers[0].volume.get(IVec3::new(1, 1, 0)) != EMPTY_VOXEL);
 }
+
+/// An asymmetric 3-voxel L in the middle of the default bounds.
+fn center_l() -> Document {
+    let mut l = Layer::new("A", BoundSize::default());
+    l.volume.set(IVec3::new(10, 10, 10), 2);
+    l.volume.set(IVec3::new(11, 10, 10), 3);
+    l.volume.set(IVec3::new(10, 11, 10), 4);
+    Document::with_layers("t", vec![l])
+}
+
+#[test]
+fn transforms_are_single_steps() {
+    use rizxel_engine::tools::Transform;
+    let mut d = center_l();
+    let before = d.data.clone();
+    // About Z (+90°): +X goes to +Y, +Y to -X, in the same 2×2 box.
+    assert_eq!(d.transform(Transform::Rotate { axis: 2, turns: 1 }), Ok(4));
+    assert_eq!(
+        voxels(&d, 0),
+        vec![
+            (IVec3::new(10, 10, 10), 4),
+            (IVec3::new(11, 10, 10), 2),
+            (IVec3::new(11, 11, 10), 3),
+        ]
+    );
+    assert!(d.undo());
+    assert_eq!(d.data, before);
+    assert!(!d.can_undo());
+
+    // A selection is transformed alone and carried along.
+    d.select(
+        [IVec3::new(10, 10, 10), IVec3::new(11, 10, 10)],
+        MaskMode::Set,
+    );
+    assert!(d.transform(Transform::Flip { axis: 0 }).is_ok());
+    assert_eq!(d.data.layers[0].volume.get(IVec3::new(10, 10, 10)), 3);
+    assert_eq!(d.data.layers[0].volume.get(IVec3::new(11, 10, 10)), 2);
+    assert_eq!(d.data.layers[0].volume.get(IVec3::new(10, 11, 10)), 4);
+    assert_eq!(d.selection().unwrap().len(), 2);
+    assert!(d.undo());
+    assert_eq!(d.data.layers[0].volume.get(IVec3::new(10, 10, 10)), 2);
+}
+
+#[test]
+fn transforms_leaving_the_bounds_are_refused() {
+    use rizxel_app::TransformError;
+    use rizxel_engine::tools::Transform;
+    let mut l = Layer::new("A", BoundSize::new(8, 8, 8));
+    for y in 0..4 {
+        l.volume.set(IVec3::new(0, y, 0), 2);
+    }
+    let mut d = Document::with_layers("t", vec![l]);
+    d.set_bounds(BoundSize::new(8, 8, 8), false);
+    let before = d.data.clone();
+    let history = d.can_undo();
+    assert_eq!(
+        d.transform(Transform::Rotate { axis: 2, turns: 1 }),
+        Err(TransformError::OutOfBounds)
+    );
+    assert_eq!(d.data, before);
+    assert_eq!(d.can_undo(), history);
+    d.toggle_layer_locked(0);
+    assert!(matches!(
+        d.transform(Transform::Flip { axis: 1 }),
+        Err(TransformError::Blocked(_))
+    ));
+}
+
+#[test]
+fn mirror_copies_one_half_in_one_step() {
+    let mut d = center_l();
+    let before = d.data.clone();
+    let size = d.data.bounds.x() as i32;
+    assert!(d.mirror(0).is_ok());
+    let vol = &d.data.layers[0].volume;
+    assert_eq!(vol.get(IVec3::new(size - 1 - 11, 10, 10)), 3);
+    assert_eq!(vol.voxel_count(), 6);
+    assert!(d.undo());
+    assert_eq!(d.data, before);
+}
+
+#[test]
+fn rotate_facing_uses_the_camera_axis() {
+    let mut s = state_with(center_l());
+    s.camera
+        .snap(rizxel_app::ViewTarget::Face(rizxel_app::ViewFace::Top));
+    assert_eq!(s.facing_axis(), 1);
+    s.rotate_facing(false);
+    s.rotate_facing(true);
+    let d = s.doc_mut().unwrap();
+    assert_eq!(voxels(d, 0).len(), 3);
+    assert!(d.undo() && d.undo());
+    assert!(!d.can_undo(), "two steps");
+}

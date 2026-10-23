@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::IVec3;
-use rizxel_engine::tools::slice_layers;
+use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
 use rizxel_engine::{
     greedy_mesh, rasterize_shape, MaskMode, Mesh, SliceRequest, TileMeshCache, WorkPlane,
 };
@@ -176,6 +176,28 @@ impl EditBlock {
             EditBlock::Hidden => "The active layer is hidden",
             EditBlock::NotVoxels => {
                 "The active layer has no editable voxels (group, shape or clone)"
+            }
+        }
+    }
+}
+
+/// Why a transform did nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformError {
+    Blocked(EditBlock),
+    /// No voxels in the selection (or on the layer).
+    Empty,
+    /// Some voxels would leave the bounds; nothing was changed.
+    OutOfBounds,
+}
+
+impl TransformError {
+    pub const fn message(self) -> &'static str {
+        match self {
+            TransformError::Blocked(e) => e.message(),
+            TransformError::Empty => "Nothing to transform",
+            TransformError::OutOfBounds => {
+                "The result would leave the bounds: enlarge them or move the voxels first"
             }
         }
     }
@@ -807,6 +829,96 @@ impl Document {
         let removed = self.edit_voxels(layer, &changes);
         self.commit_edit_with_selection(layer, Selection::default());
         removed
+    }
+
+    // ---------------------------------------------------------- transforms
+
+    /// Layer index a transform may write to, or why not (hidden is fine).
+    fn transform_layer(&self) -> Result<usize, TransformError> {
+        let layer = self.active_layer;
+        match self.editable_layer(layer) {
+            Ok(()) | Err(EditBlock::Hidden) => Ok(layer),
+            Err(e) => Err(TransformError::Blocked(e)),
+        }
+    }
+
+    /// Rotates or flips the selection (or, without one, the whole active
+    /// layer) inside its box, as one undo step that carries the selection
+    /// along. Refused as a whole when a voxel would leave the bounds.
+    /// Returns the number of voxels changed.
+    pub fn transform(&mut self, t: Transform) -> Result<usize, TransformError> {
+        let layer = self.transform_layer()?;
+        let l = &self.data.layers[layer];
+        let selection = (!l.selection.is_empty()).then(|| l.selection.clone());
+        let sources: Vec<(IVec3, Voxel)> = match &selection {
+            Some(sel) => sel
+                .iter()
+                .map(|p| (p, l.volume.get(p)))
+                .filter(|&(_, v)| v != EMPTY_VOXEL)
+                .collect(),
+            None => l.volume.iter().collect(),
+        };
+        if sources.is_empty() {
+            return Err(TransformError::Empty);
+        }
+        let (min, size) = match selection.as_ref().and_then(Selection::bounds) {
+            Some((lo, hi)) => (lo, hi - lo),
+            None => cells_box(sources.iter().map(|c| c.0)).ok_or(TransformError::Empty)?,
+        };
+        let targets: Vec<(IVec3, Voxel)> = sources
+            .iter()
+            .map(|&(p, v)| (t.apply(p, min, size), v))
+            .collect();
+        let changes =
+            relocate_changes(&l.volume, &sources, &targets).ok_or(TransformError::OutOfBounds)?;
+        let bounds = VoxelBox::from_bounds(self.data.bounds);
+        let moved: Option<Selection> = selection.map(|sel| {
+            sel.iter()
+                .map(|p| t.apply(p, min, size))
+                .filter(|&p| bounds.contains(p))
+                .collect()
+        });
+        Ok(self.commit_transform(layer, &changes, moved))
+    }
+
+    /// One-shot mirror across the bounds' center plane on `axis`: the
+    /// selection's (or layer's) `-axis` half is copied onto the `+axis`
+    /// half, as one undo step. The mirrored cells join the selection.
+    pub fn mirror(&mut self, axis: usize) -> Result<usize, TransformError> {
+        let layer = self.transform_layer()?;
+        let bounds = self.data.bounds;
+        let l = &self.data.layers[layer];
+        let region = (!l.selection.is_empty()).then(|| l.selection.cells());
+        let changes = mirror_changes(&l.volume, region, axis, bounds);
+        let grown = region.map(|cells| {
+            let mut sel = l.selection.clone();
+            sel.extend(
+                cells
+                    .iter()
+                    .map(|&p| rizxel_engine::tools::mirror(p, bounds, axis)),
+            );
+            sel.translated(IVec3::ZERO, bounds)
+        });
+        if changes.is_empty() && grown.as_ref().is_none_or(|g| *g == l.selection) {
+            return Err(TransformError::Empty);
+        }
+        Ok(self.commit_transform(layer, &changes, grown))
+    }
+
+    fn commit_transform(
+        &mut self,
+        layer: usize,
+        changes: &[VoxelChange],
+        selection: Option<Selection>,
+    ) -> usize {
+        self.cancel_edit();
+        self.begin_edit();
+        let n = self.edit_voxels(layer, changes);
+        match selection {
+            Some(sel) => self.commit_edit_with_selection(layer, sel),
+            None => self.commit_edit(),
+        };
+        n
     }
 
     // ----------------------------------------------------------- clipboard

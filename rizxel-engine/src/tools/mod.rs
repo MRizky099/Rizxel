@@ -18,6 +18,7 @@ mod select;
 mod shape;
 mod slice;
 mod symmetry;
+mod transform;
 mod work_plane;
 
 use glam::IVec3;
@@ -39,6 +40,9 @@ pub use select::{select_box, selection_box};
 pub use shape::{shape_box, shape_cells};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
 pub use symmetry::{apply_symmetry, mirror};
+pub use transform::{
+    cells_box, flip, mirror as mirror_changes, relocate_changes, rotate90, Transform,
+};
 pub use work_plane::WorkPlane;
 
 use crate::raycast::RayHit;

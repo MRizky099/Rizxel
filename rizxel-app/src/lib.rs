@@ -18,13 +18,16 @@ use std::time::Instant;
 
 use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use glam::{IVec3, Mat4, Vec3};
+use rizxel_engine::tools::Transform;
 use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
 pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
-pub use document::{DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome};
+pub use document::{
+    DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
+};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
 pub use paths::AppPaths;
@@ -875,6 +878,53 @@ impl AppState {
             doc.cancel_paste();
             self.status_message = Some("Paste cancelled".to_owned());
         }
+    }
+
+    // -------------------------------------------------------- transforms
+
+    /// Axis the camera faces most (the default axis of rotate and flip).
+    pub fn facing_axis(&self) -> usize {
+        rizxel_engine::raycast::dominant_axis(self.camera.eye_direction())
+    }
+
+    /// Rotates the selection (or active layer) a quarter turn about `axis`:
+    /// `turns` is counterclockwise seen from `+axis`.
+    pub fn rotate(&mut self, axis: usize, turns: i32) {
+        let label = format!("Rotate {}° about {}", turns * 90, AXIS_NAMES[axis]);
+        self.run_transform(&label, |d| d.transform(Transform::Rotate { axis, turns }));
+    }
+
+    /// Rotates about the axis the camera faces, counterclockwise on screen
+    /// (`clockwise` reverses it): `Ctrl+R` / `Ctrl+Shift+R`.
+    pub fn rotate_facing(&mut self, clockwise: bool) {
+        let axis = self.facing_axis();
+        // Seen from the -axis side, a screen-counterclockwise turn is negative.
+        let toward_plus = self.camera.eye_direction()[axis] >= 0.0;
+        let turns = if toward_plus != clockwise { 1 } else { -1 };
+        self.rotate(axis, turns);
+    }
+
+    pub fn flip(&mut self, axis: usize) {
+        let label = format!("Flip {}", AXIS_NAMES[axis]);
+        self.run_transform(&label, |d| d.transform(Transform::Flip { axis }));
+    }
+
+    /// Copies the `-axis` half onto the `+axis` half (Mirror ▸).
+    pub fn mirror(&mut self, axis: usize) {
+        let label = format!("Mirror {}", AXIS_NAMES[axis]);
+        self.run_transform(&label, |d| d.mirror(axis));
+    }
+
+    fn run_transform(
+        &mut self,
+        label: &str,
+        f: impl FnOnce(&mut Document) -> Result<usize, TransformError>,
+    ) {
+        let Some(doc) = self.doc_mut() else { return };
+        self.status_message = Some(match f(doc) {
+            Ok(n) => format!("{label}: {n} voxels changed"),
+            Err(e) => format!("{label}: {}", e.message()),
+        });
     }
 
     // ------------------------------------------------------------- slice

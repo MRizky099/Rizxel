@@ -99,6 +99,22 @@ impl RizxelApp {
 
         // Consume longer combos first (Ctrl+Shift+S before Ctrl+S).
         let pressed = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
+        // Transforms: `R` and `F` are tool keys, so they take Ctrl. Rotation
+        // turns about the axis the camera faces. Checked before Undo/Redo,
+        // since `Ctrl+Z` also matches `Ctrl+Alt+Z`.
+        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::R)) {
+            self.state.rotate_facing(true);
+        }
+        if pressed(KeyboardShortcut::new(CMD, Key::R)) {
+            self.state.rotate_facing(false);
+        }
+        const CMD_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
+        if pressed(KeyboardShortcut::new(CMD_ALT, Key::Y)) {
+            self.state.flip(1);
+        }
+        if pressed(KeyboardShortcut::new(CMD_ALT, Key::Z)) {
+            self.state.flip(2);
+        }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::Z))
             || pressed(KeyboardShortcut::new(CMD, Key::Y))
         {
@@ -124,6 +140,7 @@ impl RizxelApp {
             Some(ClipboardCommand::PasteToNewLayer) => {
                 self.state.paste_to_new_layer();
             }
+            Some(ClipboardCommand::FlipX) => self.state.flip(0),
             None => {}
         }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::S)) {
@@ -241,9 +258,12 @@ enum ClipboardCommand {
     Paste,
     PasteInPlace,
     PasteToNewLayer,
+    /// `Ctrl+Alt+X` arrives as a cut event too.
+    FlipX,
 }
 
-/// `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+Alt+V` and `Ctrl+Shift+V`.
+/// `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+Alt+V`, `Ctrl+Shift+V` (and
+/// `Ctrl+Alt+X`, which egui also reports as a cut).
 /// egui-winit turns the first two into [`egui::Event::Copy`] / `Cut` and
 /// swallows the `Ctrl+V` press (it only reports OS clipboard text), so
 /// paste fires on the `V` release while `Ctrl` is held.
@@ -251,6 +271,7 @@ fn clipboard_command(ctx: &egui::Context) -> Option<ClipboardCommand> {
     ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
             egui::Event::Copy => Some(ClipboardCommand::Copy),
+            egui::Event::Cut if i.modifiers.alt => Some(ClipboardCommand::FlipX),
             egui::Event::Cut => Some(ClipboardCommand::Cut),
             egui::Event::Key {
                 key: Key::V,
