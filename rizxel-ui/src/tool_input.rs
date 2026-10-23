@@ -1699,7 +1699,7 @@ fn plane_edge_at(f: &Frame, doc: &Document, pos: Pos2) -> Option<Vec3> {
     best.map(|(_, point)| point)
 }
 
-/// Work plane drawing (`docs/Slice panel feature.png`): one translucent
+/// Work plane drawing: one translucent
 /// quad over the bounds' cross-section with an outline in the axis color
 /// (grey and thicker while slicing). The gizmo arrow is drawn only at
 /// `arrow_at` (a hovered or grabbed edge point, voxel space).
@@ -1735,7 +1735,7 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
             .push(LineInstance::new(q[i], q[(i + 1) % 4], color, width * ppp));
     }
     if let Some(point) = arrow_at {
-        // Gizmo arrow (`docs/gizmo arrow.jpg`) pointing where a positive
+        // Gizmo arrow pointing where a positive
         // drag moves the plane.
         let mut base = point;
         base[axis] = sheet;

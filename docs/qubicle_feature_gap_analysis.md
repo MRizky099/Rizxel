@@ -49,8 +49,6 @@ Slice Mode was studied hands-on in the **Qubicle 3.1.2 demo** (Windows, desktop 
 using the built-in *File ▸ Test Files ▸ Deer* sample (one 17 × 26 × 9 matrix). The sample
 was closed with **No** at "Save changes", so no Qubicle file was written. Results are in
 [Qubicle Slice Mode — observed in Qubicle 3.1.2](#qubicle-slice-mode--observed-in-qubicle-312).
-Screenshots of the key states are in `docs/images/qubicle_slice_mode/` and are cited by
-file name (for example `03_space_over_voxel_z_006.jpg`).
 
 Limits of the hands-on pass: the camera was moved only with the Cam Cube, the *Camera* menu
 and the wheel (no free right-drag orbit), the Box primitive and Extrude were only tried with
@@ -147,21 +145,21 @@ From *Tools ▸ Slice Mode*, *User Interface ▸ Toolbar* and *Tools ▸ Draw To
   seven-segment counter (unlit segments stay faintly visible, so `000` shows when off).
   Outside the Matrix Editor both are greyed out. Tooltip: "Slice Mode"; status bar:
   "Activate Slice Mode to view and modify 2D slices of a Matrix." The counter has no
-  tooltip and cannot be typed into. (`01_slice_on_y_001.jpg`)
+  tooltip and cannot be typed into.
 - **Slice Slider.** A thin vertical scrollbar-style slider along the right edge of the
   viewport, next to the Info panel. Its thumb is sized to one slice. It appears only while
   Slice Mode is on. Dragging the thumb moves the slice; the mouse wheel over it zooms the
-  camera instead. (`02_slider_y_010.jpg`)
+  camera instead.
 - **Slice Selector.** While Slice Mode is on, the matrix bounding box is drawn with a thick
   grey frame, and the far bounding-box walls get a voxel grid. Two light notches on the
   frame mark where the slice plane meets it. Dragging **anywhere on the frame** (not only
-  on a notch) moves the slice, with any tool active. (`02_slider_y_010.jpg`)
+  on a notch) moves the slice, with any tool active.
 - **Slice sheet.** The slice is filled with a light, translucent sheet across the whole
   matrix cross-section. The slice voxels are drawn solid on top of it.
 - **Tools ▸ Slice submenu** (not in the docs): **Slice Mode** (`Space`), **Next**,
   **Previous**, **First**, **Last**. Next/Previous/First/Last have no default shortcut; the
   status bar text is, for example, "Switch to the last slice." Like every menu entry they
-  can be bound through Qubicle's hover-and-press remapping. (`15_tools_slice_menu.jpg`)
+  can be bound through Qubicle's hover-and-press remapping.
 - **Hover feedback.** On the slice, the cursor cell is outlined and the Info panel's
   *Cursor* field shows its `x : y : z`. Over off-slice voxels the *Cursor* field stays
   empty, which signals that they cannot be picked.
@@ -176,38 +174,38 @@ From *Tools ▸ Slice Mode*, *User Interface ▸ Toolbar* and *Tools ▸ Draw To
 - The hidden half **follows the camera**. With an X slice at `004` seen from the default
   (top-front-right) view, the head side was hidden and the body was visible; after
   *Camera ▸ Isometric View ▸ Top Back Left* the body was hidden and the head side showed
-  through the sheet. (`04_x_004_home_view.jpg`, `05_x_004_opposite_view.jpg`)
+  through the sheet.
 
 ### Draw tools in Slice Mode compared with 3D
 
 | Tool | 3D | Slice Mode |
 |---|---|---|
-| Pencil (`B`) | Recolors the clicked voxel; does not add voxels | Recolors slice voxels **and adds voxels on empty slice cells**; off-slice voxels are not affected (`06_pencil_adds_on_slice.jpg`) |
+| Pencil (`B`) | Recolors the clicked voxel; does not add voxels | Recolors slice voxels **and adds voxels on empty slice cells**; off-slice voxels are not affected |
 | Attach (`A`) | Adds a voxel on the clicked face | Adds voxels on **empty slice cells** like the Pencil; clicking a slice voxel does nothing, because the neighbour along the slice normal is off the slice |
 | Eraser (`E`) | Removes the clicked voxel | Removes slice voxels only; off-slice voxels are not affected |
 | Paint | Recolors voxels | Recolors slice voxels only; status hint "Color voxels. Alternatively in a line with Shift and a rectangle with Ctrl." |
 | Pencil `Shift`+click | Line | Line within the slice |
-| Line tool | Chained clicks, `Esc` ends | Same; the pending segment is previewed as wireframe voxels on the slice (`07_line_tool_preview.jpg`) |
+| Line tool | Chained clicks, `Esc` ends | Same; the pending segment is previewed as wireframe voxels on the slice |
 | Rectangle tool (`R`) | Drag a rectangle | Drag on the slice draws a filled one-voxel-thick rectangle; a "Width: n Height: n" readout follows the cursor. Slice-aligned crosshair guide lines span the slice while hovering |
-| Paint Bucket (`G`) | Contiguous / Tolerance | With Contiguous on, the fill stays on the slice: the grey body was recolored on slice `006` only, and the grey front layers were unchanged in 3D (`14_paint_bucket_slice_only_3d_check.jpg`) |
-| Magic Wand (`W`) | Contiguous / Tolerance | Selects on the slice only, **even with Contiguous off**: selecting teal returned an `11 × 4 × 1` selection with the three slice voxels, leaving teal voxels on other slices unselected (`10_magic_wand_slice_only.jpg`) |
+| Paint Bucket (`G`) | Contiguous / Tolerance | With Contiguous on, the fill stays on the slice: the grey body was recolored on slice `006` only, and the grey front layers were unchanged in 3D |
+| Magic Wand (`W`) | Contiguous / Tolerance | Selects on the slice only, **even with Contiguous off**: selecting teal returned an `11 × 4 × 1` selection with the three slice voxels, leaving teal voxels on other slices unselected |
 | Box / Sphere / … primitives, Extrude | Multi-step (base → height → `Enter`) | A single drag showed the slice crosshair but produced nothing. Not conclusive: the multi-step primitive workflow was not completed in this pass |
 
 ### Tool Mirroring, Mask Mode and Trace Stroke in Slice Mode
 
 - **Mirroring along an axis that lies in the slice** (X or Y on a Z slice): the hover shows
   two cursor outlines and the mirrored voxel lands **on the same slice**, mirrored about the
-  matrix centre (`x = 13` → `x = 3` in a 17-wide matrix). (`08_mirror_x_same_slice.jpg`)
+  matrix centre (`x = 13` → `x = 3` in a 17-wide matrix).
 - **Mirroring along the slice normal** (Z on a Z slice): only one cursor outline shows, but
   the mirrored voxel is still written, **on the mirrored slice** (`z = 8` → `z = 0`), which
-  is off the active slice. (`09_mirror_z_lands_on_slice_001.jpg`)
+  is off the active slice.
 - **Mask Mode** works on the slice: with a selection and Mask on, the Pencil left the
   selected slice voxel unchanged and recolored an unselected one.
-  (`11_mask_mode_protects.jpg`) The on/off state of the Mask and Trace buttons is hard to
+  The on/off state of the Mask and Trace buttons is hard to
   read from their shading.
 - **Trace Stroke** on: a fast freehand stroke on the slice becomes a continuous outline.
   Off: the same stroke leaves only the sampled voxels with gaps between them. The enclosed
-  area is **not** filled either way. (`12_freehand_trace_off.jpg`, `13_freehand_trace_on.jpg`)
+  area is **not** filled either way.
 
 ### Answers to the verification checklist
 
@@ -216,7 +214,7 @@ From *Tools ▸ Slice Mode*, *User Interface ▸ Toolbar* and *Tools ▸ Draw To
    face of voxel `11 : 10 : 5` gave a Z slice `006`; hovering a side face of `3 : 10 : 4`
    gave an X slice `004`. Over empty space, `Space` restores the **last** axis and slice.
    `Space` while in Slice Mode turns it off. The first `2D` click after opening the Matrix
-   Editor starts at Y, slice `001` (the bottom layer). (`03_space_over_voxel_z_006.jpg`)
+   Editor starts at Y, slice `001` (the bottom layer).
 2. **Camera rotation.** The axis **does not follow the camera**. Switching to the RIGHT
    perpendicular view and to the opposite isometric view kept the Z slice.
 3. **Hidden side.** The side between the slice and the camera is hidden completely; the

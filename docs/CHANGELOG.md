@@ -27,7 +27,7 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased] — Slice Mode (2026-10-23)
 
-Qubicle-style global slice editing. Comparison and screenshots:
+Qubicle-style global slice editing. Comparison:
 `docs/qubicle_feature_gap_analysis.md`.
 
 ### Added
@@ -212,8 +212,7 @@ Qubicle-style global slice editing. Comparison and screenshots:
 - `Document::slice` / `cut_hidden_side` (visible, unlocked voxel layers, one
   undo step), `view_clip`, `view_mesh` (slice-clipped, closed cut face),
   `editable_layer`, `merged_visible_volume`.
-- Plane tool (reference: Goxel `tools/plane.c`, Qubicle slice mode,
-  `docs/Slice panel feature.png`): it never writes voxels. A click places the
+- Plane tool (reference: Goxel `tools/plane.c`, Qubicle slice mode): it never writes voxels. A click places the
   work plane on the clicked face and shows it; while visible, Brush (and the
   Cursor readout) snap onto it so voxels can be drawn in empty space. Slice
   works like Qubicle's 2D slice mode: it selects one slice layer that
@@ -229,7 +228,7 @@ Qubicle-style global slice editing. Comparison and screenshots:
   plane picks target the cell on the camera's side for add and erase alike.
   It also draws the yellow bounds with thick lines and the plane as a grey
   quad with a thick outline in the axis color (X red, Y green, Z blue) plus
-  a shaded 3D arrow gizmo (`docs/gizmo arrow.jpg`) of constant screen size,
+  a shaded 3D arrow gizmo of constant screen size,
   shown only while an edge is hovered or dragged. With Slice on, dragging moves the plane along its normal and a
   click jumps it to a face. Option bar: Visible, Axis, Position, Slice,
   Flip, Reset, Cut (+ Cap).
@@ -379,8 +378,7 @@ Qubicle-style global slice editing. Comparison and screenshots:
   DDA voxel raycast, Cursor/Brush/Plane/Move/Color Picker/Extrude, undo
   transactions (one drag = one step), hover and stamp previews. Includes the
   Plane **Slice** mode (§4.3a): axis-aligned cut with keep-side, offset and
-  optional cap, previewed as a translucent cut plane, undoable as one step
-  (reference: `docs/Slice panel feature.png`).
+  optional cap, previewed as a translucent cut plane, undoable as one step.
 - `docs/plan/rizxel_phase5b_implementation_plan.md` — Selection, Fill, Shape &
   Polish: per-layer selection with Set/Add/Subtract mask modes, Selection,
   Fuzzy Select, Fill, Shape, selection-aware Move/Extrude, option-bar
