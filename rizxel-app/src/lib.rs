@@ -484,11 +484,23 @@ impl ViewCorner {
 pub struct ViewOptions {
     /// Snapping to a face or corner switches to orthographic.
     pub auto_ortho: bool,
+    /// The infinite ground grid (`G`). Off still clears to the background.
+    pub floor_grid: bool,
+    /// Thin lines along the voxel edges on the model's faces (`Shift+G`).
+    pub voxel_grid: bool,
+    /// The bounds wireframe, the occupied-region box and the slice frame
+    /// (`Shift+B`). The slice frame's drag handle works either way.
+    pub model_bounds: bool,
 }
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        Self { auto_ortho: true }
+        Self {
+            auto_ortho: true,
+            floor_grid: true,
+            voxel_grid: false,
+            model_bounds: true,
+        }
     }
 }
 

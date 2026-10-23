@@ -240,8 +240,9 @@ pub fn show(
         Vec2::splat(84.0),
     );
     let projection_rect = projection_button_rect(cube_rect);
+    let toggles_rect = view_toggles_rect(rect);
     let ppp = ui.ctx().pixels_per_point();
-    let blocked: Vec<Rect> = [cube_rect, projection_rect]
+    let blocked: Vec<Rect> = [cube_rect, projection_rect, toggles_rect]
         .into_iter()
         .chain(slider.map(|(r, _)| r))
         .collect();
@@ -260,21 +261,10 @@ pub fn show(
     let voxels = state.doc().map(|d| meshes.get(d)).or(voxels);
 
     // --- Scene (wgpu) -------------------------------------------------------
-    // While slicing, the bounds are drawn one voxel thick (Slice panel look).
-    let bold = state.doc().is_some_and(|d| d.plane.slice);
-    let mut frame = scene_frame(
-        &state.camera,
-        &proj,
-        target,
-        state.view_mode,
-        bmin,
-        bmax,
-        ppp,
-        bold,
-    );
+    let mut frame = scene_frame(state, &proj, target, bmin, bmax, ppp);
     frame.fills.extend(preview.fills);
     frame.lines.extend(preview.lines);
-    if let Some((lo, hi)) = occupied {
+    if let Some((lo, hi)) = occupied.filter(|_| state.view.model_bounds) {
         let color = theme::BOUND.gamma_multiply(0.45);
         frame.lines.extend(
             bounds_edges(lo, hi)
@@ -321,6 +311,7 @@ pub fn show(
     if projection_button(ui, &state.camera, projection_rect) {
         state.camera.toggle_projection();
     }
+    view_toggles(ui, &mut state.view, toggles_rect);
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
@@ -440,34 +431,37 @@ fn paint_slice_slider(painter: &egui::Painter, state: &AppState, track: Rect, ac
     }
 }
 
-/// Builds the GPU scene description for this frame.
-#[allow(clippy::too_many_arguments)]
+/// Builds the GPU scene description for this frame. While slicing, the
+/// bounds are drawn one voxel thick (Slice panel look).
 fn scene_frame(
-    camera: &OrbitCamera,
+    state: &AppState,
     proj: &Projection,
     target: Vec3,
-    view_mode: ViewMode,
     bmin: Vec3,
     bmax: Vec3,
     pixels_per_point: f32,
-    bold: bool,
 ) -> SceneFrame {
+    let camera = &state.camera;
+    let view = state.view;
+    let bold = state.doc().is_some_and(|d| d.plane.slice);
     let bound_color = if bold {
         theme::BOUND
     } else {
         theme::BOUND.gamma_multiply(0.9)
     };
-    let lines: Vec<LineInstance> = bounds_edges(bmin, bmax)
-        .into_iter()
-        .map(|(a, b)| {
-            let width = if bold {
-                SLICE_BOUNDS_WIDTH
-            } else {
-                BOUNDS_WIDTH
-            } * pixels_per_point;
-            LineInstance::new(a, b, bound_color, width)
-        })
-        .collect();
+    let width = if bold {
+        SLICE_BOUNDS_WIDTH
+    } else {
+        BOUNDS_WIDTH
+    } * pixels_per_point;
+    let lines: Vec<LineInstance> = if view.model_bounds {
+        bounds_edges(bmin, bmax)
+            .into_iter()
+            .map(|(a, b)| LineInstance::new(a, b, bound_color, width))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     SceneFrame {
         view_proj: proj.view_proj,
@@ -478,7 +472,9 @@ fn scene_frame(
         distance: camera.distance,
         // Align grid lines with the voxel cells of the (possibly odd-sized) bounds.
         grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
-        render_mode: view_mode == ViewMode::Render,
+        render_mode: state.view_mode == ViewMode::Render,
+        floor_grid: view.floor_grid,
+        voxel_grid: view.voxel_grid,
         background: theme::WORKSPACE,
         grid_color: theme::GRID_LINE,
         axis_x: theme::AXIS_X,
@@ -836,6 +832,61 @@ fn projection_button(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> bool {
     response.clicked()
 }
 
+/// Size of one view toggle button, in logical points.
+const TOGGLE_SIZE: f32 = 26.0;
+
+/// Row of view toggle buttons in the top-left corner of the viewport.
+fn view_toggles_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        rect.left_top() + Vec2::splat(10.0),
+        Vec2::new(TOGGLE_SIZE * 3.0 + 4.0, TOGGLE_SIZE),
+    )
+}
+
+/// Floor grid, voxel grid and model bounds buttons (same as *View ▸ Show*).
+fn view_toggles(ui: &mut Ui, view: &mut rizxel_app::ViewOptions, rect: Rect) {
+    use egui_phosphor::regular as icon;
+    let toggles: [(&mut bool, &str, &str); 3] = [
+        (&mut view.floor_grid, icon::GRID_FOUR, "Floor Grid (G)"),
+        (&mut view.voxel_grid, icon::HASH, "Voxel Grid (Shift+G)"),
+        (
+            &mut view.model_bounds,
+            icon::BOUNDING_BOX,
+            "Model Bounds (Shift+B)",
+        ),
+    ];
+    for (i, (on, glyph, tip)) in toggles.into_iter().enumerate() {
+        let r = Rect::from_min_size(
+            rect.min + Vec2::new(i as f32 * (TOGGLE_SIZE + 2.0), 0.0),
+            Vec2::splat(TOGGLE_SIZE),
+        );
+        let response = ui
+            .interact(r, ui.id().with(("view_toggle", i)), Sense::click())
+            .on_hover_text(tip);
+        if response.clicked() {
+            *on = !*on;
+        }
+        let fill = match (*on, response.hovered()) {
+            (true, _) => Color32::from_rgb(0x62, 0x62, 0x6b),
+            (false, true) => Color32::from_rgb(0x4a, 0x4a, 0x52),
+            (false, false) => Color32::from_black_alpha(90),
+        };
+        let painter = ui.painter();
+        painter.rect_filled(r, 4.0, fill);
+        painter.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            glyph,
+            theme::icon(15.0),
+            if *on {
+                theme::TEXT_STRONG
+            } else {
+                theme::TEXT_DIM
+            },
+        );
+    }
+}
+
 /// Linear blend from `a` toward `b` by `t` in 0..=1.
 fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
@@ -973,6 +1024,24 @@ mod tests {
         }
         assert_eq!(picks[0], Some((IVec3::new(5, 3, 5), IVec3::Z)));
         assert_eq!(picks[0], picks[1]);
+    }
+
+    #[test]
+    fn model_bounds_toggle_hides_the_wireframe() {
+        let mut state = AppState::default();
+        let rect = test_rect();
+        let bounds = state.doc().unwrap().data.bounds;
+        let (bmin, bmax) = bounds_box(bounds);
+        let proj = Projection::new(&state.camera, Vec3::ZERO, rect);
+        let frame = scene_frame(&state, &proj, Vec3::ZERO, bmin, bmax, 1.0);
+        assert_eq!(frame.lines.len(), 12);
+        assert!(frame.floor_grid && !frame.voxel_grid);
+        // Also while slicing (the bold slice frame).
+        state.doc_mut().unwrap().plane.slice = true;
+        state.view.model_bounds = false;
+        state.view.floor_grid = false;
+        let frame = scene_frame(&state, &proj, Vec3::ZERO, bmin, bmax, 1.0);
+        assert!(frame.lines.is_empty() && !frame.floor_grid);
     }
 
     #[test]

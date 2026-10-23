@@ -20,6 +20,8 @@ struct Camera {
     forward: vec4<f32>,
     // xyz = center of the grid fade (eye, or orbit target in orthographic).
     focus: vec4<f32>,
+    // View toggles (0 / 1): x = floor grid, y = voxel grid, z = ambient occlusion.
+    options: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -156,7 +158,8 @@ fn fs_grid(in: GridOut) -> GridFrag {
         bg = mix(bg * 0.55, bg * 1.3, in.ndc.y * 0.5 + 0.5);
     }
 
-    let lines = f32(above);
+    // Hidden floor grid: background only.
+    let lines = f32(above) * cam.options.x;
     var color = bg;
     color = mix(color, cam.grid_color.rgb, s.lines * lines);
     color = mix(color, cam.axis_x_color.rgb, s.axis_x * lines);
@@ -285,6 +288,7 @@ struct VoxelOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world: vec3<f32>,
 };
 
 /// Key light: above, slightly front-right of the default camera, so the top
@@ -298,12 +302,43 @@ fn vs_voxel(v: VoxelIn) -> VoxelOut {
     out.pos = cam.view_proj * vec4<f32>(v.pos, 1.0);
     out.normal = v.normal;
     out.color = v.color;
+    out.world = v.pos;
     return out;
+}
+
+/// Darkening of the voxel edge lines drawn on the model (Voxel Grid).
+const VOXEL_GRID_STRENGTH: f32 = 0.35;
+
+/// Coverage of the voxel edge lines at a fragment on a face with normal
+/// `n`: about one pixel wide, fading out when voxels get smaller than a few
+/// pixels. Works on greedy-merged quads because it only uses the position.
+fn voxel_grid_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    // Voxel corners sit on integers once the bounds' XZ offset is removed.
+    let coord = world - vec3<f32>(cam.grid_origin.x, 0.0, cam.grid_origin.y);
+    // Derivatives first, in uniform control flow, per axis so a face edge
+    // inside a 2x2 pixel quad does not blow them up.
+    let d = max(fwidth(coord), vec3<f32>(1e-6));
+    let g = abs(fract(coord - 0.5) - 0.5) / d;
+    let a = abs(n);
+    // Distance (in px) to the nearest line on the two in-plane axes.
+    var px = min(g.y, g.z);
+    var lod = max(d.y, d.z);
+    if a.y > 0.5 {
+        px = min(g.x, g.z);
+        lod = max(d.x, d.z);
+    } else if a.z > 0.5 {
+        px = min(g.x, g.y);
+        lod = max(d.x, d.y);
+    }
+    let line = 1.0 - min(px, 1.0);
+    // Voxels under ~4 px: fade the lines out instead of a solid tint.
+    return line * (1.0 - smoothstep(0.15, 0.3, lod));
 }
 
 @fragment
 fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
+    let grid = voxel_grid_coverage(in.world, n) * cam.options.y * VOXEL_GRID_STRENGTH;
     var shade: f32;
     if cam.viewport.z > 0.5 {
         // Render: Lambert key light + ambient + a half-Lambert fill so faces
@@ -317,5 +352,5 @@ fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
         // so adjacent faces of one color stay distinguishable.
         shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
     }
-    return vec4<f32>(min(in.color.rgb * shade, vec3<f32>(1.0)), 1.0);
+    return vec4<f32>(min(in.color.rgb * shade * (1.0 - grid), vec3<f32>(1.0)), 1.0);
 }

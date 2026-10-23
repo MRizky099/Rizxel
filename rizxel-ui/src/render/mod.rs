@@ -52,6 +52,9 @@ struct CameraUniform {
     /// xyz = center of the grid fade (the eye, or the orbit target in
     /// orthographic mode).
     focus: [f32; 4],
+    /// View toggles as 0 / 1: x = floor grid, y = voxel grid, z = ambient
+    /// occlusion, w unused.
+    options: [f32; 4],
 }
 
 /// One thick line segment (instanced; see `vs_line`).
@@ -159,6 +162,10 @@ pub struct SceneFrame {
     /// XZ offset of the grid so lines align with voxel boundaries.
     pub grid_origin: Vec2,
     pub render_mode: bool,
+    /// Draw the floor grid lines (the background is drawn either way).
+    pub floor_grid: bool,
+    /// Draw voxel edge lines on the model.
+    pub voxel_grid: bool,
     pub background: Color32,
     pub grid_color: Color32,
     pub axis_x: Color32,
@@ -172,6 +179,7 @@ pub struct SceneFrame {
 impl SceneFrame {
     fn uniform(&self, size_px: [u32; 2]) -> CameraUniform {
         let v4 = |c: Color32| rgba(c);
+        let flag = |on: bool| if on { 1.0 } else { 0.0 };
         CameraUniform {
             view_proj: self.view_proj.to_cols_array_2d(),
             inv_view_proj: self.view_proj.inverse().to_cols_array_2d(),
@@ -187,13 +195,11 @@ impl SceneFrame {
             grid_color: v4(self.grid_color),
             axis_x_color: v4(self.axis_x),
             axis_z_color: v4(self.axis_z),
-            forward: self
-                .forward
-                .extend(f32::from(u8::from(self.ortho)))
-                .to_array(),
+            forward: self.forward.extend(flag(self.ortho)).to_array(),
             focus: if self.ortho { self.target } else { self.eye }
                 .extend(0.0)
                 .to_array(),
+            options: [flag(self.floor_grid), flag(self.voxel_grid), 0.0, 0.0],
         }
     }
 }
@@ -770,7 +776,7 @@ impl ViewportRenderer {
             );
             pass.draw_indexed(0..self.voxel_index_count, 0, 0..1);
         }
-        if eye_below_ground(frame.eye) {
+        if frame.floor_grid && eye_below_ground(frame.eye) {
             pass.set_pipeline(&self.grid_under_pipeline);
             pass.draw(0..3, 0..1);
         }
@@ -842,8 +848,8 @@ mod tests {
 
     #[test]
     fn gpu_struct_sizes_match_wgsl() {
-        // WGSL struct: 2 mat4 + 9 vec4 = 128 + 144 bytes.
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 272);
+        // WGSL struct: 2 mat4 + 10 vec4 = 128 + 160 bytes.
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 288);
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
@@ -929,6 +935,66 @@ mod tests {
         assert!(
             !eye_below_ground(Vec3::ZERO),
             "an eye on the ground is above it"
+        );
+    }
+
+    #[test]
+    fn ground_hides_nothing_from_below_in_ortho() {
+        // The orthographic eye sits far back on the line of sight, so any
+        // upward view is "below the ground" and a level face view is not.
+        use rizxel_app::{OrbitCamera, ViewFace, ViewTarget};
+        let target = Vec3::new(0.0, 8.0, 0.0);
+        let mut cam = OrbitCamera::default();
+        cam.toggle_projection();
+        cam.snap(ViewTarget::Face(ViewFace::Bottom));
+        assert!(eye_below_ground(cam.eye(target)));
+        cam.pitch = -5.0;
+        assert!(eye_below_ground(cam.eye(target)));
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        assert!(!eye_below_ground(cam.eye(target)));
+        cam.snap(ViewTarget::Face(ViewFace::Top));
+        assert!(!eye_below_ground(cam.eye(target)));
+    }
+
+    #[test]
+    fn view_toggles_reach_the_uniform() {
+        let mut frame = SceneFrame {
+            view_proj: Mat4::IDENTITY,
+            eye: Vec3::new(1.0, 2.0, 3.0),
+            target: Vec3::new(4.0, 5.0, 6.0),
+            forward: Vec3::NEG_Z,
+            ortho: false,
+            distance: 10.0,
+            grid_origin: Vec2::ZERO,
+            render_mode: false,
+            floor_grid: true,
+            voxel_grid: false,
+            background: Color32::BLACK,
+            grid_color: Color32::WHITE,
+            axis_x: Color32::RED,
+            axis_z: Color32::BLUE,
+            lines: Vec::new(),
+            fills: Vec::new(),
+            voxels: None,
+        };
+        let u = frame.uniform([100, 100]);
+        assert_eq!(u.options[..2], [1.0, 0.0]);
+        assert_eq!(u.forward, [0.0, 0.0, -1.0, 0.0]);
+        assert_eq!(
+            u.focus[..3],
+            [1.0, 2.0, 3.0],
+            "perspective fades around the eye"
+        );
+        frame.ortho = true;
+        frame.floor_grid = false;
+        frame.voxel_grid = true;
+        let u = frame.uniform([100, 100]);
+        assert_eq!(u.options[..2], [0.0, 1.0]);
+        assert_eq!(u.forward[3], 1.0);
+        assert_eq!(
+            u.focus[..3],
+            [4.0, 5.0, 6.0],
+            "ortho fades around the target"
         );
     }
 

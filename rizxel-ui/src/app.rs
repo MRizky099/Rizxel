@@ -186,6 +186,18 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Home)) {
             self.state.frame_work_area();
         }
+        // View toggles. Shifted keys first, and before the tool letters
+        // (`B` is the Brush), since plain patterns also match them.
+        let view = &mut self.state.view;
+        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::G)) {
+            view.voxel_grid = !view.voxel_grid;
+        }
+        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::G)) {
+            view.floor_grid = !view.floor_grid;
+        }
+        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::B)) {
+            view.model_bounds = !view.model_bounds;
+        }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
         for tool in rizxel_engine::Tool::ALL {

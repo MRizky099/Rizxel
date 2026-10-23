@@ -139,6 +139,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui_state.zen_mode = !ui_state.zen_mode;
             }
             slice_menu(ui, state);
+            show_menu(ui, state);
             ui.separator();
 
             // Standard views: each family of targets is its own submenu.
@@ -214,6 +215,24 @@ fn camera_items(ui: &mut Ui, state: &mut AppState) {
     if menu_item(ui, icon::HOUSE, "Home View", "Shift+Home", true) {
         state.camera.reset();
     }
+}
+
+/// View > Show: what the viewport draws besides the model (also on the
+/// viewport's toggle buttons).
+fn show_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.menu_button(icon_label(ui, icon::EYE, "Show", None), |ui| {
+        ui.set_min_width(200.0);
+        let view = &mut state.view;
+        for (on, label, shortcut) in [
+            (&mut view.floor_grid, "Floor Grid", "G"),
+            (&mut view.voxel_grid, "Voxel Grid", "Shift+G"),
+            (&mut view.model_bounds, "Model Bounds", "Shift+B"),
+        ] {
+            if menu_item(ui, check_glyph(*on), label, shortcut, true) {
+                *on = !*on;
+            }
+        }
+    });
 }
 
 /// Leading glyph of a menu toggle.
@@ -775,6 +794,9 @@ fn shortcut_rows(ui: &mut Ui) {
         (". / Numpad .", "Frame selection (or the model)"),
         ("Home", "Frame work area (model bounds)"),
         ("Shift+Home", "Home view (reset camera)"),
+        ("G", "Show or hide the floor grid"),
+        ("Shift+G", "Show or hide the voxel grid on the model"),
+        ("Shift+B", "Show or hide the model bounds"),
         ("Right drag (viewport)", "Orbit camera"),
         ("Middle drag (viewport)", "Pan camera"),
         ("Middle double-click", "Reset camera"),
