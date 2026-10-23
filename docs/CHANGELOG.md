@@ -3,21 +3,28 @@
 All notable changes to Rizxel are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — Phase 7: CI (2026-10-23)
+## [Unreleased]
 
-### Added
+## [0.2.0] — 2026-10-23
+
+First tagged release: everything from Phase 1 to Phase 7 (milestone M1). The
+sections below keep the per-phase notes, newest first.
+
+### Phase 7: CI (2026-10-23)
+
+#### Added
 - GitHub Actions workflow (`.github/workflows/ci.yml`): `cargo fmt --check`
   on Linux, then `clippy -D warnings` and `cargo test --workspace` on
   Windows and Linux. Runs on pushes to `main` and `ui-*` and on every pull
   request.
 
-### Changed
+#### Changed
 - `.tmp-craft/` is ignored, so a local `craft-ui` checkout can't be
   committed by accident.
 
-## [Unreleased] — Fixes (2026-10-23)
+### Fixes (2026-10-23)
 
-### Fixed
+#### Fixed
 - The model can be seen from below the ground (B1). With the camera under
   the `y = 0` plane, the ground grid wrote its depth in front of the model,
   so only the bottom faces of the lowest voxel row showed. From below, the
@@ -25,12 +32,12 @@ All notable changes to Rizxel are documented here. Format follows
   after the voxels as a faded overlay without depth writes
   (`fs_grid_under`, `eye_below_ground`).
 
-## [Unreleased] — Slice Mode (2026-10-23)
+### Slice Mode (2026-10-23)
 
 Qubicle-style global slice editing. Comparison:
 `docs/qubicle_feature_gap_analysis.md`.
 
-### Added
+#### Added
 - **Slice Mode** from any tool, without switching tools (`14d6d52`):
   - A `2D` button in the Tools panel with a 1-based slice counter
     (`Y 3/32`).
@@ -48,16 +55,16 @@ Qubicle-style global slice editing. Comparison:
   slice. Turning Slice Mode on another way or placing a new plane drops the
   pending resume.
 
-### Changed
+#### Changed
 - The camera's side of the slice is hidden every frame, so the Flip button
   is gone. The context layer is dropped and the slice sheet sits on the
   slice's far face.
 - Slice moves are not undo steps; undo and redo move the slice back to the
   edited slice.
 
-## [Unreleased] — Import & Export: MagicaVoxel, Goxel, OBJ/MTL, STL (2026-10-20)
+### Import & Export: MagicaVoxel, Goxel, OBJ/MTL, STL (2026-10-20)
 
-### Added
+#### Added
 - **File ▸ Import** and **File ▸ Export** submenus. **Open…** and the
   command line also accept `.vox`, `.gox`, `.obj` and `.stl`. Imported
   models open in a new tab marked unsaved. Spec:
@@ -112,14 +119,14 @@ Qubicle-style global slice editing. Comparison:
   the MagicaVoxel samples and your files when present (`chr_knight.vox`,
   `chr_knight.obj`, `coba_goxel.gox`).
 
-### Changed
+#### Changed
 - File ▸ Export OBJ now writes the MagicaVoxel-style OBJ + MTL + PNG
   instead of vertex-colored OBJ (`export_obj` remains for generic meshes).
 - `rizxel-io` depends on `png` (already in the build via `image`).
 
-## [Unreleased] — Phase 5b: Selection, Fill, Shape & Polish (2026-10-20)
+### Phase 5b: Selection, Fill, Shape & Polish (2026-10-20)
 
-### Added
+#### Added
 - Selection model (`rizxel-app/src/selection.rs`): `Selection` (sparse cell
   set with an incrementally cached AABB and a revision for render caches),
   `combine` with `MaskMode::{Set, Add, Subtract}`, `visible_shell`,
@@ -166,7 +173,7 @@ Qubicle-style global slice editing. Comparison:
   selections, selection move/extrude in one step, and a randomized tool
   sequence whose undo-all / redo-all restore grids and selections exactly).
 
-### Changed
+#### Changed
 - `FillOptions` gains `mode` and `connected`; `MoveOptions` gains
   `overwrite`; `SelectionOptions` and `FuzzySelectOptions` gain `all_layers`.
 - `Tool::is_available` is gone (every tool works); `Tool::selects` marks the
@@ -174,9 +181,9 @@ Qubicle-style global slice editing. Comparison:
 - The extrude hover cache is keyed on the extrude options and selection too.
 - `AppState::selected_voxels` is a method (was a never-updated field).
 
-## [Unreleased] — Phase 5a: Interaction & Core Tools (2026-10-20)
+### Phase 5a: Interaction & Core Tools (2026-10-20)
 
-### Added
+#### Added
 - Voxel picking (`rizxel-engine/src/raycast.rs`): `RayHit { voxel, normal, t }`,
   Amanatides–Woo DDA `raycast_grid` / `raycast_volume` clipped against an
   integer box first, `raycast_face` for plane picks and `raycast_floor`
@@ -250,15 +257,15 @@ Qubicle-style global slice editing. Comparison:
   `rizxel-app/tests/phase5a_tools.rs` (transactions, random undo/redo,
   multi-layer slice with hidden/locked layers).
 
-### Changed
+#### Changed
 - Tool hints describe the modifier keys; Plane has a separate hint while
   slicing (`Tool::hint_with`). Plane no longer uses Add/Subtract/Join/Paint.
 - `VoxelOp::Join` adds into empty cells only (existing colors win);
   `Add` overwrites.
 
-## [Unreleased] — `.rzxl` v3: Layer Data (2026-10-19)
+### `.rzxl` v3: Layer Data (2026-10-19)
 
-### Added
+#### Added
 - `.rzxl` **version 3** (spec: `docs/rzxl_format.md`). Layers gain a stable
   `id`, `opacity`, `parent` (group), `material`, a non-destructive `crop`
   box, and a tagged `kind`: `voxels`, `group`, `clone` (linked clone of a
@@ -284,7 +291,7 @@ Qubicle-style global slice editing. Comparison:
   trip, v2 migration, every validation rule). The sample model example now
   includes a group, a sphere shape layer and a cropped linked clone.
 
-### Changed
+#### Changed
 - Version 1/2 files load through migration (layers get ids `1..=n`). Files
   newer than version 3 are still rejected rather than partially loaded.
 - Mesh, voxel count, occupied bounds and OBJ export use the evaluated
@@ -298,9 +305,9 @@ Qubicle-style global slice editing. Comparison:
     still links to a merged one. "Delete hidden" is refused in the same case.
   - Only voxel layers accept voxel edits.
 
-## [Unreleased] — Phase 4: Core Engine & Data (2026-10-19)
+### Phase 4: Core Engine & Data (2026-10-19)
 
-### Added
+#### Added
 - `rizxel-math`: `Voxel = u8` palette index (`EMPTY_VOXEL = 0`,
   `FIRST_COLOR_INDEX = 1`), `Palette::is_selectable`, and `volume.rs` with
   the Goxel-style tiled `VoxelVolume` (16³ tiles in a hash map keyed by tile
@@ -334,7 +341,7 @@ Qubicle-style global slice editing. Comparison:
 - Phase 4 smoke test (`rizxel-app/tests/phase4_smoke.rs`): edit, undo, redo,
   save/load, mesh and OBJ export.
 
-### Changed
+#### Changed
 - Shrinking the bounds is now undoable with voxel content: `Edit::SetBounds`
   records the clipped voxels and restores them on undo (merged bound drags
   stay consistent on redo).
@@ -349,9 +356,9 @@ Qubicle-style global slice editing. Comparison:
   reference clones of CADCraft (`cadcraft`, with its current crate
   layering) and Goxel are listed.
 
-## [Unreleased] — UI Optimization: View Cube, Zen Mode, Resizable Panels
+### UI Optimization: View Cube, Zen Mode, Resizable Panels
 
-### Added
+#### Added
 - Enhanced view cube with 26 clickable view targets in the Goxel style: the
   6 faces, the 12 edges (45° diagonal views) and the 8 corners
   (three-quarter views). Edges render as thick accent lines and corners as
@@ -363,14 +370,14 @@ Qubicle-style global slice editing. Comparison:
   and sidebar, leaving the title bar, tabs, viewport (with view cube and
   axis gizmo) and status bar.
 
-### Changed
+#### Changed
 - Tools panel and sidebar are resizable: the tools panel can grow from 48 to
   200 pt and the sidebar from 200 to 400 pt via their separator lines; the
   sidebar no longer paints a duplicate border.
 
-## [Unreleased] — Phase Plans: 4, 5a, 5b (2026-10-19)
+### Phase Plans: 4, 5a, 5b (2026-10-19)
 
-### Added
+#### Added
 - `docs/plan/rizxel_phase4_implementation_plan.md` — Core Engine & Data: tiled
   `VoxelVolume` (Goxel-style 16³ hash-mapped tiles), greedy meshing, lit GPU
   voxel pipeline, `.rzxl` version 2 with RLE voxel runs, OBJ export enablement.
@@ -384,13 +391,13 @@ Qubicle-style global slice editing. Comparison:
   Fuzzy Select, Fill, Shape, selection-aware Move/Extrude, option-bar
   completion and the performance pass.
 
-### Changed
+#### Changed
 - `docs/plan/rizxel_native_architecture_plan.md` splits Phase 5 into 5a and 5b and
   links each phase heading to its implementation plan.
 
-## [Unreleased] — Phase 3: WGPU Viewport (2026-10-19)
+### Phase 3: WGPU Viewport (2026-10-19)
 
-### Added
+#### Added
 - Native wgpu viewport renderer (`rizxel-ui/src/render/`) embedded in the
   central panel through `egui_wgpu::Callback`:
   - Offscreen 4× MSAA color + `Depth32Float` targets, resolved and blitted
@@ -406,16 +413,16 @@ Qubicle-style global slice editing. Comparison:
   clamping, color conversion.
 - Dependencies: `bytemuck` (rizxel-ui), `naga` 30 (dev, WGSL validation).
 
-### Changed
+#### Changed
 - `viewport.rs` no longer paints the grid/bounds/hover cell with the egui
   painter; it builds a `SceneFrame` for the GPU. The view cube and axis gizmo
   remain egui overlays.
 - `docs/rizxel_phase1-2_implementation_plan.md` renamed to
   `docs/plan/rizxel_phase1-3_implementation_plan.md` and extended with Phase 3.
 
-## UI optimization (2026-10-19)
+### UI optimization (2026-10-19)
 
-### Added
+#### Added
 - Per-tool option bar parameters after the Paint button, modeled on Goxel's
   tool panels (`rizxel-engine/src/tools/options.rs`, `ToolOptions`):
   - Cursor: Show names (On Hover / Always).
@@ -435,16 +442,16 @@ Qubicle-style global slice editing. Comparison:
   is a shared widget (`widgets::hscroll_strip`) also used by the tab bar.
 - Camera pan (`OrbitCamera::pan`, `pan_screen`, `reset`).
 
-### Changed
+#### Changed
 - Window opens windowed (not maximized) at 1080×640; minimum 800×480.
 - Option bar Undo/Redo/Add/Subtract/Join/Paint use the pixel-art icons.
   Add/Subtract/Join/Paint are dimmed for tools they do not affect.
 - Viewport controls: wheel = zoom, right drag = orbit, middle drag = pan,
   middle double-click = reset camera. Left button is reserved for tools.
 
-## UI polish (2026-10-19)
+### UI polish (2026-10-19)
 
-### Added
+#### Added
 - Pixel-art tool icons: `docs/Pixel-Art Voxel Editor Icon Sheet-2.png` sliced
   into 17 transparent 128×128 PNGs in `assets/icons/` (tools, settings, undo,
   redo, add, subtract, join, paint). The toolbar uses the 10 tool icons and
@@ -456,50 +463,50 @@ Qubicle-style global slice editing. Comparison:
   left/right chevron buttons, auto-scroll to the active/new tab, and a "+"
   button pinned outside the scroll area.
 
-### Changed
+#### Changed
 - Option bar height 40 → 48 px.
 - Model/Render toggle sized to its text (`px-3 py-1`) instead of stretching to
   the option bar's full height.
 
-## Phase 1–2: Workspace & UI Skeleton (2026-10-18)
+### Phase 1–2: Workspace & UI Skeleton (2026-10-18)
 
 Project restarted as a pure Rust application. The previous Tauri/React
 prototype is discontinued.
 
-### Added
+#### Added
 
-#### Workspace
+##### Workspace
 - Cargo workspace with 5 layered crates (`ui → app → io → engine → math`),
   shared `[workspace.dependencies]`, `unsafe_code = "forbid"`, clippy `all`.
 - `rust-toolchain.toml` (stable + rustfmt + clippy), `.gitignore`.
 - Dependencies optimized (`opt-level = 2`) in dev builds for a responsive UI.
 
-#### L0 `rizxel-math`
+##### L0 `rizxel-math`
 - `Rgba8` (Pod, hex parse/format, HSL conversion).
 - `Palette` (max 256 colors). Default = 56 swatches generated exactly like the
   HTML prototype, with `#38BDF8` pre-selected.
 - `BoundSize` (default 32³, clamped `1..=256`), `Aabb` (voxel/point containment).
 
-#### L1 `rizxel-engine`
+##### L1 `rizxel-engine`
 - `Tool` (10 tools with labels and status-bar hints), `VoxelOp`
   (Add/Subtract/Join/Paint), `PlaneOptions` (Slice, Relative/Absolute, Offset).
 - `Mesh` container (+ `unit_cube` helper) for OBJ export and Phase 4 meshing.
 - `Ray` with slab ray/AABB intersection (Phase 5 raycasting foundation).
 
-#### L2 `rizxel-io`
+##### L2 `rizxel-io`
 - `.rzxl` v1 project format: `RZXL` magic, `u32` version, `u32` body length,
   zstd-compressed JSON (`ProjectFile`). Atomic save (temp file + rename),
   validation of magic, version, declared length and a 512 MiB body limit.
 - OBJ exporter with vertex colors (`v x y z r g b`) and optional normals.
 
-#### L3 `rizxel-app`
+##### L3 `rizxel-app`
 - `Document` (layers, palette, bounds, selection, dirty tracking via revisions).
 - `History` undo/redo with reversible `Edit` commands and merging of continuous
   drags (bounds, palette color) into a single undo step; 512-step cap.
 - `AppState` (tabs, active tool/op, plane options, view mode, orbit camera,
   cursor voxel, status message) with open/save/close logic.
 
-#### L4 `rizxel-ui`
+##### L4 `rizxel-ui`
 - Frameless `eframe` window (wgpu renderer), custom title bar (drag, double-click
   maximize, minimize/maximize/close), edge & corner resize zones, 1px border.
 - Embedded Inter (Regular/SemiBold, OFL) and Phosphor icons.
@@ -516,7 +523,7 @@ prototype is discontinued.
 - Shortcuts: Ctrl+N/O/S, Ctrl+Shift+S, Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z.
 - About and Keyboard Shortcuts dialogs.
 
-### Notes
+#### Notes
 - "Export OBJ…" is visible but disabled until voxel meshing exists (Phase 4).
 - Dependency pins: `eframe`/`egui` 0.36 (required by `egui-phosphor` 0.14),
   `glam` 0.34 (camera functions live in `glam::camera`).

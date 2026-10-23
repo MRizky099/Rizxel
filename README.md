@@ -7,8 +7,7 @@ A native voxel editor written in pure Rust. Rizxel uses `egui` for the interface
 [CADCraft](https://github.com/storytold/cadcraft), and its voxel model and tools draw on
 Goxel, MagicaVoxel and Qubicle.
 
-> Status: pre-release (`0.1.0`). Phases 1–6 and Slice Mode are implemented on the
-> `ui-docking` branch. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+> Status: pre-release (`0.2.0`). Phases 1–6, Slice Mode and CI are in place. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Features
 

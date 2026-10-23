@@ -14,7 +14,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 5b | Selection, fill, shape and performance | ✅ Done | `72d1803` |
 | 6 | Import and export | ✅ Done | `02ac63d` |
 | Slice | Qubicle-style Slice Mode | ✅ Done | `14d6d52`, `70d9bbd` |
-| 7 | Stabilize, CI and 0.2.0 | 🚧 In progress | `555bbc4` (B1) |
+| 7 | Stabilize, CI and 0.2.0 | ✅ Done | `v0.2.0` |
 
 ---
 
@@ -160,13 +160,17 @@ Qubicle 3.1.2.
   bounds frame move the slice; slice moves aren't undo steps.
 - `/` hides the work plane and suspends Slice Mode; showing it again resumes the slice.
 
-## Phase 7 (in progress) — Stabilize, CI and 0.2.0
+## Phase 7 — Stabilize, CI and 0.2.0
 
 Plan: [`rizxel_phase7_implementation_plan.md`](plan/rizxel_phase7_implementation_plan.md)
 
-**Delivered so far**
+**Delivered** (tag `v0.2.0`)
 - B1 fixed (`555bbc4`): the model is visible from below the ground plane. From below,
   the grid writes no ground depth and its lines are drawn over the model as a faded
   overlay.
-- GitHub Actions CI (`fmt`, `clippy -D warnings`, tests on Windows and Linux) and a
-  `.tmp-craft/` ignore rule.
+- GitHub Actions CI (`fmt`, `clippy -D warnings`, tests on Windows and Linux), a CI
+  badge and a `.tmp-craft/` ignore rule.
+- Everything since Phase 4 merged into `main` (PR #2), version `0.2.0`, one `[0.2.0]`
+  CHANGELOG section and the `v0.2.0` tag.
+- Planning documents moved to a local-only `docs/plan/`; screenshots of third-party
+  applications removed from the repository history.
