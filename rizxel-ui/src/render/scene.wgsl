@@ -70,11 +70,23 @@ struct GridFrag {
     @builtin(frag_depth) depth: f32,
 };
 
-@fragment
-fn fs_grid(in: GridOut) -> GridFrag {
+/// Strength of the grid lines seen from below the ground, where they are
+/// drawn over the model (see `fs_grid_under`).
+const UNDER_GROUND_STRENGTH: f32 = 0.5;
+
+/// The ground grid at one pixel: line weights (already faded) and depth.
+struct GridSample {
+    lines: f32,
+    axis_x: f32,
+    axis_z: f32,
+    depth: f32,
+    hit: bool,
+};
+
+fn grid_sample(ndc: vec2<f32>) -> GridSample {
     // Intersect the pixel's view ray with the ground plane y = 0.
-    let near = unproject(in.ndc, 0.0);
-    let far = unproject(in.ndc, 1.0);
+    let near = unproject(ndc, 0.0);
+    let far = unproject(ndc, 1.0);
     let dir = far - near;
     let safe_y = select(dir.y, -1e-6, abs(dir.y) < 1e-6);
     let t = -near.y / safe_y;
@@ -95,26 +107,81 @@ fn fs_grid(in: GridOut) -> GridFrag {
     var fade = 1.0 - smoothstep(fade_far * 0.25, fade_far, dist);
     fade *= smoothstep(0.0, 0.12, abs(normalize(dir).y));
     fade *= f32(hit);
-
-    let render_mode = cam.viewport.z > 0.5;
-    var bg = cam.background.rgb;
-    if render_mode {
-        // Soft vertical studio gradient.
-        bg = mix(bg * 0.55, bg * 1.3, in.ndc.y * 0.5 + 0.5);
-    }
-    let strength = select(1.0, 0.45, render_mode);
-
-    var color = bg;
-    color = mix(color, cam.grid_color.rgb, max(minor * 0.32, major * 0.6) * cam.grid_color.a * fade * strength);
-    color = mix(color, cam.axis_x_color.rgb, axis_x * 0.85 * fade * strength);
-    color = mix(color, cam.axis_z_color.rgb, axis_z * 0.85 * fade * strength);
+    fade *= select(1.0, 0.45, cam.viewport.z > 0.5);
 
     let clip = cam.view_proj * vec4<f32>(p, 1.0);
     let ground_depth = clamp(clip.z / max(clip.w, 1e-6), 0.0, 1.0);
+    let on_ground = hit && clip.w > NEAR_W;
+
+    var s: GridSample;
+    s.lines = max(minor * 0.32, major * 0.6) * cam.grid_color.a * fade;
+    s.axis_x = axis_x * 0.85 * fade;
+    s.axis_z = axis_z * 0.85 * fade;
+    s.depth = select(1.0, ground_depth, on_ground);
+    s.hit = on_ground;
+    return s;
+}
+
+/// The camera is under the ground plane: the ground lies between the eye
+/// and the model, so it must not occlude anything.
+fn eye_below_ground() -> bool {
+    return cam.eye.y < 0.0;
+}
+
+/// Background and ground grid, drawn first. Writes the ground's depth so the
+/// voxels are ordered against it, except from below the ground, where it is
+/// background only and `fs_grid_under` draws the lines after the voxels.
+@fragment
+fn fs_grid(in: GridOut) -> GridFrag {
+    let s = grid_sample(in.ndc);
+    let above = !eye_below_ground();
+
+    var bg = cam.background.rgb;
+    if cam.viewport.z > 0.5 {
+        // Soft vertical studio gradient.
+        bg = mix(bg * 0.55, bg * 1.3, in.ndc.y * 0.5 + 0.5);
+    }
+
+    let lines = f32(above);
+    var color = bg;
+    color = mix(color, cam.grid_color.rgb, s.lines * lines);
+    color = mix(color, cam.axis_x_color.rgb, s.axis_x * lines);
+    color = mix(color, cam.axis_z_color.rgb, s.axis_z * lines);
 
     var out: GridFrag;
     out.color = vec4<f32>(color, 1.0);
-    out.depth = select(1.0, ground_depth, hit && clip.w > NEAR_W);
+    out.depth = select(1.0, s.depth, above && s.hit);
+    return out;
+}
+
+/// Ground grid lines seen from below, drawn after the voxels as a faded,
+/// premultiplied overlay that does not write depth.
+@fragment
+fn fs_grid_under(in: GridOut) -> GridFrag {
+    let s = grid_sample(in.ndc);
+    let k = UNDER_GROUND_STRENGTH;
+
+    // Same layer order as `fs_grid`, composited onto transparent black.
+    var rgb = vec3<f32>(0.0);
+    var a = 0.0;
+    for (var i = 0; i < 3; i++) {
+        var c = cam.grid_color.rgb;
+        var w = s.lines;
+        if i == 1 {
+            c = cam.axis_x_color.rgb;
+            w = s.axis_x;
+        } else if i == 2 {
+            c = cam.axis_z_color.rgb;
+            w = s.axis_z;
+        }
+        w *= k;
+        rgb = mix(rgb, c, w);
+        a = mix(a, 1.0, w);
+    }
+
+    var out: GridFrag;
+    out.color = vec4<f32>(rgb, a);
+    out.depth = s.depth;
     return out;
 }
 

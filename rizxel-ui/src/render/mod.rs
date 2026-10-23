@@ -7,7 +7,9 @@
 //!
 //! Scene contents:
 //! - Procedural "infinity" ground grid (fullscreen shader, `#aeaeae` lines,
-//!   red X / blue Z axes, distance fade).
+//!   red X / blue Z axes, distance fade). From below the ground it only
+//!   clears the background, and its lines are drawn over the voxels instead
+//!   (see [`eye_below_ground`]).
 //! - Thick screen-space lines (yellow model bounds).
 //! - Filled translucent triangles (hovered ground cell).
 //! - Opaque voxel mesh (Phase 4): greedy-meshed quads with per-vertex palette
@@ -179,6 +181,14 @@ impl SceneFrame {
     }
 }
 
+/// Whether the camera is under the ground plane (`y = 0`). The ground then
+/// lies between the eye and the model, so the grid must not write its depth
+/// (it would hide every voxel); `fs_grid_under` draws its lines on top.
+/// Must match `eye_below_ground` in `scene.wgsl`.
+pub fn eye_below_ground(eye: Vec3) -> bool {
+    eye.y < 0.0
+}
+
 /// Grid fade radius: grows with zoom so the floor always reaches the horizon
 /// smoothly, but never so far that minor lines turn into noise.
 pub fn grid_fade_distance(distance: f32) -> f32 {
@@ -255,6 +265,8 @@ pub struct ViewportRenderer {
     uniform_buffer: wgpu::Buffer,
     scene_bind_group: wgpu::BindGroup,
     grid_pipeline: wgpu::RenderPipeline,
+    /// Grid lines over the voxels when the eye is below the ground.
+    grid_under_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     fill_pipeline: wgpu::RenderPipeline,
     voxel_pipeline: wgpu::RenderPipeline,
@@ -364,6 +376,28 @@ impl ViewportRenderer {
                 entry_point: Some("fs_grid"),
                 compilation_options: Default::default(),
                 targets: &opaque,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let premultiplied = color_target(Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING));
+        let grid_under_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rizxel_grid_under"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_grid"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: depth(false, wgpu::CompareFunction::LessEqual),
+            multisample: msaa,
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_grid_under"),
+                compilation_options: Default::default(),
+                targets: &premultiplied,
             }),
             multiview_mask: None,
             cache: None,
@@ -518,6 +552,7 @@ impl ViewportRenderer {
             uniform_buffer,
             scene_bind_group,
             grid_pipeline,
+            grid_under_pipeline,
             line_pipeline,
             fill_pipeline,
             voxel_pipeline,
@@ -718,6 +753,10 @@ impl ViewportRenderer {
             );
             pass.draw_indexed(0..self.voxel_index_count, 0, 0..1);
         }
+        if eye_below_ground(frame.eye) {
+            pass.set_pipeline(&self.grid_under_pipeline);
+            pass.draw(0..3, 0..1);
+        }
 
         if self.fill_count > 0 {
             pass.set_pipeline(&self.fill_pipeline);
@@ -848,6 +887,32 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}.wgsl invalid: {e:?}"));
         }
+    }
+
+    #[test]
+    fn ground_hides_nothing_from_below() {
+        // From below (view cube Bottom face, or orbiting under the model) the
+        // ground must not write depth, or it hides every voxel above y = 0.
+        use rizxel_app::{OrbitCamera, ViewFace, ViewTarget};
+
+        let target = Vec3::new(0.0, 8.0, 0.0);
+        let mut cam = OrbitCamera {
+            distance: 60.0,
+            ..OrbitCamera::default()
+        };
+        cam.snap(ViewTarget::Face(ViewFace::Bottom));
+        assert!(eye_below_ground(cam.eye(target)));
+        cam.pitch = -20.0;
+        assert!(eye_below_ground(cam.eye(target)));
+        // Looking slightly up at the model from above the ground.
+        cam.pitch = -5.0;
+        assert!(!eye_below_ground(cam.eye(target)));
+        cam.pitch = 30.0;
+        assert!(!eye_below_ground(cam.eye(target)));
+        assert!(
+            !eye_below_ground(Vec3::ZERO),
+            "an eye on the ground is above it"
+        );
     }
 
     #[test]
