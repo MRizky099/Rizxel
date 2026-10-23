@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.4.0`: Phases 1–9, 289 tests) and a
+Gaps between the current build (`v0.4.0` plus Phase 10 on its branch, 325 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -11,7 +11,7 @@ Severity: **High** blocks real-world use · **Medium** is a noticeable limitatio
 The **Phase** column names the plan that closes the gap (see
 [`milestones.md`](plan/milestones.md)); `post` means after 1.0.
 
-> Last updated 2026-10-23.
+> Last updated 2026-10-24.
 
 ## Closed since the last revision
 
@@ -36,6 +36,14 @@ The **Phase** column names the plan that closes the gap (see
 | Materials are stored but not rendered | Phase 9, `dc052ad` (Render mode) |
 | No ambient occlusion in Render mode | Phase 9, `22600dd` |
 | Meshing runs on the UI thread | Phase 9, `e4bafa4` (large updates; small edits stay on the UI thread on purpose) |
+| No grow / shrink / select by color | Phase 10, `a179e73` |
+| No Mask Mode (protect the selection) | Phase 10, `a179e73` |
+| Slice can't split parts into separate layers | Phase 10, `f98408c` (Separate Parts, Split at Work Plane) |
+| No core operations (Hollow, Fill Hollows) or layer Booleans | Phase 10, `f98408c` |
+| Bounds don't auto-fit after Slice or Cut | Phase 10, `f98408c` (Fit Bounds, the Plane tool's Fit button, Fit on Import) |
+| No pyramid or cone shapes | Phase 10, `f98408c` |
+| No palette files (`.gpl`, `.hex`) or palette tools (sort, remap, gradient) | Phase 10, `8a01562` |
+| The undo history can't be browsed | Phase 10, `6e25e4d` (History panel) |
 
 ## Known bugs
 
@@ -75,13 +83,9 @@ No open bugs are known. Fixed bugs move to the table above.
 | No free rotation or resize of a selection or layer | Medium | 10c | Phase 8 added 90° rotate, flip and one-shot mirror; the Transform tool (free angles, scaling, gizmo) comes in Phase 10c. |
 | No line or curve tool, and no pixel-perfect option | Medium | 10c | Brush only interpolates between drag samples. The next Slice Mode workflow. |
 | The selection box can't be adjusted | Medium | 10c | The Selection drag selects on release; there are no handles and no typed position or size. |
-| No grow / shrink / select by color | Medium | 10 | Select All and Invert came with the Edit menu in Phase 8. |
-| No Mask Mode (protect the selection) | Medium | 10 | Qubicle's third global tool option. |
-| Slice can't split parts into separate layers | Medium | 10 | Listed as out of scope in 5a. |
-| No core operations (Hollow, Fill Hollows) or layer Booleans | Medium | 10 | |
-| No palette files (`.gpl`, `.hex`) or palette tools (sort, remap, gradient) | Medium | 10 | |
-| Bounds don't auto-fit after Slice or Cut | Low | 10 | The empty region stays inside the yellow box. |
-| No pyramid or cone shapes | Low | 10 | Shape and Brush cover cube, sphere and cylinder. |
+| Gradient and Remap need `Shift+click` to mark a swatch | Low | 12 | There is no other way to pick the second color yet. |
+| Brush pyramids and cones always point up | Low | post | The Shape tool points them away from the pressed face; Brush stamps have no face direction. |
+| Favorite colors use `Ctrl+digit`, not plain digits | Low | 12 | Plain `5` already toggles the projection, and egui can't tell the numpad from the main digits. Configurable shortcuts come with Phase 12. |
 | No reference images | Medium | 10b | No way to load, place (XZ / XY / YZ plane with an offset) or toggle a reference image, and no panel to manage them. Needs `.rzxl` v4. |
 | The Layers panel can't create or show groups | Medium | 10b | Groups exist in the data model (`parent`, `LayerKind::Group`) and survive `.gox`, but the panel is a flat list: no New Group, no indentation or collapse, no dragging into groups. Locks aren't inherited. |
 | No onion skin | Low | post | Comes with animation. |
@@ -94,7 +98,7 @@ No open bugs are known. Fixed bugs move to the table above.
 | No Settings or Preferences dialog, and shortcuts are fixed | Medium | 12 | The toolbar settings button is a stub (`panels/tools.rs:45`). Shortcuts, theme, grid and the undo limit can't be configured. |
 | No start screen | Low | 12 | |
 | View toggles and the projection aren't remembered | Low | 12 | Floor grid, voxel grid, bounds, ghosts, AO and Auto Ortho reset on every start; Phase 12 stores them in settings. |
-| The undo history is capped at 512 steps and can't be browsed | Low | 10, 12 | History panel in Phase 10; configurable limit in Phase 12. |
+| The undo history is capped at 512 steps | Low | 12 | The History panel (Phase 10) lists them; the limit becomes configurable in Phase 12. |
 | No localization | Low | post | The UI is English only. |
 
 ## Rendering and performance

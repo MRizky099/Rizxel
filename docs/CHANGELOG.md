@@ -5,6 +5,44 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 10: Editing power (2026-10-24)
+
+#### Added
+- *Selection* menu: Select All, Deselect, Invert, Grow, Shrink and By Color
+  (the selected swatch, within the Fuzzy Select threshold). Grow and Shrink
+  are 6-connected; Grow only adds voxels of the active layer.
+- Mask Mode (`Shift+M`, a shield button in the Tools panel, shown in the
+  status bar): the selection is protected. Every tool, Fill and the Plane
+  cut leave selected voxels alone and edit the rest of the layer; Delete,
+  Cut and the transforms are refused while it protects a selection.
+- *Layer ▸ Separate Parts*: each 6-connected part becomes its own layer
+  (parts under a set size stay). *Layer ▸ Split at Work Plane* moves the
+  plane's `+` side to a new layer.
+- *Layer ▸ Boolean*: Union, Difference or Intersection of the active layer
+  with another layer (shapes and linked clones count with their geometry).
+  Only the active layer changes.
+- *Model ▸ Fit Bounds to Content*: moves the model to the origin and shrinks
+  the bounds around it (shape areas, crops and selections move along). Also
+  a *Fit* button next to the Plane tool's *Cut*, and *Fit Bounds on Import*.
+- *Model ▸ Core*: Fill Hollows (closed cavities get the selected color),
+  Hollow and Advanced Hollow (shell thickness in voxels).
+- Pyramid and cone shapes for Shape (pointing away from the pressed face)
+  and Brush (pointing up).
+- Palette files: load and save GIMP `.gpl` and `.hex`; *Load and Snap
+  Model* gives every voxel the nearest new color.
+- Palette tools in the Color Palette panel: sort by hue or luminance (the
+  model looks the same), remove duplicates, a gradient between two
+  swatches, remap one color to another on every layer, and a *Used only*
+  view. `Shift+click` marks the second swatch.
+- Favorite colors 0–9: `Ctrl+digit` selects, `Ctrl+Shift+digit` (or a
+  right-click on the favorites row) stores. Kept in the app settings.
+- History panel (*View ▸ Panels ▸ History*): every undo step by name;
+  clicking one undoes or redoes to it.
+
+#### Changed
+- Every new operation is a single undo step, named in the History panel.
+- The Selection commands moved from the Edit menu to the new Selection menu.
+
 ## [0.4.0] — 2026-10-24
 
 Milestone M3: everything stored in the file is visible, and models look good

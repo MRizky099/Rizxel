@@ -214,3 +214,21 @@ Plan: [`rizxel_phase9_implementation_plan.md`](plan/rizxel_phase9_implementation
   flips; neighbours re-mesh only when a change touches their side (`22600dd`).
 - Background tile meshing pool for imports and undo of big edits; small edits stay
   synchronous (`e4bafa4`); 289 tests.
+
+## Phase 10 — Editing power
+
+Plan: [`rizxel_phase10_implementation_plan.md`](plan/rizxel_phase10_implementation_plan.md)
+
+**Delivered** (branch `claude/phase10-editing-power-f1ac88`, part of M4 / 0.5.0)
+- Selection Grow, Shrink and By Color in a new Selection menu, and Mask Mode, which
+  protects the selection from every write path (`a179e73`).
+- Separate Parts, Split at Work Plane, Fit Bounds to Content, Fill Hollows, Hollow,
+  Advanced Hollow, layer Booleans, and pyramid and cone shapes; engine functions in
+  `tools/components.rs`, `tools/core_ops.rs` and `tools/boolean.rs` (`f98408c`).
+- `.gpl` / `.hex` palette files with hostile-input tests, palette sort, remove
+  duplicates, gradient, remap, load and snap, a Used only view, and favorite colors
+  0–9 (`8a01562`).
+- Named undo steps and a History dock panel that jumps to any step (`6e25e4d`,
+  `7312eed`).
+- The randomized undo-all / redo-all test covers every new operation, with Mask Mode on
+  at random, and also jumps through the history; 325 tests.
