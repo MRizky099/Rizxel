@@ -7,6 +7,8 @@ pub mod close;
 pub mod document;
 pub mod history;
 pub mod interchange;
+pub mod paths;
+pub mod recent;
 pub mod selection;
 
 use std::path::Path;
@@ -20,6 +22,8 @@ pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
+pub use paths::AppPaths;
+pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::RZXL_EXTENSION;
@@ -370,6 +374,11 @@ pub struct AppState {
     pub tool_feedback: Option<String>,
     /// Open "Save changes?" prompt (tab close or exit).
     closing: Option<CloseRequest>,
+    /// App data folder; `None` keeps recent files and autosave in memory
+    /// only (tests, or no home directory).
+    paths: Option<AppPaths>,
+    /// *File ▸ Open Recent*.
+    pub recent: RecentFiles,
     untitled_counter: u32,
 }
 
@@ -387,6 +396,8 @@ impl Default for AppState {
             status_message: None,
             tool_feedback: None,
             closing: None,
+            paths: None,
+            recent: RecentFiles::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -395,6 +406,48 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// State backed by an app data folder: loads the recent files list.
+    pub fn with_paths(paths: Option<AppPaths>) -> Self {
+        let mut state = Self::default();
+        if let Some(p) = &paths {
+            state.recent = RecentFiles::load(&p.recent_file());
+        }
+        state.paths = paths;
+        state
+    }
+
+    pub fn paths(&self) -> Option<&AppPaths> {
+        self.paths.as_ref()
+    }
+
+    // --------------------------------------------------------- recent files
+
+    /// Puts `path` at the top of the recent files and writes the list.
+    pub fn remember_recent(&mut self, path: &Path) {
+        self.recent.push(path);
+        self.write_recent();
+    }
+
+    /// Drops recent files that no longer exist (when the menu opens).
+    pub fn prune_recent(&mut self) {
+        if self.recent.prune() {
+            self.write_recent();
+        }
+    }
+
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.write_recent();
+    }
+
+    fn write_recent(&self) {
+        if let Some(p) = &self.paths {
+            if let Err(e) = self.recent.save(&p.recent_file()) {
+                log::warn!("recent files: {e}");
+            }
+        }
+    }
+
     // ------------------------------------------------------------ documents
 
     pub fn doc(&self) -> Option<&Document> {
@@ -557,15 +610,18 @@ impl AppState {
         } else {
             self.push_document(doc);
         }
+        self.remember_recent(path);
         Ok(())
     }
 
     /// Saves the active document to `path`.
     pub fn save_active_as(&mut self, path: &Path) -> Result<(), RzxlError> {
         match self.doc_mut() {
-            Some(doc) => doc.save_to(path),
-            None => Ok(()),
+            Some(doc) => doc.save_to(path)?,
+            None => return Ok(()),
         }
+        self.remember_recent(path);
+        Ok(())
     }
 
     /// Cancels a tool drag in progress on the active document (tab switch,
@@ -847,6 +903,26 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(s2.documents.len(), 1, "pristine tab replaced");
         assert_eq!(s2.doc().unwrap().data.layers.len(), 2);
+    }
+
+    #[test]
+    fn opens_and_saves_go_to_recent_files() {
+        let dir = std::env::temp_dir().join(format!("rizxel_paths_{}", std::process::id()));
+        let paths = AppPaths::with_root(dir.join("data"));
+        let file = dir.join("a.rzxl");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        s.save_active_as(&file).unwrap();
+        assert_eq!(s.recent.paths().len(), 1);
+        // A fresh start reads the list back.
+        let mut s2 = AppState::with_paths(Some(paths));
+        assert!(s2.recent.paths()[0].ends_with("a.rzxl"));
+        s2.open(&file).unwrap();
+        assert_eq!(s2.recent.paths().len(), 1, "no duplicate");
+        std::fs::remove_file(&file).unwrap();
+        s2.prune_recent();
+        assert!(s2.recent.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -40,7 +40,7 @@ impl RizxelApp {
             rs.target_format
         });
         Self {
-            state: AppState::default(),
+            state: AppState::with_paths(rizxel_app::AppPaths::new()),
             ui: panels::UiState::default(),
             icons: Icons::load(&cc.egui_ctx),
             meshes: viewport::MeshCache::default(),

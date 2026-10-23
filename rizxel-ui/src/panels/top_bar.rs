@@ -69,6 +69,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             if menu_item(ui, icon::FOLDER_OPEN, "Open...", "Ctrl+O", true) {
                 actions::open(state);
             }
+            recent_menu(ui, state);
             ui.separator();
             if menu_item(ui, icon::FLOPPY_DISK, "Save", "Ctrl+S", true) {
                 actions::save(state);
@@ -208,6 +209,53 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui_state.show_about = true;
             }
         });
+    });
+}
+
+/// File > Open Recent: the last opened or saved files, newest first.
+/// Missing files are dropped while the menu is open.
+fn recent_menu(ui: &mut Ui, state: &mut AppState) {
+    let enabled = !state.recent.is_empty();
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.menu_button(
+            icon_label(ui, icon::CLOCK_COUNTER_CLOCKWISE, "Open Recent", None),
+            |ui| {
+                ui.set_min_width(260.0);
+                state.prune_recent();
+                let mut open = None;
+                for path in state.recent.paths() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    let item = egui::Button::new(icon_label(ui, icon::FILE, &name, None));
+                    if ui
+                        .add(item)
+                        .on_hover_text(path.display().to_string())
+                        .clicked()
+                    {
+                        open = Some(path.clone());
+                        ui.close();
+                    }
+                }
+                if state.recent.is_empty() {
+                    ui.label(egui::RichText::new("No recent files").color(theme::TEXT_DIM));
+                }
+                ui.separator();
+                if menu_item(
+                    ui,
+                    icon::TRASH,
+                    "Clear Recent",
+                    "",
+                    !state.recent.is_empty(),
+                ) {
+                    state.clear_recent();
+                }
+                if let Some(path) = open {
+                    actions::open_path(state, &path);
+                }
+            },
+        );
     });
 }
 
