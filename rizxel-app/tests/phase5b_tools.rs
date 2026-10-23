@@ -2,10 +2,12 @@
 //! Extrude, Fill, Shape, and a randomized undo/redo round trip over all of
 //! them (extended in Phase 8 with copy, cut, paste and the transforms, and in
 //! Phase 10 with the selection operations, Mask Mode and the structure and
-//! palette operations).
+//! palette operations, and in Phase 10b with the layer hierarchy).
 
 use glam::IVec3;
-use rizxel_app::{Clipboard, CoreOp, Document, Edit, Layer, PaletteSort, Selection, VoxelChange};
+use rizxel_app::{
+    Clipboard, CoreOp, Document, Edit, Layer, LayerDrop, PaletteSort, Selection, VoxelChange,
+};
 use rizxel_engine::tools::BooleanOp;
 use rizxel_engine::tools::{
     apply_op, extrude_changes, extruded_cells, fill_cells, fuzzy_select, move_selection_changes,
@@ -404,7 +406,7 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
         22 => {
             d.palette_gradient(1 + rng.below(20) as usize, 1 + rng.below(20) as usize);
         }
-        _ => {
+        23 => {
             // Snapping to a small palette with a repeated color leaves
             // duplicates for the next Remove Duplicates.
             if rng.below(2) == 0 {
@@ -415,12 +417,55 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 d.snap_to_palette(&colors);
             }
         }
+        // Phase 10b: layer hierarchy.
+        24 => {
+            let i = rng.below(d.data.layers.len() as u64) as usize;
+            if d.data.layers[i].kind().is_group() && rng.below(2) == 0 {
+                d.ungroup(i);
+            } else {
+                d.group_layer(i);
+            }
+        }
+        25 => {
+            let n = d.data.layers.len() as u64;
+            let (from, row) = (rng.below(n) as usize, rng.below(n) as usize);
+            match rng.below(4) {
+                0 => d.drop_layer(from, LayerDrop::Above(row)),
+                1 => d.drop_layer(from, LayerDrop::Below(row)),
+                2 => d.drop_layer(from, LayerDrop::Into(row)),
+                _ => {
+                    d.active_layer = from;
+                    d.move_active_layer(rng.below(2) == 0)
+                }
+            };
+        }
+        26 => {
+            let groups: Vec<usize> = (0..d.data.layers.len())
+                .filter(|&i| d.data.layers[i].kind().is_group())
+                .collect();
+            if !groups.is_empty() {
+                let g = groups[rng.below(groups.len() as u64) as usize];
+                match rng.below(3) {
+                    0 => {
+                        d.active_layer = g;
+                        d.duplicate_active_layer();
+                    }
+                    1 => {
+                        d.merge_group(g);
+                    }
+                    _ => {
+                        d.delete_group_with_contents(g);
+                    }
+                }
+            }
+        }
+        _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 24;
+const OPS: usize = 27;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {
@@ -433,11 +478,12 @@ fn random_tool_sequences_undo_and_redo_exactly() {
         d.data.layers[1].selection = (0..3).map(|x| IVec3::new(x, 3, 0)).collect();
         let initial = d.data.clone();
         for _ in 0..60 {
-            d.active_layer = rng.below(2) as usize;
+            d.active_layer = rng.below(d.data.layers.len() as u64) as usize;
             // Mask Mode (Phase 10) on for about a quarter of the operations.
             d.mask_selection = rng.below(4) == 0;
             let before = d.data.clone();
             let op = random_op(&mut d, &mut rng);
+            assert!(d.data.structure_is_valid(), "seed {seed}: tree rules");
             // Every operation is a single undo step.
             if d.data != before {
                 effective[op] += 1;

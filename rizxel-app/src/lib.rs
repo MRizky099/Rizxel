@@ -10,6 +10,7 @@ pub mod document;
 pub mod favorites;
 pub mod history;
 pub mod interchange;
+pub mod layer_tree;
 pub mod paths;
 pub mod recent;
 pub mod selection;
@@ -31,13 +32,14 @@ pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVA
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
-    CoreOp, DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, OpError, PaletteSort,
-    SliceOutcome, TransformError, TransparentMesh, ViewMeshes, GHOST_ALPHA, MASKED_MESSAGE,
-    MAX_MATERIAL_SLOT,
+    CoreOp, DocData, Document, EditBlock, FloatingPaste, Layer, LayerDrop, LayerProps, OpError,
+    PaletteSort, SliceOutcome, TransformError, TransparentMesh, ViewMeshes, GHOST_ALPHA,
+    MASKED_MESSAGE, MAX_MATERIAL_SLOT,
 };
 pub use favorites::Favorites;
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
+pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
@@ -1256,6 +1258,34 @@ impl AppState {
             Ok(done) => format!("{label}: {done}"),
             Err(e) => format!("{label}: {}", e.message()),
         });
+    }
+
+    /// *Layer ▸ Group Layer* (`Ctrl+G`): wraps the active layer (a group
+    /// with its contents) in a new group.
+    pub fn group_active_layer(&mut self) {
+        let Some(d) = self.doc_mut() else { return };
+        let index = d.active_layer;
+        if d.group_layer(index).is_none() {
+            self.status_message = Some(format!(
+                "Group Layer: groups nest at most {} levels deep",
+                rizxel_io::MAX_GROUP_DEPTH
+            ));
+        }
+    }
+
+    /// *Layer ▸ Ungroup* (`Ctrl+Shift+G`): dissolves the active group, or
+    /// the group holding the active layer.
+    pub fn ungroup_active_layer(&mut self) {
+        let Some(d) = self.doc_mut() else { return };
+        let index = d.active_layer;
+        let group = match d.active_layer() {
+            Some(l) if l.kind().is_group() => Some(index),
+            Some(_) => d.data.tree().parent(index),
+            None => None,
+        };
+        if !group.is_some_and(|g| d.ungroup(g)) {
+            self.status_message = Some("Ungroup: the active layer is not in a group".to_owned());
+        }
     }
 
     /// *Layer ▸ Separate Parts*.

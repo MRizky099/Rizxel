@@ -23,6 +23,7 @@ use rizxel_math::{
 
 use crate::clipboard::Clipboard;
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
+use crate::layer_tree::{canonical_order, LayerTree, Link};
 use crate::selection::Selection;
 
 /// Layer properties other than name, visibility, lock and voxels. Changed as
@@ -130,6 +131,26 @@ impl DocData {
         false
     }
 
+    /// Locked itself or inside a locked group.
+    pub fn effectively_locked(&self, index: usize) -> bool {
+        self.layers.get(index).is_some_and(|l| l.locked) || self.locked_by_group(index)
+    }
+
+    /// Inside a locked group (at any depth).
+    pub fn locked_by_group(&self, index: usize) -> bool {
+        self.tree().ancestors(index).any(|a| self.layers[a].locked)
+    }
+
+    /// Parent/child structure of the layer list.
+    pub fn tree(&self) -> LayerTree {
+        LayerTree::new(&self.layers)
+    }
+
+    /// The layer list keeps the tree rules (see [`crate::layer_tree`]).
+    pub fn structure_is_valid(&self) -> bool {
+        self.tree().is_valid()
+    }
+
     /// Geometry a layer contributes before visibility: own voxels, the
     /// rasterized shape or the moved clone source, then the crop box.
     /// `None` for groups and broken clones.
@@ -169,6 +190,8 @@ impl DocData {
 pub enum EditBlock {
     NoLayer,
     Locked,
+    /// The layer is inside a locked group.
+    LockedGroup,
     Hidden,
     /// Groups, shapes and linked clones do not store voxels.
     NotVoxels,
@@ -179,10 +202,31 @@ impl EditBlock {
         match self {
             EditBlock::NoLayer => "No active layer",
             EditBlock::Locked => "The active layer is locked",
+            EditBlock::LockedGroup => "The active layer is inside a locked group",
             EditBlock::Hidden => "The active layer is hidden",
             EditBlock::NotVoxels => {
-                "The active layer has no editable voxels (group, shape or clone)"
+                "The active layer has no editable voxels (group, shape or clone): select a voxel layer"
             }
+        }
+    }
+}
+
+/// Where a dragged row lands in the Layers panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerDrop {
+    /// Right above row `i` (and its subtree), in the same group.
+    Above(usize),
+    /// Right below row `i`'s subtree, in the same group.
+    Below(usize),
+    /// Into group `i`, as its top child.
+    Into(usize),
+}
+
+impl LayerDrop {
+    /// The row the drop is relative to.
+    pub fn row(self) -> usize {
+        match self {
+            LayerDrop::Above(i) | LayerDrop::Below(i) | LayerDrop::Into(i) => i,
         }
     }
 }
@@ -797,6 +841,20 @@ impl Document {
         self.history.push(edit, merge);
         self.edits += 1;
         self.touch();
+        self.check_structure();
+    }
+
+    /// Debug builds check the layer tree rules after every change.
+    fn check_structure(&self) {
+        debug_assert!(
+            self.data.structure_is_valid(),
+            "layer tree rules broken: {:?}",
+            self.data
+                .layers
+                .iter()
+                .map(|l| (l.id, l.props.parent, l.kind().is_group()))
+                .collect::<Vec<_>>()
+        );
     }
 
     pub fn can_undo(&self) -> bool {
@@ -820,6 +878,7 @@ impl Document {
         if done {
             self.edits += 1;
             self.touch();
+            self.check_structure();
             if let Some(p) = self.history.undone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
             }
@@ -835,6 +894,7 @@ impl Document {
         if done {
             self.edits += 1;
             self.touch();
+            self.check_structure();
             if let Some(p) = self.history.redone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
             }
@@ -1013,6 +1073,8 @@ impl Document {
             Err(EditBlock::NotVoxels)
         } else if layer.locked {
             Err(EditBlock::Locked)
+        } else if self.data.locked_by_group(index) {
+            Err(EditBlock::LockedGroup)
         } else if !self.data.effectively_visible(index) {
             Err(EditBlock::Hidden)
         } else {
@@ -1044,7 +1106,7 @@ impl Document {
             if !l.kind().stores_voxels() || !self.data.effectively_visible(i) {
                 continue;
             }
-            if l.locked {
+            if self.data.effectively_locked(i) {
                 outcome.locked_skipped += usize::from(!l.volume.is_empty());
                 continue;
             }
@@ -1777,16 +1839,31 @@ impl Document {
     }
 
     /// Inserts `layer` above the active one (in the active layer's group),
-    /// gives it a fresh id, selects it and returns the id.
+    /// gives it a fresh id and that group, selects it and returns the id.
+    /// When the active layer is a group, the new layer becomes its top
+    /// child (right below the group row).
     fn insert_above_active(&mut self, mut layer: Layer) -> LayerId {
-        let index = (self.active_layer + 1).min(self.data.layers.len());
+        let into_group = self.active_layer().is_some_and(|a| a.kind().is_group());
+        let index = if into_group {
+            self.active_layer
+        } else {
+            (self.active_layer + 1).min(self.data.layers.len())
+        };
         layer.id = self.next_layer_id();
-        if layer.props.parent.is_none() {
-            layer.props.parent = self.active_layer().and_then(|a| match a.kind() {
-                LayerKind::Group { .. } => Some(a.id),
-                _ => a.props.parent,
-            });
+        // The position decides the group.
+        layer.props.parent = self.active_layer().and_then(|a| match a.kind() {
+            LayerKind::Group { .. } => Some(a.id),
+            _ => a.props.parent,
+        });
+        // Too deep for one more level: stay next to the group instead.
+        if into_group && self.data.tree().depth(self.active_layer) >= rizxel_io::MAX_GROUP_DEPTH {
+            layer.props.parent = self.active_layer().and_then(|a| a.props.parent);
+            return self.insert_at(self.active_layer + 1, layer);
         }
+        self.insert_at(index, layer)
+    }
+
+    fn insert_at(&mut self, index: usize, layer: Layer) -> LayerId {
         let id = layer.id;
         self.apply(Edit::InsertLayer { index, layer }, false);
         self.active_layer = index;
@@ -1822,7 +1899,6 @@ impl Document {
             source: src.id,
             offset,
         };
-        layer.props.parent = src.props.parent;
         layer.props.material = src.props.material;
         Some(self.insert_above_active(layer))
     }
@@ -1900,6 +1976,15 @@ impl Document {
             }
         }
         parent_ok &= parent.is_none();
+        // The new parent must keep the subtree contiguous (move layers into
+        // groups with `move_subtree`).
+        let structure_ok =
+            new.parent == layer.props.parent && new.kind.is_group() == layer.kind().is_group() || {
+                let mut links: Vec<Link> = self.data.layers.iter().map(Link::of).collect();
+                links[index].parent = new.parent;
+                links[index].group = new.kind.is_group();
+                LayerTree::from_links(&links).is_valid()
+            };
         let kind_ok = match new.kind {
             LayerKind::Clone { source, .. } => {
                 source != layer.id
@@ -1918,7 +2003,7 @@ impl Document {
         // children must stay a group.
         let links_ok = (new.kind.is_clone_source() || !self.is_clone_source_in_use(index))
             && (new.kind.is_group() || !self.has_children(index));
-        opacity_ok && material_ok && crop_ok && parent_ok && kind_ok && links_ok
+        opacity_ok && material_ok && crop_ok && parent_ok && structure_ok && kind_ok && links_ok
     }
 
     /// True when some other layer is a linked clone of layer `index`.
@@ -2400,54 +2485,388 @@ impl Document {
         }
     }
 
-    /// Moves a layer to a new index; the active layer follows it. Higher
-    /// indices draw on top.
+    /// Moves a layer to index `to` inside its group; the active layer
+    /// follows it. Higher indices draw on top. A group moves with its
+    /// subtree (see [`Document::move_subtree`]).
     pub fn move_layer(&mut self, from: usize, to: usize) -> bool {
+        let Some(parent) = self.data.layers.get(from).map(|l| l.props.parent) else {
+            return false;
+        };
+        self.move_subtree(from, to, parent)
+    }
+
+    /// Moves layer `from` together with its subtree so that it lands at
+    /// index `to` inside group `parent` (`None`: top level), as one undo
+    /// step; the active layer stays on the layer it was on. Refused when
+    /// the result breaks the tree rules: a group into itself, a group split
+    /// apart, or nesting deeper than the limit.
+    pub fn move_subtree(&mut self, from: usize, to: usize, parent: Option<LayerId>) -> bool {
         let len = self.data.layers.len();
-        if from >= len || to >= len || from == to {
+        if from >= len || to >= len {
             return false;
         }
-        let active = self.active_layer;
-        self.apply(Edit::MoveLayer { from, to }, false);
-        self.active_layer = if active == from {
-            to
-        } else if from < active && active <= to {
-            active - 1
-        } else if to <= active && active < from {
-            active + 1
-        } else {
-            active
-        };
-        true
-    }
-
-    /// Moves the active layer one step up (`true`, drawn above) or down.
-    pub fn move_active_layer(&mut self, up: bool) -> bool {
-        let from = self.active_layer;
-        let to = if up {
-            from + 1
-        } else {
-            match from.checked_sub(1) {
-                Some(to) => to,
-                None => return false,
-            }
-        };
-        self.move_layer(from, to)
-    }
-
-    /// Copies the active layer (voxels and flags) just above itself.
-    pub fn duplicate_active_layer(&mut self) -> bool {
-        let Some(source) = self.data.layers.get(self.active_layer) else {
+        let block = self.data.tree().subtree(from);
+        let (start, count) = (block.start, block.len());
+        // Index of the block's first layer once it is placed.
+        let Some(place) = (to + 1).checked_sub(count) else {
             return false;
         };
-        let mut layer = source.clone();
-        layer.selection = Selection::default();
-        layer.name = self.unique_name_from(&format!("{} copy", source.name));
-        layer.id = self.next_layer_id();
-        let index = self.active_layer + 1;
-        self.apply(Edit::InsertLayer { index, layer }, false);
-        self.active_layer = index;
+        let old_parent = self.data.layers[from].props.parent;
+        if place == start && parent == old_parent {
+            return false;
+        }
+        let mut links: Vec<Link> = self.data.layers.iter().map(Link::of).collect();
+        let moved: Vec<Link> = links.drain(block).collect();
+        links.splice(place..place, moved);
+        links[to].parent = parent;
+        if !LayerTree::from_links(&links).is_valid() {
+            return false;
+        }
+        // One `MoveLayer` per layer of the block, keeping its order.
+        let mut edits: Vec<Edit> = match place.cmp(&start) {
+            std::cmp::Ordering::Less => (0..count)
+                .map(|j| Edit::MoveLayer {
+                    from: start + j,
+                    to: place + j,
+                })
+                .collect(),
+            std::cmp::Ordering::Greater => (0..count)
+                .map(|_| Edit::MoveLayer { from: start, to })
+                .collect(),
+            std::cmp::Ordering::Equal => Vec::new(),
+        };
+        if parent != old_parent {
+            let old = self.data.layers[from].props.clone();
+            let new = LayerProps {
+                parent,
+                ..old.clone()
+            };
+            edits.push(Edit::SetLayerProps {
+                index: to,
+                old,
+                new,
+            });
+        }
+        let active = self.active_layer().map(|l| l.id);
+        let edit = match edits.len() {
+            1 => edits.pop().unwrap_or(Edit::Batch(Vec::new())),
+            _ => Edit::Batch(edits),
+        };
+        self.apply(edit, false);
+        if let Some(i) = active.and_then(|id| self.data.layer_index(id)) {
+            self.active_layer = i;
+        }
         true
+    }
+
+    /// Moves layer `from` (with its subtree) next to or into row `target`
+    /// of the Layers panel. Returns whether anything moved.
+    pub fn drop_layer(&mut self, from: usize, target: LayerDrop) -> bool {
+        match self.drop_destination(from, target) {
+            Some((to, parent)) => self.move_subtree(from, to, parent),
+            None => false,
+        }
+    }
+
+    /// Where [`Document::drop_layer`] would put layer `from`: its final
+    /// index and group. `None` when the drop is refused (onto itself or
+    /// into its own subtree, or breaking the tree rules).
+    pub fn drop_destination(
+        &self,
+        from: usize,
+        target: LayerDrop,
+    ) -> Option<(usize, Option<LayerId>)> {
+        let len = self.data.layers.len();
+        let tree = self.data.tree();
+        let row = target.row();
+        if from >= len || row >= len || tree.subtree(from).contains(&row) {
+            return None;
+        }
+        let parent_of = |i: usize| self.data.layers[i].props.parent;
+        // Insertion point in the full list, and the new group.
+        let (at, parent) = match target {
+            LayerDrop::Above(i) => (i + 1, parent_of(i)),
+            LayerDrop::Below(i) => (tree.subtree(i).start, parent_of(i)),
+            LayerDrop::Into(i) if self.data.layers[i].kind().is_group() => {
+                (i, Some(self.data.layers[i].id))
+            }
+            LayerDrop::Into(_) => return None,
+        };
+        let count = tree.subtree(from).len();
+        let place = if from < at { at - count } else { at };
+        let to = place + count - 1;
+        let mut links: Vec<Link> = self.data.layers.iter().map(Link::of).collect();
+        let moved: Vec<Link> = links.drain(tree.subtree(from)).collect();
+        links.splice(place..place, moved);
+        links[to].parent = parent;
+        let changed = to != from || parent != parent_of(from);
+        (changed && LayerTree::from_links(&links).is_valid()).then_some((to, parent))
+    }
+
+    /// Moves the active layer (with its subtree) one step up (`true`, drawn
+    /// above) or down, past its neighbor inside the same group.
+    pub fn move_active_layer(&mut self, up: bool) -> bool {
+        let from = self.active_layer;
+        let tree = self.data.tree();
+        if from >= tree.len() {
+            return false;
+        }
+        let parent = tree.parent(from);
+        let start = tree.subtree(from).start;
+        let to = if up {
+            // The sibling above: the ancestor of the next row in this group.
+            let next = from + 1;
+            if next >= tree.len() || Some(next) == parent {
+                return false;
+            }
+            match std::iter::once(next)
+                .chain(tree.ancestors(next))
+                .find(|&a| tree.parent(a) == parent)
+            {
+                Some(sibling) => sibling,
+                None => return false,
+            }
+        } else {
+            // The row right under the subtree is the sibling below, if any.
+            match start.checked_sub(1) {
+                Some(below) if tree.parent(below) == parent => {
+                    tree.subtree(below).start + (from - start)
+                }
+                _ => return false,
+            }
+        };
+        let parent = self.data.layers[from].props.parent;
+        self.move_subtree(from, to, parent)
+    }
+
+    /// Copies the active layer (voxels and flags) just above itself. A group
+    /// is copied with its whole subtree; clones inside it that point at
+    /// layers inside it point at the copies.
+    pub fn duplicate_active_layer(&mut self) -> bool {
+        let index = self.active_layer;
+        if index >= self.data.layers.len() {
+            return false;
+        }
+        let range = self.data.tree().subtree(index);
+        let mut next = self.next_layer_id();
+        let ids: HashMap<LayerId, LayerId> = range
+            .clone()
+            .map(|i| {
+                let id = (self.data.layers[i].id, next);
+                next = next.saturating_add(1);
+                id
+            })
+            .collect();
+        let start = range.start;
+        let edits: Vec<Edit> = range
+            .map(|i| {
+                let source = &self.data.layers[i];
+                let mut layer = source.clone();
+                layer.selection = Selection::default();
+                layer.id = ids[&source.id];
+                if i == index {
+                    layer.name = self.unique_name_from(&format!("{} copy", source.name));
+                } else {
+                    layer.props.parent = source.props.parent.map(|p| ids[&p]);
+                }
+                if let LayerKind::Clone { source, .. } = &mut layer.props.kind {
+                    if let Some(&copy) = ids.get(source) {
+                        *source = copy;
+                    }
+                }
+                Edit::InsertLayer {
+                    index: i + (index + 1 - start),
+                    layer,
+                }
+            })
+            .collect();
+        let count = edits.len();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = index + count;
+        true
+    }
+
+    /// Wraps layer `index` (a group with its subtree) in a new group at the
+    /// same place, as one undo step; the new group becomes active. Refused
+    /// when the nesting would get too deep.
+    pub fn group_layer(&mut self, index: usize) -> Option<LayerId> {
+        let tree = self.data.tree();
+        let layer = self.data.layers.get(index)?;
+        if tree.depth(index) + tree.subtree_height(index) + 1 > rizxel_io::MAX_GROUP_DEPTH {
+            return None;
+        }
+        let mut group = Layer::new(self.unique_name_from("Group"), self.data.bounds);
+        group.props.kind = LayerKind::Group { collapsed: false };
+        group.props.parent = layer.props.parent;
+        group.id = self.next_layer_id();
+        let id = group.id;
+        let old = layer.props.clone();
+        let new = LayerProps {
+            parent: Some(id),
+            ..old.clone()
+        };
+        self.labeled("Group Layer", |d| {
+            d.apply(
+                Edit::Batch(vec![
+                    Edit::InsertLayer {
+                        index: index + 1,
+                        layer: group,
+                    },
+                    Edit::SetLayerProps { index, old, new },
+                ]),
+                false,
+            )
+        });
+        self.active_layer = index + 1;
+        Some(id)
+    }
+
+    /// Dissolves group `index`: its children move up one level and the
+    /// group is removed, as one undo step. The top child becomes active.
+    pub fn ungroup(&mut self, index: usize) -> bool {
+        let Some(layer) = self.data.layers.get(index).cloned() else {
+            return false;
+        };
+        if !layer.kind().is_group() || self.data.layers.len() < 2 {
+            return false;
+        }
+        let mut edits = self.reparent_children(&layer);
+        let had_children = !edits.is_empty();
+        edits.push(Edit::RemoveLayer { index, layer });
+        self.labeled("Ungroup", |d| d.apply(Edit::Batch(edits), false));
+        self.active_layer = if had_children {
+            index - 1
+        } else {
+            index.min(self.data.layers.len() - 1)
+        };
+        true
+    }
+
+    /// Edits moving the children of `group` to its parent.
+    fn reparent_children(&self, group: &Layer) -> Vec<Edit> {
+        self.data
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.props.parent == Some(group.id))
+            .map(|(i, l)| Edit::SetLayerProps {
+                index: i,
+                old: l.props.clone(),
+                new: LayerProps {
+                    parent: group.props.parent,
+                    ..l.props.clone()
+                },
+            })
+            .collect()
+    }
+
+    /// True when a layer outside `range` is a linked clone of one inside.
+    fn range_is_cloned_from_outside(&self, range: &std::ops::Range<usize>) -> bool {
+        let ids: Vec<LayerId> = range.clone().map(|i| self.data.layers[i].id).collect();
+        self.data.layers.iter().enumerate().any(|(i, l)| {
+            !range.contains(&i)
+                && matches!(l.props.kind, LayerKind::Clone { source, .. } if ids.contains(&source))
+        })
+    }
+
+    /// Whether [`Document::delete_group_with_contents`] would act on `index`.
+    pub fn can_delete_group_with_contents(&self, index: usize) -> bool {
+        let range = self.data.tree().subtree(index);
+        self.data
+            .layers
+            .get(index)
+            .is_some_and(|l| l.kind().is_group())
+            && range.len() < self.data.layers.len()
+            && !self.range_is_cloned_from_outside(&range)
+    }
+
+    /// Deletes group `index` and everything inside it as one undo step.
+    /// Refused when it would remove every layer or a linked clone outside
+    /// the group points inside it.
+    pub fn delete_group_with_contents(&mut self, index: usize) -> bool {
+        if !self.can_delete_group_with_contents(index) {
+            return false;
+        }
+        let range = self.data.tree().subtree(index);
+        let start = range.start;
+        let edits = range
+            .rev()
+            .map(|i| Edit::RemoveLayer {
+                index: i,
+                layer: self.data.layers[i].clone(),
+            })
+            .collect();
+        self.labeled("Delete Group and Contents", |d| {
+            d.apply(Edit::Batch(edits), false)
+        });
+        self.active_layer = start.saturating_sub(1);
+        true
+    }
+
+    /// Bakes the visible contents of group `index` (voxels, shapes, clones,
+    /// crops) into one voxel layer that replaces the group, as one undo
+    /// step. Hidden children are dropped with the group. Refused for empty
+    /// groups and when a linked clone outside the group points inside it.
+    pub fn merge_group(&mut self, index: usize) -> bool {
+        let Some(group) = self.data.layers.get(index) else {
+            return false;
+        };
+        let tree = self.data.tree();
+        let range = tree.subtree(index);
+        if !group.kind().is_group() || range.len() < 2 || self.range_is_cloned_from_outside(&range)
+        {
+            return false;
+        }
+        // Visible inside the group: the layer and its ancestors below it.
+        let shown = |i: usize| {
+            self.data.layers[i].visible
+                && tree
+                    .ancestors(i)
+                    .take_while(|&a| a != index)
+                    .all(|a| self.data.layers[a].visible)
+        };
+        let mut merged = Layer::new(group.name.clone(), self.data.bounds);
+        merged.id = self.next_layer_id();
+        merged.visible = group.visible;
+        merged.props.parent = group.props.parent;
+        for i in range.clone().filter(|&i| i != index && shown(i)) {
+            let derived = match self.data.evaluate(i) {
+                Some(Derived::Owned(v)) => v,
+                Some(Derived::Own) => self.data.layers[i].volume.clone(),
+                None => continue,
+            };
+            for (pos, v) in derived.iter() {
+                merged.volume.set(pos, v);
+            }
+        }
+        let start = range.start;
+        let mut edits: Vec<Edit> = range
+            .rev()
+            .map(|i| Edit::RemoveLayer {
+                index: i,
+                layer: self.data.layers[i].clone(),
+            })
+            .collect();
+        edits.push(Edit::InsertLayer {
+            index: start,
+            layer: merged,
+        });
+        self.labeled("Merge Group", |d| d.apply(Edit::Batch(edits), false));
+        self.active_layer = start;
+        true
+    }
+
+    /// Folds or unfolds group `index` in the Layers panel. View state like
+    /// the camera: saved with the file, but no undo step and no unsaved
+    /// changes.
+    pub fn set_group_collapsed(&mut self, index: usize, collapsed: bool) -> bool {
+        match self.data.layers.get_mut(index).map(|l| &mut l.props.kind) {
+            Some(LayerKind::Group { collapsed: c }) if *c != collapsed => {
+                *c = collapsed;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// True when layer `index` can be painted into and removed by a merge:
@@ -2748,10 +3167,20 @@ impl Document {
                 })
             })
             .collect::<Result<Vec<_>, RzxlError>>()?;
+        // Files may list a group's children anywhere (Goxel puts groups
+        // first): put each subtree right below its group.
+        let links: Vec<Link> = layers.iter().map(Link::of).collect();
+        let order = canonical_order(&links);
+        let active = order
+            .iter()
+            .position(|&i| i == project.active_layer)
+            .unwrap_or(project.active_layer);
+        let mut slots: Vec<Option<Layer>> = layers.into_iter().map(Some).collect();
+        let layers = order.iter().filter_map(|&i| slots[i].take()).collect();
         let mut doc = Self::with_bounds(project.name, bounds, layers);
         doc.data.palette = project.palette;
         doc.data.materials = project.materials;
-        doc.active_layer = project.active_layer;
+        doc.active_layer = active;
         doc.selected_color = project.selected_color;
         doc.path = path;
         doc.touch();
