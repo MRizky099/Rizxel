@@ -60,8 +60,10 @@ The **Phase** column names the plan that closes the gap (see
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
 | No copy, cut or paste | High | 8 | There is no clipboard, and no duplicating a selection into a new layer. |
-| No transforms: rotate, flip or mirror of a selection or layer | High | 8 | Basic modeling operations. Live Symmetry only affects placement. |
-| No line tool (`Shift`+click or chained lines) | Medium | 10 | Brush only interpolates between drag samples. The next Slice Mode workflow. |
+| No transforms: rotate, flip, mirror or resize of a selection or layer | High | 8, 10c | Basic modeling operations. Live Symmetry only affects placement. Phase 8 adds 90° rotate, flip and mirror commands; the Transform tool (free angles, scaling, gizmo) comes in Phase 10c. |
+| No line or curve tool, and no pixel-perfect option | Medium | 10c | Brush only interpolates between drag samples. The next Slice Mode workflow. |
+| The selection box can't be adjusted | Medium | 10c | The Selection drag selects on release; there are no handles and no typed position or size. |
+| No way to move or copy a selection into a new layer | Medium | 10c | |
 | No select all / invert / grow / shrink / by color | Medium | 8, 10 | Selection is box-based or fuzzy only. Select All and Invert land with the Edit menu in Phase 8. |
 | No Mask Mode (protect the selection) | Medium | 10 | Qubicle's third global tool option. |
 | Slice can't split parts into separate layers | Medium | 10 | Listed as out of scope in 5a. |
