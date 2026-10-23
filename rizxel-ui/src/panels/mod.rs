@@ -2,6 +2,7 @@
 
 pub mod history;
 pub mod options;
+pub mod references;
 pub mod sidebar;
 pub mod status;
 pub mod tabs;
@@ -23,4 +24,10 @@ pub struct UiState {
     pub palette_used_only: bool,
     /// Second swatch for Gradient and Remap (`Shift+click`).
     pub palette_mark: Option<usize>,
+    /// Reference image being renamed and its edit buffer.
+    pub renaming_reference: Option<(usize, String)>,
+    /// References panel: width and height change independently.
+    pub reference_free_aspect: bool,
+    /// References panel thumbnails.
+    pub reference_thumbs: references::Thumbnails,
 }

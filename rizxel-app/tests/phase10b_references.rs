@@ -146,3 +146,72 @@ fn reference_count_is_capped() {
         .is_none());
     assert!(!d.duplicate_reference(0));
 }
+
+#[test]
+fn image_files_become_references() {
+    let dir = std::env::temp_dir();
+    let png_path = dir.join(format!("rizxel_ref_{}.png", std::process::id()));
+    let pixels = vec![90u8; 6 * 3 * 4];
+    std::fs::write(
+        &png_path,
+        rizxel_io::png_io::encode_rgba(6, 3, &pixels).unwrap(),
+    )
+    .unwrap();
+    let mut state = AppState::default();
+    let msg = state
+        .add_reference_file(&png_path, Some(RefPlane::Xz))
+        .unwrap();
+    assert!(msg.contains("on XZ"), "{msg}");
+    let d = state.doc().unwrap();
+    assert_eq!(
+        d.data.references[0].name,
+        format!("rizxel_ref_{}.png", std::process::id())
+    );
+    assert_eq!(
+        d.history_entries().0.last().unwrap(),
+        &format!("Add Reference \"rizxel_ref_{}.png\"", std::process::id())
+    );
+    // The plane the camera faces most: the default camera looks at the front.
+    state
+        .camera
+        .snap(rizxel_app::ViewTarget::Face(rizxel_app::ViewFace::Right));
+    assert_eq!(state.facing_plane(), RefPlane::Yz);
+    state.add_reference_file(&png_path, None).unwrap();
+    assert_eq!(state.doc().unwrap().data.references[1].plane, RefPlane::Yz);
+    // Replace keeps the placement; the same image again changes nothing.
+    let offset = state.doc().unwrap().data.references[1].offset;
+    assert!(state.replace_reference_file(1, &png_path).is_err());
+    std::fs::write(
+        &png_path,
+        rizxel_io::png_io::encode_rgba(2, 2, &[7; 16]).unwrap(),
+    )
+    .unwrap();
+    assert!(state.replace_reference_file(1, &png_path).is_ok());
+    let r = &state.doc().unwrap().data.references[1];
+    assert_eq!((r.image.width, r.offset), (2, offset));
+    assert!(state.replace_reference_file(9, &png_path).is_err());
+    // Not an image.
+    let txt = dir.join(format!("rizxel_ref_{}.png.txt", std::process::id()));
+    std::fs::write(&txt, b"plain text").unwrap();
+    assert!(state.add_reference_file(&txt, None).is_err());
+    assert!(rizxel_app::is_image_path(&png_path) && !rizxel_app::is_image_path(&txt));
+    std::fs::remove_file(&png_path).ok();
+    std::fs::remove_file(&txt).ok();
+    // Alt+R hides, then shows.
+    state.toggle_all_references();
+    assert!(state
+        .doc()
+        .unwrap()
+        .data
+        .references
+        .iter()
+        .all(|r| !r.visible));
+    state.toggle_all_references();
+    assert!(state
+        .doc()
+        .unwrap()
+        .data
+        .references
+        .iter()
+        .all(|r| r.visible));
+}

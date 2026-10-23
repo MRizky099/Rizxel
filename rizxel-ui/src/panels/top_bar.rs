@@ -178,6 +178,19 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             camera_items(ui, state);
 
             ui.separator();
+            let refs = state.doc().map_or((0, false), |d| {
+                let r = &d.data.references;
+                (r.len(), r.iter().any(|r| r.visible))
+            });
+            if menu_item(
+                ui,
+                check_glyph(refs.1),
+                "Reference Images",
+                "Alt+R",
+                refs.0 > 0,
+            ) {
+                state.toggle_all_references();
+            }
             panels_menu(ui, dock);
         });
 
@@ -969,6 +982,7 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Ctrl+D", "Deselect"),
         ("Ctrl+I", "Invert selection"),
         ("Shift+M", "Mask Mode: protect the selection"),
+        ("Alt+R", "Show or hide all reference images"),
         ("Ctrl+0 … 9", "Select favorite color 0–9"),
         ("Ctrl+Shift+0 … 9", "Store the selected color as favorite"),
         ("Shift+click swatch", "Mark a color for Gradient and Remap"),

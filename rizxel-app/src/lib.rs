@@ -38,13 +38,14 @@ pub use document::{
 };
 pub use favorites::Favorites;
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
-pub use interchange::FileFormat;
+pub use interchange::{is_image_path, FileFormat, IMAGE_EXTENSIONS};
 pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
-pub use rizxel_io::{GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
+pub use rizxel_io::png_io::RgbaImage;
+pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use selection::Selection;
 
 /// File extension of mesh exports.

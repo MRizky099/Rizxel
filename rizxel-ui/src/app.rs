@@ -217,9 +217,12 @@ impl RizxelApp {
                 self.state.recall_favorite(slot);
             }
         }
-        // Before the tool letters: `M` is the Move tool.
+        // Before the tool letters: `M` is the Move tool, `R` a tool key.
         if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::M)) {
             self.state.toggle_mask_selection();
+        }
+        if pressed(KeyboardShortcut::new(Modifiers::ALT, Key::R)) {
+            self.state.toggle_all_references();
         }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
@@ -230,6 +233,31 @@ impl RizxelApp {
             if pressed(KeyboardShortcut::new(Modifiers::NONE, key)) {
                 self.state.tool = tool;
             }
+        }
+    }
+}
+
+impl RizxelApp {
+    /// Image files dropped on the window become reference images on the
+    /// plane the camera faces most.
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let paths: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if paths.is_empty() {
+            return;
+        }
+        let (images, others): (Vec<_>, Vec<_>) = paths
+            .into_iter()
+            .partition(|p| rizxel_app::is_image_path(p));
+        panels::references::add_files(&mut self.state, &images);
+        if images.is_empty() && !others.is_empty() {
+            self.state.status_message =
+                Some("Drop PNG or JPEG files to add reference images".to_owned());
         }
     }
 }
@@ -247,6 +275,7 @@ impl eframe::App for RizxelApp {
         // Keep ticking while idle so the time-based autosave still fires.
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
         self.handle_shortcuts(&ctx);
+        self.handle_dropped_files(&ctx);
 
         let state = &mut self.state;
         let ui_state = &mut self.ui;
@@ -300,6 +329,9 @@ impl eframe::App for RizxelApp {
                 dock::Panel::History => {
                     scroll_panel(ui, panel, |ui| panels::history::show(ui, state))
                 }
+                dock::Panel::References => scroll_panel(ui, panel, |ui| {
+                    panels::references::show(ui, state, ui_state)
+                }),
             });
             if let Some(error) = error {
                 log::warn!("{error}");

@@ -24,16 +24,18 @@ pub enum Panel {
     Layers,
     Bounds,
     History,
+    References,
 }
 
 impl Panel {
     /// Panels offered in *View > Panels*, in menu order.
-    pub const ALL: [Panel; 7] = [
+    pub const ALL: [Panel; 8] = [
         Panel::Viewport,
         Panel::Tools,
         Panel::Options,
         Panel::Palette,
         Panel::Layers,
+        Panel::References,
         Panel::Bounds,
         Panel::History,
     ];
@@ -47,6 +49,7 @@ impl Panel {
             Panel::Layers => "Layers",
             Panel::Bounds => "Bound Model",
             Panel::History => "History",
+            Panel::References => "References",
         }
     }
 
@@ -71,7 +74,7 @@ impl Panel {
             Panel::Viewport => egui::vec2(240.0, 160.0),
             Panel::Tools => egui::vec2(48.0, 120.0),
             Panel::Options => egui::vec2(200.0, theme::OPTION_BAR_HEIGHT),
-            Panel::Palette | Panel::Layers | Panel::Bounds | Panel::History => {
+            Panel::Palette | Panel::Layers | Panel::Bounds | Panel::History | Panel::References => {
                 egui::vec2(200.0, 80.0)
             }
         };
@@ -124,6 +127,11 @@ impl Default for Workspace {
                     panel: Panel::Layers,
                     open: true,
                     height: None,
+                },
+                StackEntry {
+                    panel: Panel::References,
+                    open: false,
+                    height: Some(320.0),
                 },
                 StackEntry {
                     panel: Panel::Bounds,
@@ -288,6 +296,29 @@ mod tests {
         assert!(!ws.is_visible(Panel::Layers));
         ws.set_visible(Panel::Layers, true).unwrap();
         assert_eq!(ws.layout, before);
+    }
+
+    #[test]
+    fn references_panel_floats_and_reopens() {
+        let mut ws = Workspace::default();
+        ws.apply(Action::Float {
+            panel: Panel::References,
+            rect: [50.0, 50.0, 300.0, 400.0],
+        })
+        .unwrap();
+        assert_eq!(ws.layout.floating.len(), 1);
+        let floating = ws.layout.clone();
+        ws.set_visible(Panel::References, false).unwrap();
+        assert!(!ws.is_visible(Panel::References));
+        ws.set_visible(Panel::References, true).unwrap();
+        assert_eq!(ws.layout, floating, "reopens where it floated");
+        ws.apply(Action::Move {
+            panel: Panel::References,
+            anchor: Panel::Layers,
+            placement: Placement::Tab { before: None },
+        })
+        .unwrap();
+        assert!(ws.layout.floating.is_empty() && ws.is_visible(Panel::References));
     }
 
     #[test]

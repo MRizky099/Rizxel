@@ -7,11 +7,13 @@
 //! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` + palette `.png` in MagicaVoxel's layout |
 //! | `.mtl` | palette and materials of the active document | `.mtl` + palette `.png` |
 //! | STL `.stl` | new tab: voxelized, one color | binary STL, Z-up, 1 voxel = 1 mm |
+//! | PNG / JPEG | reference image in the active document | — |
 
 use std::path::Path;
 
 use rizxel_engine::VoxelizeOptions;
 use rizxel_io::RzxlError;
+use rizxel_math::RefPlane;
 
 use crate::{AppState, Document};
 
@@ -112,7 +114,97 @@ fn stem(path: &Path) -> String {
         .unwrap_or_else(|| "imported".to_owned())
 }
 
+/// Extensions of the images [`AppState::add_reference_file`] accepts.
+pub const IMAGE_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
+
+/// True for a path with a PNG or JPEG extension.
+pub fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
 impl AppState {
+    /// Plane the camera faces most (the one whose normal is the facing
+    /// axis): where dropped images go.
+    pub fn facing_plane(&self) -> RefPlane {
+        match self.facing_axis() {
+            0 => RefPlane::Yz,
+            1 => RefPlane::Xz,
+            _ => RefPlane::Xy,
+        }
+    }
+
+    /// Adds the PNG or JPEG file `path` to the active document as a
+    /// reference image on `plane` (the plane the camera faces most when
+    /// `None`), fitted to the bounds. One undo step; returns a status
+    /// message, which notes when a large image was scaled down.
+    pub fn add_reference_file(
+        &mut self,
+        path: &Path,
+        plane: Option<RefPlane>,
+    ) -> Result<String, RzxlError> {
+        let plane = plane.unwrap_or_else(|| self.facing_plane());
+        let imported = rizxel_io::import_image(read_limited(path)?)?;
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Reference".to_owned());
+        let doc = self
+            .doc_mut()
+            .ok_or_else(|| RzxlError::Invalid("no open document".to_owned()))?;
+        let label = format!("Add Reference \"{name}\"");
+        doc.labeled(label, |d| {
+            d.add_reference(name.clone(), imported.image, plane)
+        })
+        .ok_or_else(|| {
+            RzxlError::Invalid(format!(
+                "a project holds at most {} reference images",
+                rizxel_io::MAX_REFERENCES
+            ))
+        })?;
+        Ok(match imported.downscaled_from {
+            Some((w, h)) => format!(
+                "Added {name} on {}: scaled down from {w}×{h} to {} px",
+                plane.label(),
+                rizxel_io::MAX_REFERENCE_SIDE
+            ),
+            None => format!("Added {name} on {}", plane.label()),
+        })
+    }
+
+    /// *Replace Image…*: gives reference `index` the image in `path`,
+    /// keeping its placement.
+    pub fn replace_reference_file(
+        &mut self,
+        index: usize,
+        path: &Path,
+    ) -> Result<String, RzxlError> {
+        let imported = rizxel_io::import_image(read_limited(path)?)?;
+        let doc = self
+            .doc_mut()
+            .ok_or_else(|| RzxlError::Invalid("no open document".to_owned()))?;
+        if !doc.labeled("Replace Reference Image", |d| {
+            d.replace_reference_image(index, imported.image)
+        }) {
+            return Err(RzxlError::Invalid(
+                "no such reference image, or it already shows this image".to_owned(),
+            ));
+        }
+        Ok(format!("Replaced the image with {}", path.display()))
+    }
+
+    /// *Show All / Hide All* (`Alt+R`).
+    pub fn toggle_all_references(&mut self) {
+        let Some(doc) = self.doc_mut() else { return };
+        if doc.data.references.is_empty() {
+            self.status_message =
+                Some("No reference images: add one in the References panel".to_owned());
+        } else {
+            doc.toggle_all_references();
+        }
+    }
+
     /// Imports `path` by its extension. Models open in a new tab (replacing
     /// a pristine untitled one); an `.mtl` replaces the active document's
     /// palette and materials (undoable). Returns a status message.
