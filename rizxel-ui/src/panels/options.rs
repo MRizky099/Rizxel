@@ -430,14 +430,25 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
                     if out.locked_skipped > 0 {
                         m.push_str(&format!(", {} locked layer(s) skipped", out.locked_skipped));
                     }
+                    m.push_str(". Fit shrinks the bounds to what is left");
                     m
                 });
             }
             ui.checkbox(&mut cap_value, "Cap")
                 .on_hover_text("Close the cut with the current color");
         });
-        // Switching axis keeps the plane inside the bounds.
-        doc.plane = p.clamped(bounds);
+        if ui
+            .button("Fit")
+            .on_hover_text("Fit Bounds to Content: move the model to the origin and shrink the bounds around it")
+            .clicked()
+        {
+            message = Some(match doc.fit_bounds_to_content() {
+                Ok(b) => format!("Fit Bounds: {}×{}×{}", b.x(), b.y(), b.z()),
+                Err(e) => format!("Fit Bounds: {}", e.message()),
+            });
+        }
+        // Switching axis keeps the plane inside the (maybe fitted) bounds.
+        doc.plane = p.clamped(doc.data.bounds);
     }
     state.options.plane.cap = cap_value;
     if message.is_some() {

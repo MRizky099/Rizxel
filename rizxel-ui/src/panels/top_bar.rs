@@ -3,7 +3,8 @@
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, CloseAction, CloseChoice, CloseStep, FileFormat, SliceStep};
+use rizxel_app::{AppState, CloseAction, CloseChoice, CloseStep, CoreOp, FileFormat, SliceStep};
+use rizxel_engine::tools::BooleanOp;
 
 use super::UiState;
 use crate::dock::{self, Workspace};
@@ -132,6 +133,8 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
 
         ui.menu_button("Edit", |ui| edit_menu(ui, state));
         ui.menu_button("Selection", |ui| selection_menu(ui, state));
+        ui.menu_button("Layer", |ui| layer_menu(ui, state));
+        ui.menu_button("Model", |ui| model_menu(ui, state));
 
         ui.menu_button("View", |ui| {
             ui.set_min_width(220.0);
@@ -364,6 +367,125 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
     if menu_item(ui, check_glyph(mask), "Mask Mode", "Shift+M", true) {
         state.toggle_mask_selection();
     }
+}
+
+/// Layer menu: structure operations on the active layer.
+fn layer_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.set_min_width(260.0);
+    let has_voxels = state.active_layer_has_voxels();
+    let editable = has_voxels && state.active_layer_editable();
+    if menu_item(ui, icon::PUZZLE_PIECE, "Separate Parts", "", editable) {
+        state.separate_parts();
+    }
+    ui.horizontal(|ui| {
+        ui.add_space(28.0);
+        ui.label(
+            egui::RichText::new("Keep parts under")
+                .size(11.0)
+                .color(theme::TEXT_DIM),
+        );
+        ui.add(
+            egui::DragValue::new(&mut state.structure.min_part_voxels)
+                .range(1..=1_000_000)
+                .suffix(" vox"),
+        )
+        .on_hover_text("Parts smaller than this stay in the layer");
+    });
+    if menu_item(
+        ui,
+        icon::SQUARE_SPLIT_VERTICAL,
+        "Split at Work Plane",
+        "",
+        editable,
+    ) {
+        state.split_at_plane();
+    }
+    ui.label(
+        egui::RichText::new("Voxels on the plane's + side move to a new layer")
+            .size(10.0)
+            .color(theme::TEXT_DIM),
+    );
+    ui.separator();
+    // Boolean ▸ op ▸ other layer.
+    let others: Vec<(usize, String)> = state
+        .doc()
+        .map(|d| {
+            d.data
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(i, l)| *i != d.active_layer && !l.kind().is_group())
+                .map(|(i, l)| (i, l.name.clone()))
+                .rev()
+                .collect()
+        })
+        .unwrap_or_default();
+    ui.add_enabled_ui(state.active_layer_editable() && !others.is_empty(), |ui| {
+        ui.menu_button(icon_label(ui, icon::INTERSECT, "Boolean", None), |ui| {
+            ui.set_min_width(200.0);
+            for op in BooleanOp::ALL {
+                ui.menu_button(op.label(), |ui| {
+                    ui.label(
+                        egui::RichText::new("Active layer with:")
+                            .size(10.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                    for (index, name) in &others {
+                        if ui.button(name).clicked() {
+                            state.boolean(*index, op);
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// Model menu: bounds and core operations.
+fn model_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.set_min_width(260.0);
+    let has_doc = state.doc().is_some();
+    let editable = state.active_layer_has_voxels() && state.active_layer_editable();
+    if menu_item(ui, icon::BOUNDING_BOX, "Fit Bounds to Content", "", has_doc) {
+        state.fit_bounds();
+    }
+    let fit = &mut state.structure.fit_on_import;
+    if menu_item(ui, check_glyph(*fit), "Fit Bounds on Import", "", true) {
+        *fit = !*fit;
+    }
+    ui.separator();
+    ui.menu_button(icon_label(ui, icon::CUBE_TRANSPARENT, "Core", None), |ui| {
+        ui.set_min_width(240.0);
+        if menu_item(ui, icon::PAINT_BUCKET, "Fill Hollows", "", editable) {
+            state.core_op(CoreOp::FillHollows);
+        }
+        ui.label(
+            egui::RichText::new("Closed cavities get the selected color")
+                .size(10.0)
+                .color(theme::TEXT_DIM),
+        );
+        if menu_item(ui, icon::CUBE_TRANSPARENT, "Hollow", "", editable) {
+            state.core_op(CoreOp::Hollow);
+        }
+        let thickness = state.structure.hollow_thickness;
+        if menu_item(ui, icon::CUBE_TRANSPARENT, "Advanced Hollow", "", editable) {
+            state.core_op(CoreOp::HollowAdvanced(thickness));
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(28.0);
+            ui.label(
+                egui::RichText::new("Shell")
+                    .size(11.0)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add(
+                egui::DragValue::new(&mut state.structure.hollow_thickness)
+                    .range(1..=64)
+                    .suffix(" vox"),
+            );
+        });
+    });
 }
 
 /// Edit > Rotate 90°, Flip and Mirror. They act on the selection, or the

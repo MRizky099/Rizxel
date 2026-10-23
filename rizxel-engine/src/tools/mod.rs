@@ -6,7 +6,10 @@
 //! one drag is one undo step. Selection tools (Selection, Fuzzy Select)
 //! return cells; the selection type lives in the application layer.
 
+mod boolean;
 mod brush;
+mod components;
+mod core_ops;
 mod extrude;
 mod fill;
 mod fuzzy;
@@ -25,7 +28,10 @@ use glam::IVec3;
 use rizxel_math::{BoundSize, Voxel, VoxelVolume};
 use serde::{Deserialize, Serialize};
 
+pub use boolean::{boolean_changes, BooleanOp};
 pub use brush::{brush_center, brush_positions, brush_stroke, line_cells, stamp_shape};
+pub use components::connected_components;
+pub use core_ops::{fill_hollows, hollow, hollow_advanced, MAX_CORE_CELLS};
 pub use extrude::{extrude_changes, extrude_region, extruded_cells, selection_region};
 pub use fill::{fill_cells, FillError};
 pub use fuzzy::fuzzy_select;
@@ -37,7 +43,7 @@ pub use quality::{
     NEIGHBORS_6,
 };
 pub use select::{select_box, selection_box};
-pub use shape::{shape_box, shape_cells};
+pub use shape::{shape_box, shape_cells, shape_cells_toward};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
 pub use symmetry::{apply_symmetry, mirror};
 pub use transform::{
@@ -151,7 +157,7 @@ impl Tool {
             Tool::Cursor => "Hover to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
             Tool::Brush => "Click and drag to paint. Shift: erase, Alt: pick color, Esc: cancel.",
             Tool::Shape => {
-                "Drag on a face to draw a cube, sphere or cylinder. Shift: carve, Esc: cancel."
+                "Drag on a face to draw a cube, sphere, cylinder, pyramid or cone. Shift: carve, Esc: cancel."
             }
             Tool::Plane => "Click a face to place the work plane; other tools then draw on it.",
             Tool::Move => {

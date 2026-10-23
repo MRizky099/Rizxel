@@ -30,8 +30,8 @@ pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVA
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
-    DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
-    TransparentMesh, ViewMeshes, GHOST_ALPHA, MASKED_MESSAGE, MAX_MATERIAL_SLOT,
+    CoreOp, DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, OpError, SliceOutcome,
+    TransformError, TransparentMesh, ViewMeshes, GHOST_ALPHA, MASKED_MESSAGE, MAX_MATERIAL_SLOT,
 };
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
@@ -565,7 +565,30 @@ pub struct AppState {
     autosave: autosave::Autosave,
     /// Voxels copied or cut, shared by every open document.
     pub clipboard: Option<Clipboard>,
+    /// Settings of the *Layer* and *Model* structure operations.
+    pub structure: StructureOptions,
     untitled_counter: u32,
+}
+
+/// Settings of the structure operations, shown in their menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructureOptions {
+    /// *Separate Parts*: parts smaller than this stay in the layer.
+    pub min_part_voxels: usize,
+    /// *Advanced Hollow*: shell thickness in voxels.
+    pub hollow_thickness: u32,
+    /// Imports run *Fit Bounds to Content* right away.
+    pub fit_on_import: bool,
+}
+
+impl Default for StructureOptions {
+    fn default() -> Self {
+        Self {
+            min_part_voxels: 1,
+            hollow_thickness: 2,
+            fit_on_import: false,
+        }
+    }
 }
 
 impl Default for AppState {
@@ -588,6 +611,7 @@ impl Default for AppState {
             recent: RecentFiles::default(),
             autosave: autosave::Autosave::default(),
             clipboard: None,
+            structure: StructureOptions::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -1211,6 +1235,58 @@ impl AppState {
         self.status_message = Some(match f(doc) {
             Ok(n) => format!("{label}: {n} voxels changed"),
             Err(e) => format!("{label}: {}", e.message()),
+        });
+    }
+
+    // ----------------------------------------------------- structure ops
+
+    fn run_op(&mut self, label: &str, f: impl FnOnce(&mut Document) -> Result<String, OpError>) {
+        let Some(doc) = self.doc_mut() else { return };
+        self.status_message = Some(match f(doc) {
+            Ok(done) => format!("{label}: {done}"),
+            Err(e) => format!("{label}: {}", e.message()),
+        });
+    }
+
+    /// *Layer ▸ Separate Parts*.
+    pub fn separate_parts(&mut self) {
+        let min = self.structure.min_part_voxels;
+        self.run_op("Separate Parts", |d| {
+            d.separate_parts(min).map(|n| format!("{n} new layers"))
+        });
+    }
+
+    /// *Layer ▸ Split at Work Plane*.
+    pub fn split_at_plane(&mut self) {
+        self.run_op("Split at Work Plane", |d| {
+            d.split_at_plane().map(|_| "new layer above".to_owned())
+        });
+    }
+
+    /// *Model ▸ Fit Bounds to Content*.
+    pub fn fit_bounds(&mut self) {
+        self.run_op("Fit Bounds", |d| {
+            d.fit_bounds_to_content()
+                .map(|b| format!("{}×{}×{}", b.x(), b.y(), b.z()))
+        });
+    }
+
+    /// *Model ▸ Core* on the active layer.
+    pub fn core_op(&mut self, op: CoreOp) {
+        let label = match op {
+            CoreOp::FillHollows => "Fill Hollows",
+            CoreOp::Hollow => "Hollow",
+            CoreOp::HollowAdvanced(_) => "Advanced Hollow",
+        };
+        self.run_op(label, |d| {
+            d.core_op(op).map(|n| format!("{n} voxels changed"))
+        });
+    }
+
+    /// *Layer ▸ Boolean*: the active layer `op` layer `other`.
+    pub fn boolean(&mut self, other: usize, op: rizxel_engine::tools::BooleanOp) {
+        self.run_op(op.label(), |d| {
+            d.boolean(other, op).map(|n| format!("{n} voxels changed"))
         });
     }
 

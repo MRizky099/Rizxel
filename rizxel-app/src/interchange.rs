@@ -182,6 +182,10 @@ impl AppState {
             }
         };
         let mut doc = Document::from_project(project, None)?;
+        if self.structure.fit_on_import {
+            // An undo step of its own, so the original placement is one Ctrl+Z away.
+            let _ = doc.fit_bounds_to_content();
+        }
         doc.mark_unsaved();
         self.remember_recent(path);
         let summary = format!(

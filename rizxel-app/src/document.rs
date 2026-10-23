@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
-use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
+use rizxel_engine::tools::{
+    boolean_changes, cells_box, connected_components, fill_hollows, hollow, hollow_advanced,
+    mirror_changes, relocate_changes, slice_layers, BooleanOp, Transform,
+};
 use rizxel_engine::{
     greedy_mesh, rasterize_shape, MaskMode, MaterialSlots, Mesh, MeshParams, SliceRequest,
     TileMeshCache, WorkPlane,
@@ -211,6 +214,36 @@ impl TransformError {
 
 /// Why commands that act on the selection itself do nothing in Mask Mode.
 pub const MASKED_MESSAGE: &str = "Mask Mode protects the selection: turn it off (Shift+M) first";
+
+/// Core operation of *Model ▸ Core* ([`Document::core_op`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreOp {
+    FillHollows,
+    Hollow,
+    /// Hollow keeping a shell this many voxels thick.
+    HollowAdvanced(u32),
+}
+
+/// Why a structure operation (Separate Parts, Fit Bounds, Core, Boolean)
+/// did nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpError {
+    Blocked(EditBlock),
+    /// Nothing to do, with the reason.
+    Nothing(&'static str),
+    /// The model is larger than the operation's cell limit.
+    TooLarge(usize),
+}
+
+impl OpError {
+    pub fn message(self) -> String {
+        match self {
+            OpError::Blocked(e) => e.message().to_owned(),
+            OpError::Nothing(why) => why.to_owned(),
+            OpError::TooLarge(limit) => format!("Too large (over {limit} cells): nothing changed"),
+        }
+    }
+}
 
 /// Summary of a [`Document::slice`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1231,6 +1264,249 @@ impl Document {
             None => self.commit_edit(),
         };
         n
+    }
+
+    // ---------------------------------------------------- structure ops
+
+    /// Final geometry of layer `index` (voxels, rasterized shape, moved
+    /// clone, crop applied); `None` for groups and broken clones.
+    pub fn layer_geometry(&self, index: usize) -> Option<VoxelVolume> {
+        match self.data.evaluate(index)? {
+            Derived::Own => Some(self.data.layers[index].volume.clone()),
+            Derived::Owned(v) => Some(v),
+        }
+    }
+
+    /// The active layer if operations may rewrite its voxels (hidden is fine).
+    fn op_layer(&self) -> Result<usize, OpError> {
+        let layer = self.active_layer;
+        match self.editable_layer(layer) {
+            Ok(()) | Err(EditBlock::Hidden) => Ok(layer),
+            Err(e) => Err(OpError::Blocked(e)),
+        }
+    }
+
+    /// Writes `changes` into `layer` as one undo step (Mask Mode applies).
+    fn write_op(&mut self, layer: usize, changes: &[VoxelChange]) -> Result<usize, OpError> {
+        self.cancel_edit();
+        self.begin_edit();
+        let n = self.edit_voxels(layer, changes);
+        self.commit_edit();
+        if n == 0 {
+            Err(OpError::Nothing("Nothing changed"))
+        } else {
+            Ok(n)
+        }
+    }
+
+    /// Moves `parts` of `layer` (cell lists) into new layers just above it,
+    /// as one undo step. Returns the number of new layers.
+    fn move_parts_to_layers(&mut self, layer: usize, parts: &[(String, Vec<IVec3>)]) -> usize {
+        let source = &self.data.layers[layer];
+        let mut edits = Vec::new();
+        let mut cleared = Vec::new();
+        let first_id = self.next_layer_id();
+        let mut names: Vec<String> = Vec::new();
+        for (k, (suffix, cells)) in parts.iter().enumerate() {
+            let base = format!("{} {suffix}", source.name);
+            let mut name = self.unique_name_from(&base);
+            let mut n = 2;
+            while names.contains(&name) {
+                name = self.unique_name_from(&format!("{base} {n}"));
+                n += 1;
+            }
+            names.push(name.clone());
+            let mut new = Layer::new(name, self.data.bounds);
+            new.id = first_id + k as LayerId;
+            new.props.parent = source.props.parent;
+            new.props.material = source.props.material;
+            new.props.opacity = source.props.opacity;
+            for &p in cells {
+                let v = source.volume.get(p);
+                new.volume.set(p, v);
+                cleared.push(VoxelChange {
+                    pos: p,
+                    old: v,
+                    new: EMPTY_VOXEL,
+                });
+            }
+            edits.push(Edit::InsertLayer {
+                index: layer + 1 + k,
+                layer: new,
+            });
+        }
+        edits.insert(
+            0,
+            Edit::Voxels {
+                layer,
+                changes: cleared,
+            },
+        );
+        let count = parts.len();
+        self.cancel_edit();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = layer;
+        count
+    }
+
+    /// *Layer ▸ Separate Parts*: every 6-connected part of the active layer
+    /// with at least `min_voxels` voxels gets its own layer; the largest
+    /// part and the smaller bits stay. One undo step; returns the number of
+    /// new layers.
+    pub fn separate_parts(&mut self, min_voxels: usize) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        let parts = connected_components(&self.data.layers[layer].volume)
+            .map_err(|e| OpError::TooLarge(e.limit))?;
+        let big: Vec<(String, Vec<IVec3>)> = parts
+            .into_iter()
+            .filter(|p| p.len() >= min_voxels.max(1))
+            .skip(1)
+            .enumerate()
+            .map(|(k, cells)| (format!("part {}", k + 2), cells))
+            .collect();
+        if big.is_empty() {
+            return Err(OpError::Nothing("The layer has only one part"));
+        }
+        Ok(self.move_parts_to_layers(layer, &big))
+    }
+
+    /// *Layer ▸ Split at Work Plane*: the active layer's voxels on the
+    /// plane's positive side (`coord >= plane`) move to a new layer above.
+    pub fn split_at_plane(&mut self) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        let p = self.plane.clamped(self.data.bounds);
+        let (axis, coord) = (p.axis.min(2), p.coord);
+        let volume = &self.data.layers[layer].volume;
+        let side: Vec<IVec3> = volume
+            .iter()
+            .filter(|(q, _)| q[axis] >= coord)
+            .map(|(q, _)| q)
+            .collect();
+        if side.is_empty() || side.len() == volume.voxel_count() {
+            return Err(OpError::Nothing(
+                "The work plane does not cut through the layer",
+            ));
+        }
+        let suffix = format!("{}{coord}+", ["X", "Y", "Z"][axis]);
+        Ok(self.move_parts_to_layers(layer, &[(suffix, side)]))
+    }
+
+    /// Box around the geometry of every layer (hidden ones too).
+    pub fn content_bounds(&self) -> Option<(IVec3, IVec3)> {
+        (0..self.data.layers.len())
+            .filter_map(|i| self.layer_geometry(i)?.occupied_bounds())
+            .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)))
+    }
+
+    /// *Model ▸ Fit Bounds to Content*: moves every layer so the content's
+    /// minimum corner is at the origin and shrinks the bounds to fit it, as
+    /// one undo step. Shape areas and crop boxes move along.
+    pub fn fit_bounds_to_content(&mut self) -> Result<BoundSize, OpError> {
+        let (lo, hi) = self
+            .content_bounds()
+            .ok_or(OpError::Nothing("The model is empty"))?;
+        let size = hi - lo;
+        let new = BoundSize::new(size.x as u32, size.y as u32, size.z as u32);
+        if lo == IVec3::ZERO && new == self.data.bounds {
+            return Err(OpError::Nothing("The bounds already fit the model"));
+        }
+        let shift = -lo;
+        let moved = |b: VoxelBox| VoxelBox {
+            min: b.min + shift,
+            max: b.max + shift,
+        };
+        let mut edits = Vec::new();
+        for (index, l) in self.data.layers.iter().enumerate() {
+            if l.kind().stores_voxels() && !l.volume.is_empty() && shift != IVec3::ZERO {
+                let mut changes: Vec<VoxelChange> = l
+                    .volume
+                    .iter()
+                    .map(|(pos, old)| VoxelChange {
+                        pos,
+                        old,
+                        new: EMPTY_VOXEL,
+                    })
+                    .collect();
+                let placed: Vec<VoxelChange> = l
+                    .volume
+                    .iter()
+                    .map(|(pos, v)| VoxelChange {
+                        pos: pos + shift,
+                        old: EMPTY_VOXEL,
+                        new: v,
+                    })
+                    .collect();
+                crate::history::merge_voxel_changes(&mut changes, &placed);
+                edits.push(Edit::Voxels {
+                    layer: index,
+                    changes,
+                });
+            }
+            let mut props = l.props.clone();
+            props.crop = props.crop.map(moved);
+            if let LayerKind::Shape { area, .. } = &mut props.kind {
+                *area = moved(*area);
+            }
+            if props != l.props {
+                edits.push(Edit::SetLayerProps {
+                    index,
+                    old: l.props.clone(),
+                    new: props,
+                });
+            }
+            // Selections follow their voxels.
+            if !l.selection.is_empty() && shift != IVec3::ZERO {
+                edits.push(Edit::SetSelection {
+                    layer: index,
+                    old: l.selection.clone(),
+                    new: l.selection.translated(shift, new),
+                });
+            }
+        }
+        if new != self.data.bounds {
+            edits.push(Edit::SetBounds {
+                old: self.data.bounds,
+                new,
+                clipped: Vec::new(),
+            });
+        }
+        self.cancel_edit();
+        self.apply(Edit::Batch(edits), false);
+        Ok(new)
+    }
+
+    /// *Model ▸ Core* operations on the active layer, as one undo step.
+    /// Fill Hollows uses the selected color. Returns the voxels changed.
+    pub fn core_op(&mut self, op: CoreOp) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        let volume = &self.data.layers[layer].volume;
+        let changes = match op {
+            CoreOp::FillHollows => fill_hollows(volume, self.selected_color as Voxel),
+            CoreOp::Hollow => hollow(volume),
+            CoreOp::HollowAdvanced(t) => hollow_advanced(volume, t),
+        }
+        .map_err(|e| OpError::TooLarge(e.limit))?;
+        if changes.is_empty() {
+            return Err(OpError::Nothing(match op {
+                CoreOp::FillHollows => "No closed hollows to fill",
+                _ => "Nothing to hollow out",
+            }));
+        }
+        self.write_op(layer, &changes)
+    }
+
+    /// *Layer ▸ Boolean*: the active layer becomes `active op other`
+    /// (`other`'s final geometry; it is not changed). One undo step.
+    pub fn boolean(&mut self, other: usize, op: BooleanOp) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        if other == layer {
+            return Err(OpError::Nothing("Pick another layer"));
+        }
+        let geometry = self
+            .layer_geometry(other)
+            .ok_or(OpError::Nothing("That layer has no geometry"))?;
+        let changes = boolean_changes(&self.data.layers[layer].volume, &geometry, op);
+        self.write_op(layer, &changes)
     }
 
     // ----------------------------------------------------------- clipboard

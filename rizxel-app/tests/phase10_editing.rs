@@ -3,7 +3,10 @@
 //! tools and the undo history list.
 
 use glam::IVec3;
-use rizxel_app::{AppState, Document, Layer, Selection, TransformError, VoxelChange};
+use rizxel_app::{
+    AppState, CoreOp, Document, Layer, OpError, Selection, TransformError, VoxelChange,
+};
+use rizxel_engine::tools::BooleanOp;
 use rizxel_engine::tools::{apply_op, extrude_changes, extrude_region, fill_cells, Transform};
 use rizxel_engine::{ExtrudeOptions, FillMode, FillOptions, MaskMode, RayHit, VoxelOp};
 use rizxel_math::{BoundSize, Voxel, VoxelBox, EMPTY_VOXEL};
@@ -196,4 +199,110 @@ fn mask_mode_keeps_slice_cuts_off_the_selection() {
         assert!(l.selection.iter().all(|p| l.volume.get(p) != EMPTY_VOXEL));
     }
     assert!(removed > 0);
+}
+
+// ------------------------------------------------------------ Track B
+
+/// Two 2³ cubes on one layer, three cells apart.
+fn two_cubes() -> Document {
+    let mut l = box_layer("A", IVec3::ZERO, IVec3::splat(2), 2);
+    fill_box(&mut l, IVec3::new(5, 0, 0), IVec3::new(7, 2, 2), 3);
+    l.volume.set(IVec3::new(10, 0, 0), 4);
+    Document::with_layers("t", vec![l])
+}
+
+#[test]
+fn separate_parts_gives_each_part_a_layer_in_one_step() {
+    let mut d = two_cubes();
+    let before = d.data.clone();
+    // The single voxel stays: parts under 2 voxels are kept.
+    assert_eq!(d.separate_parts(2), Ok(1));
+    assert_eq!(d.data.layers.len(), 2);
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 9);
+    assert_eq!(d.data.layers[1].volume.voxel_count(), 8);
+    assert_eq!(d.data.layers[1].name, "A part 2");
+    assert_eq!(d.active_layer, 0);
+    d.undo();
+    assert_eq!(d.data, before);
+    assert_eq!(d.separate_parts(1), Ok(2));
+    assert_eq!(d.data.layers.len(), 3);
+    assert_eq!(
+        d.separate_parts(1),
+        Err(OpError::Nothing("The layer has only one part"))
+    );
+}
+
+#[test]
+fn split_at_the_work_plane_moves_the_plus_side() {
+    let mut d = two_cubes();
+    d.plane.axis = 0;
+    d.plane.coord = 4;
+    assert_eq!(d.split_at_plane(), Ok(1));
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 8);
+    assert_eq!(d.data.layers[1].volume.voxel_count(), 9);
+    d.plane.coord = 20;
+    assert!(d.split_at_plane().is_err());
+}
+
+#[test]
+fn fit_bounds_moves_content_to_the_origin_in_one_step() {
+    let mut l = box_layer("A", IVec3::new(3, 4, 5), IVec3::new(6, 6, 7), 2);
+    l.selection.insert(IVec3::new(3, 4, 5));
+    let mut shape = Layer::new("S", BoundSize::default());
+    shape.props.kind = rizxel_math::LayerKind::Shape {
+        shape: rizxel_math::ShapeKind::Cube,
+        area: VoxelBox::from_corners(IVec3::new(6, 4, 5), IVec3::new(7, 4, 5)),
+        color: 3,
+    };
+    let mut d = Document::with_layers("t", vec![l, shape]);
+    let before = d.data.clone();
+    assert_eq!(d.fit_bounds_to_content(), Ok(BoundSize::new(5, 2, 2)));
+    assert_eq!(d.data.bounds, BoundSize::new(5, 2, 2));
+    let l = &d.data.layers[0];
+    assert_eq!(l.volume.voxel_count(), 12);
+    assert_eq!(l.volume.get(IVec3::ZERO), 2);
+    assert!(l.selection.contains(IVec3::ZERO));
+    assert_eq!(d.layer_geometry(1).unwrap().get(IVec3::new(3, 0, 0)), 3);
+    assert!(d.fit_bounds_to_content().is_err(), "already fits");
+    d.undo();
+    assert_eq!(d.data, before);
+}
+
+#[test]
+fn core_ops_on_the_active_layer() {
+    let mut d = Document::with_layers("t", vec![box_layer("A", IVec3::ONE, IVec3::splat(6), 2)]);
+    assert_eq!(d.core_op(CoreOp::Hollow), Ok(27));
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 98);
+    d.selected_color = 5;
+    assert_eq!(d.core_op(CoreOp::FillHollows), Ok(27));
+    assert_eq!(d.data.layers[0].volume.get(IVec3::splat(3)), 5);
+    assert!(d.core_op(CoreOp::FillHollows).is_err());
+    d.undo();
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 98);
+    d.undo();
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 125);
+    assert_eq!(d.core_op(CoreOp::HollowAdvanced(2)), Ok(1));
+}
+
+#[test]
+fn booleans_replace_only_the_active_layer() {
+    let a = box_layer("A", IVec3::ZERO, IVec3::new(4, 1, 1), 2);
+    let b = box_layer("B", IVec3::new(2, 0, 0), IVec3::new(6, 1, 1), 3);
+    let mut d = Document::with_layers("t", vec![a, b]);
+    let other = d.data.layers[1].clone();
+    let row = |d: &Document| -> Vec<Voxel> {
+        (0..6)
+            .map(|x| d.data.layers[0].volume.get(IVec3::new(x, 0, 0)))
+            .collect()
+    };
+    assert_eq!(d.boolean(1, BooleanOp::Union), Ok(2));
+    assert_eq!(row(&d), [2, 2, 2, 2, 3, 3]);
+    d.undo();
+    assert_eq!(d.boolean(1, BooleanOp::Difference), Ok(2));
+    assert_eq!(row(&d), [2, 2, 0, 0, 0, 0]);
+    d.undo();
+    assert_eq!(d.boolean(1, BooleanOp::Intersection), Ok(2));
+    assert_eq!(row(&d), [0, 0, 2, 2, 0, 0]);
+    assert_eq!(d.data.layers[1], other);
+    assert!(d.boolean(0, BooleanOp::Union).is_err());
 }

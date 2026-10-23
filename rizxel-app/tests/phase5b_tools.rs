@@ -5,7 +5,8 @@
 //! palette operations).
 
 use glam::IVec3;
-use rizxel_app::{Clipboard, Document, Edit, Layer, Selection, VoxelChange};
+use rizxel_app::{Clipboard, CoreOp, Document, Edit, Layer, Selection, VoxelChange};
+use rizxel_engine::tools::BooleanOp;
 use rizxel_engine::tools::{
     apply_op, extrude_changes, extruded_cells, fill_cells, fuzzy_select, move_selection_changes,
     select_box, selection_box, selection_region, shape_box, shape_cells, Transform,
@@ -363,16 +364,41 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 d.shrink_selection(steps);
             }
         }
-        _ => {
+        15 => {
             let mode = MaskMode::ALL[rng.below(3) as usize];
             d.select_by_color(2 + rng.below(2) as Voxel, 0, mode);
+        }
+        // Structure operations.
+        16 => {
+            if rng.below(2) == 0 {
+                let _ = d.separate_parts(1 + rng.below(3) as usize);
+            } else {
+                d.plane.axis = rng.below(3) as usize;
+                d.plane.coord = rng.below(6);
+                let _ = d.split_at_plane();
+            }
+        }
+        17 => {
+            let op = match rng.below(3) {
+                0 => CoreOp::FillHollows,
+                1 => CoreOp::Hollow,
+                _ => CoreOp::HollowAdvanced(1 + rng.below(2) as u32),
+            };
+            let _ = d.core_op(op);
+        }
+        18 => {
+            let other = rng.below(d.data.layers.len() as u64) as usize;
+            let _ = d.boolean(other, BooleanOp::ALL[rng.below(3) as usize]);
+        }
+        _ => {
+            let _ = d.fit_bounds_to_content();
         }
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 16;
+const OPS: usize = 20;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {

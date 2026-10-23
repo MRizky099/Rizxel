@@ -42,7 +42,7 @@ use rizxel_engine::tools::{
     apply_op, brush_center, brush_positions, brush_stroke, drag_axis, extrude_changes,
     extrude_region, extruded_cells, fill_cells, fuzzy_select, mirror, move_changes,
     move_selection_changes, pick_voxel, resize_bounds, select_box, selection_box, selection_region,
-    shape_box, shape_cells, MAX_FLOOD_CELLS,
+    shape_box, shape_cells_toward, MAX_FLOOD_CELLS,
 };
 use rizxel_engine::{
     DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool, ToolContext,
@@ -863,8 +863,9 @@ impl ToolInput {
                     }
                     return;
                 }
+                let up = *grow;
                 rewrite(state, layer, op, |ctx| {
-                    let cells = shape_cells(&new, &ctx.options.shape, ctx.bounds);
+                    let cells = shape_cells_toward(&new, &ctx.options.shape, ctx.bounds, up);
                     apply_op(ctx.volume, cells, ctx.op, ctx.color)
                 });
             }

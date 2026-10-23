@@ -16,16 +16,29 @@ pub enum BrushShape {
     Cube,
     Sphere,
     Cylinder,
+    /// Square base tapering to a point: away from the pressed face (Shape),
+    /// up the Y axis (Brush).
+    Pyramid,
+    /// Round base tapering to a point, oriented like the pyramid.
+    Cone,
 }
 
 impl BrushShape {
-    pub const ALL: [BrushShape; 3] = [BrushShape::Cube, BrushShape::Sphere, BrushShape::Cylinder];
+    pub const ALL: [BrushShape; 5] = [
+        BrushShape::Cube,
+        BrushShape::Sphere,
+        BrushShape::Cylinder,
+        BrushShape::Pyramid,
+        BrushShape::Cone,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
             BrushShape::Cube => "Cube",
             BrushShape::Sphere => "Sphere",
             BrushShape::Cylinder => "Cylinder",
+            BrushShape::Pyramid => "Pyramid",
+            BrushShape::Cone => "Cone",
         }
     }
 }
