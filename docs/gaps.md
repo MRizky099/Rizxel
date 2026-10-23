@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.4.0` plus Phase 10 on its branch, 325 tests) and a
+Gaps between the current build (`v0.4.0` plus Phases 10 and 10b on their branches, 366 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -44,6 +44,9 @@ The **Phase** column names the plan that closes the gap (see
 | No pyramid or cone shapes | Phase 10, `f98408c` |
 | No palette files (`.gpl`, `.hex`) or palette tools (sort, remap, gradient) | Phase 10, `8a01562` |
 | The undo history can't be browsed | Phase 10, `6e25e4d` (History panel) |
+| No reference images | Phase 10b, `beb30be`, `2f3d424` (References panel, `.rzxl` v4) |
+| The Layers panel can't create or show groups; locks aren't inherited | Phase 10b, `af5b8a3`, `cfa405c` |
+| `.vox` export flattens groups | Phase 10b, `a57e589` |
 
 ## Known bugs
 
@@ -86,8 +89,9 @@ No open bugs are known. Fixed bugs move to the table above.
 | Gradient and Remap need `Shift+click` to mark a swatch | Low | 12 | There is no other way to pick the second color yet. |
 | Brush pyramids and cones always point up | Low | post | The Shape tool points them away from the pressed face; Brush stamps have no face direction. |
 | Favorite colors use `Ctrl+digit`, not plain digits | Low | 12 | Plain `5` already toggles the projection, and egui can't tell the numpad from the main digits. Configurable shortcuts come with Phase 12. |
-| No reference images | Medium | 10b | No way to load, place (XZ / XY / YZ plane with an offset) or toggle a reference image, and no panel to manage them. Needs `.rzxl` v4. |
-| The Layers panel can't create or show groups | Medium | 10b | Groups exist in the data model (`parent`, `LayerKind::Group`) and survive `.gox`, but the panel is a flat list: no New Group, no indentation or collapse, no dragging into groups. Locks aren't inherited. |
+| No multi-select of layer rows | Low | post | *Group Layer* wraps the active layer (with its contents) only. |
+| Group opacity doesn't fade its children in the Layers panel, and groups have no transform | Low | post | Opacity multiplies down the tree in the viewport; per-group transforms are Qubicle compounds. |
+| Reference images can't be moved with a handle in the viewport, and have no mipmaps | Low | post | Placement is typed or dragged in the References panel; large images minified a lot can shimmer. |
 | No onion skin | Low | post | Comes with animation. |
 | No paint/lasso selection, and no sculpting or smoothing brushes | Medium | post | |
 

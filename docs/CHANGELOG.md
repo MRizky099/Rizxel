@@ -5,6 +5,48 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 10b: Layer hierarchy and reference images (2026-10-24)
+
+#### Added
+- Layer groups in the Layers panel: rows are indented by depth, groups have
+  a collapse caret and a folder icon, and collapsed groups fold their rows
+  (the fold is saved with the file but is not an undo step).
+- *New Group* (panel header and *Layer* menu), *Group Layer* (`Ctrl+G`),
+  *Ungroup* (`Ctrl+Shift+G`, also dissolves the group holding the active
+  layer), *Merge Group* (bakes the visible contents into one voxel layer)
+  and *Delete Group and Contents*.
+- Drag and drop in the Layers panel: the upper or lower part of a row drops
+  above or below it, the middle of a group row drops into the group. A
+  dragged group takes its contents along; drops into its own contents show
+  no marker and are refused.
+- Lock is inherited: layers inside a locked group refuse every tool ("The
+  active layer is inside a locked group"); the panel shows inherited locks
+  and hides dimmed.
+- Reference images: PNG or JPEG concept art on the XZ, XY or YZ plane with
+  an offset, size (aspect lock or pixels per voxel), quarter turns, flips,
+  opacity, *Behind model* or *On top*, and a Slice Mode filter. Images over
+  4096 px are scaled down on import.
+- References panel (*View ▸ Panels ▸ References*): thumbnails, rename,
+  show / hide, lock, plane badge, drag to change the draw order, Duplicate,
+  Replace Image, Reset Size and Delete; *Add Images* (several files), *Show
+  All / Hide All* (`Alt+R`, also *View ▸ Reference Images*) and *Align Work
+  Plane to Reference*. PNG and JPEG files dropped on the window become
+  references on the plane the camera faces most.
+- `.rzxl` version 4: reference images are embedded in the project (their
+  original PNG or JPEG bytes, base64). Version 1–3 files still load.
+
+#### Changed
+- Move Up / Move Down step over a whole neighboring group and stay inside the
+  layer's group. Duplicating a group copies its contents; linked clones
+  inside it point at the copies.
+- New layers made while a group is active go into that group, as its top
+  layer.
+- `.vox` export writes groups as group nodes, so they survive a round trip
+  through MagicaVoxel; `.vox` import keeps groups and models in scene order.
+- Files that list a group's contents away from the group (Goxel lists groups
+  first) are reordered on load so each group's contents sit right below it.
+- Tools on a group report "select a voxel layer" in the status bar.
+
 ### Phase 10: Editing power (2026-10-24)
 
 #### Added

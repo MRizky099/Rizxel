@@ -17,6 +17,8 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 7 | Stabilize, CI and 0.2.0 | ✅ Done | `v0.2.0` |
 | 8 | Safe editing and 0.3.0 | ✅ Done | `v0.3.0` |
 | 9 | Visual fidelity and 0.4.0 | ✅ Done | `v0.4.0` |
+| 10 | Editing power | ✅ Done (branch) | `a179e73`..`7d60c3e` |
+| 10b | Layer hierarchy and reference images | ✅ Done (branch) | `af5b8a3`..`59eaac7` |
 
 ---
 
@@ -232,3 +234,27 @@ Plan: [`rizxel_phase10_implementation_plan.md`](plan/rizxel_phase10_implementati
   `7312eed`).
 - The randomized undo-all / redo-all test covers every new operation, with Mask Mode on
   at random, and also jumps through the history; 325 tests.
+
+## Phase 10b — Layer hierarchy and reference images
+
+Plan: [`rizxel_phase10b_implementation_plan.md`](plan/rizxel_phase10b_implementation_plan.md)
+
+**Delivered** (branch `claude/phase10b-layers-references`, on top of Phase 10, part of
+M4 / 0.5.0)
+- `LayerTree` (`rizxel-app/src/layer_tree.rs`) derives the tree from the `parent` ids
+  and enforces one rule: a group's contents sit right below it. Debug builds check it
+  after every change, and files written without it are reordered on load. Group
+  Layer, Ungroup, move and drop of whole subtrees, sibling-aware Move Up / Down,
+  Duplicate / Merge / Delete Group and Contents, inherited lock (`af5b8a3`).
+- Layers panel tree: indentation, collapse, folder icons, above / into / below drop
+  zones with markers, inherited hide and lock shown dimmed, `Ctrl+G` /
+  `Ctrl+Shift+G` (`cfa405c`, `59eaac7`).
+- `.vox` export with nested group nodes, and scene order kept on import (`a57e589`).
+- `ReferenceImage` in `rizxel-math` with the placement math shared by the renderer and
+  tests, undoable reference edits, PNG / JPEG import with downscaling, and `.rzxl` v4
+  with round-trip and hostile-input tests (`beb30be`).
+- Textured-quad reference pipeline (behind / on top, dimmed back side, Slice Mode
+  filters), the References dock panel, `Alt+R` and file drop (`2f3d424`).
+- The randomized undo-all / redo-all test covers the group and reference operations;
+  366 tests.
+
