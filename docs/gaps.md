@@ -1,7 +1,7 @@
 # Rizxel — Known Gaps
 
 Gaps between the current build (Phases 1–6 plus Slice Mode and the B1 fix, on
-`ui-docking` at `8195d55`, 228 tests) and a usable 1.0 editor. Sources: the "Out of
+`ui-docking` at `9234fba`, 228 tests) and a usable 1.0 editor. Sources: the "Out of
 Scope" sections in each phase plan, the limits in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
 
@@ -17,10 +17,10 @@ The **Phase** column names the plan that closes the gap (see
 
 | Gap | Closed by |
 |---|---|
-| Phase 6 work is uncommitted | `b26f6da` |
+| Phase 6 work is uncommitted | `02ac63d` |
 | `.tmp-craft/` is an untracked vendor checkout | Removed from the tree; ignored since Phase 7 |
-| No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `699367e`, `1098e9a` |
-| B1: the model can't be seen from below | `eac9ae1` |
+| No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `14d6d52`, `70d9bbd` |
+| B1: the model can't be seen from below | `555bbc4` |
 | No CI | `.github/workflows/ci.yml` (Phase 7): fmt, clippy and tests on Windows and Linux; first run pending the first push |
 
 ## Known bugs
@@ -101,7 +101,7 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| `main` is at Phase 4 | High | 7 | Everything since `7287ae5` lives only on `ui-docking`. |
+| `main` is at Phase 4 | High | 7 | Everything since `435bcac` lives only on `ui-docking`. |
 | No release packaging | Medium | 12 | There are no installers or signed binaries, and only Windows has an embedded icon resource. |
 | UI behaviour isn't tested | Medium | 12 | Tests cover the engine, I/O and app layers. Viewport and panel interactions aren't automated. |
 | No user documentation or tutorial | Medium | 13 | The docs are for developers only. |

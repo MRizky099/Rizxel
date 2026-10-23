@@ -31,7 +31,7 @@ Qubicle-style global slice editing. Comparison:
 `docs/qubicle_feature_gap_analysis.md`.
 
 ### Added
-- **Slice Mode** from any tool, without switching tools (`699367e`):
+- **Slice Mode** from any tool, without switching tools (`14d6d52`):
   - A `2D` button in the Tools panel with a 1-based slice counter
     (`Y 3/32`).
   - `Space` toggles it: over a voxel it slices at that voxel, otherwise it
@@ -42,7 +42,7 @@ Qubicle-style global slice editing. Comparison:
 - While slicing, only the slice layer can be picked and edited. Brush,
   Shape, Fill, box Selection and Fuzzy Select stay on it; a mirror axis
   along the slice normal still reaches the mirrored slice.
-- `/` toggles the work plane (`1098e9a`). Hiding it (the key, the Visible
+- `/` toggles the work plane (`70d9bbd`). Hiding it (the key, the Visible
   checkbox or *View ▸ Slice ▸ Show Work Plane*) while slicing turns Slice
   Mode off and remembers it; showing the plane again resumes the same
   slice. Turning Slice Mode on another way or placing a new plane drops the
