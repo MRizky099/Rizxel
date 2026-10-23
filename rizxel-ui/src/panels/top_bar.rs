@@ -374,6 +374,34 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     ui.set_min_width(260.0);
     let has_voxels = state.active_layer_has_voxels();
     let editable = has_voxels && state.active_layer_editable();
+    let has_doc = state.doc().is_some();
+    let in_group = state.doc().is_some_and(|d| {
+        d.active_layer()
+            .is_some_and(|l| l.kind().is_group() || l.props.parent.is_some())
+    });
+    if menu_item(ui, icon::FOLDER_PLUS, "New Group", "", has_doc) {
+        if let Some(d) = state.doc_mut() {
+            d.add_group();
+        }
+    }
+    if menu_item(
+        ui,
+        icon::FOLDER_SIMPLE_PLUS,
+        "Group Layer",
+        "Ctrl+G",
+        has_doc,
+    ) {
+        state.group_active_layer();
+    }
+    if menu_item(ui, icon::FOLDER_MINUS, "Ungroup", "Ctrl+Shift+G", in_group) {
+        state.ungroup_active_layer();
+    }
+    ui.label(
+        egui::RichText::new("Drag rows in the Layers panel into and out of groups")
+            .size(10.0)
+            .color(theme::TEXT_DIM),
+    );
+    ui.separator();
     if menu_item(ui, icon::PUZZLE_PIECE, "Separate Parts", "", editable) {
         state.separate_parts();
     }
@@ -945,6 +973,8 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Ctrl+Shift+0 … 9", "Store the selected color as favorite"),
         ("Shift+click swatch", "Mark a color for Gradient and Remap"),
         ("Delete", "Delete selected voxels"),
+        ("Ctrl+G", "Group the active layer"),
+        ("Ctrl+Shift+G", "Ungroup (the active group or its group)"),
         ("Ctrl+R", "Rotate 90° counterclockwise (facing axis)"),
         ("Ctrl+Shift+R", "Rotate 90° clockwise (facing axis)"),
         ("Ctrl+Alt+X / Y / Z", "Flip X / Y / Z"),

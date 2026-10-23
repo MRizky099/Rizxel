@@ -2,8 +2,8 @@
 
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, Document, Favorites, PaletteSort};
-use rizxel_math::BoundSize;
+use rizxel_app::{AppState, Document, Favorites, LayerDrop, PaletteSort};
+use rizxel_math::{BoundSize, LayerKind};
 
 use super::UiState;
 use crate::theme;
@@ -364,6 +364,8 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
 
 /// Height of one layer row.
 const LAYER_ROW_HEIGHT: f32 = 32.0;
+/// Indent per nesting level.
+const LAYER_INDENT: f32 = 14.0;
 
 /// Drag payload for reordering layer rows.
 #[derive(Clone, Copy)]
@@ -374,14 +376,29 @@ enum LayerAction {
     ToggleVisible(usize),
     Solo(usize),
     ToggleLocked(usize),
+    ToggleCollapsed(usize),
     StartRename(usize),
     Duplicate(usize),
     MergeDown(usize),
-    Move { from: usize, to: usize },
+    Step { index: usize, up: bool },
+    Drop { from: usize, target: LayerDrop },
+    Group(usize),
+    Ungroup(usize),
+    MergeGroup(usize),
+    DeleteGroup(usize),
     Delete(usize),
 }
 
-/// Goxel-style layer panel: toolbar, reorderable list (top layer first),
+/// What a row shows besides the layer itself.
+struct RowInfo {
+    depth: usize,
+    /// Hidden or locked through a group.
+    hidden_by_group: bool,
+    locked_by_group: bool,
+    has_children: bool,
+}
+
+/// Goxel-style layer panel: toolbar, reorderable tree (top layer first),
 /// then whole-document layer operations.
 fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let mut action = None;
@@ -390,9 +407,26 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         layer_toolbar(ui, doc, ui_state);
         ui.add_space(2.0);
 
-        // Higher indices draw on top, so the list runs from the last layer.
+        // Higher indices draw on top, so the list runs from the last layer;
+        // a group's subtree sits right under its row.
+        let tree = doc.data.tree();
         for i in (0..doc.data.layers.len()).rev() {
-            if let Some(a) = layer_row(ui, doc, i, ui_state) {
+            let folded = tree.ancestors(i).any(|a| {
+                matches!(
+                    doc.data.layers[a].kind(),
+                    LayerKind::Group { collapsed: true }
+                )
+            });
+            if folded {
+                continue;
+            }
+            let info = RowInfo {
+                depth: tree.depth(i),
+                hidden_by_group: tree.ancestors(i).any(|a| !doc.data.layers[a].visible),
+                locked_by_group: tree.ancestors(i).any(|a| doc.data.layers[a].locked),
+                has_children: tree.has_children(i),
+            };
+            if let Some(a) = layer_row(ui, doc, i, &info, ui_state) {
                 action = Some(a);
             }
         }
@@ -403,42 +437,74 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         layer_operations(ui, doc, ui_state);
     });
 
+    let Some(action) = action else { return };
+    // Structure changes shift indices: stop any rename in progress.
+    if !matches!(
+        action,
+        LayerAction::Select(_)
+            | LayerAction::ToggleVisible(_)
+            | LayerAction::ToggleLocked(_)
+            | LayerAction::Solo(_)
+            | LayerAction::ToggleCollapsed(_)
+            | LayerAction::StartRename(_)
+    ) {
+        ui_state.renaming_layer = None;
+    }
     match action {
-        Some(LayerAction::Select(i)) => doc.active_layer = i,
-        Some(LayerAction::ToggleVisible(i)) => doc.toggle_layer_visible(i),
-        Some(LayerAction::Solo(i)) => doc.solo_layer(i),
-        Some(LayerAction::ToggleLocked(i)) => doc.toggle_layer_locked(i),
-        Some(LayerAction::StartRename(i)) => {
+        LayerAction::Select(i) => doc.active_layer = i,
+        LayerAction::ToggleVisible(i) => doc.toggle_layer_visible(i),
+        LayerAction::Solo(i) => doc.solo_layer(i),
+        LayerAction::ToggleLocked(i) => doc.toggle_layer_locked(i),
+        LayerAction::ToggleCollapsed(i) => {
+            let collapsed = matches!(
+                doc.data.layers[i].kind(),
+                LayerKind::Group { collapsed: true }
+            );
+            doc.set_group_collapsed(i, !collapsed);
+        }
+        LayerAction::StartRename(i) => {
             doc.active_layer = i;
             ui_state.renaming_layer = Some((i, doc.data.layers[i].name.clone()));
         }
-        Some(LayerAction::Duplicate(i)) => {
+        LayerAction::Duplicate(i) => {
             doc.active_layer = i;
             doc.duplicate_active_layer();
         }
-        Some(LayerAction::MergeDown(i)) => {
+        LayerAction::MergeDown(i) => {
             doc.active_layer = i;
             doc.merge_active_layer_down();
-            ui_state.renaming_layer = None;
         }
-        Some(LayerAction::Move { from, to }) => {
-            doc.move_layer(from, to);
-            ui_state.renaming_layer = None;
+        LayerAction::Step { index, up } => {
+            doc.active_layer = index;
+            doc.move_active_layer(up);
         }
-        Some(LayerAction::Delete(i)) => {
+        LayerAction::Drop { from, target } => {
+            doc.labeled("Move Layer", |d| d.drop_layer(from, target));
+        }
+        LayerAction::Group(i) => {
+            doc.group_layer(i);
+        }
+        LayerAction::Ungroup(i) => {
+            doc.ungroup(i);
+        }
+        LayerAction::MergeGroup(i) => {
+            doc.merge_group(i);
+        }
+        LayerAction::DeleteGroup(i) => {
+            doc.delete_group_with_contents(i);
+        }
+        LayerAction::Delete(i) => {
             doc.active_layer = i;
             doc.delete_active_layer();
-            ui_state.renaming_layer = None;
         }
-        None => {}
     }
 }
 
-/// New / delete / merge down / move up / move down / duplicate for the
-/// active layer.
+/// New layer / new group / delete / merge down / move up / move down /
+/// duplicate for the active layer.
 fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    let count = doc.data.layers.len();
     let active = doc.active_layer;
+    let is_group = doc.active_layer().is_some_and(|l| l.kind().is_group());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let style = IconStyle::small();
@@ -448,41 +514,48 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         {
             doc.add_layer();
         }
+        if icon_button(ui, icon::FOLDER_PLUS, style, true)
+            .on_hover_text("New group")
+            .clicked()
+        {
+            doc.add_group();
+        }
         let del = style.hover_color(theme::DANGER);
         // Disabled for the last layer and for layers linked clones point at.
         if icon_button(ui, icon::TRASH, del, doc.can_delete_active_layer())
-            .on_hover_text("Delete layer")
+            .on_hover_text("Delete layer (a group's layers move up a level)")
             .clicked()
         {
             doc.delete_active_layer();
             ui_state.renaming_layer = None;
         }
-        if icon_button(ui, icon::ARROW_LINE_DOWN, style, active > 0)
+        if icon_button(ui, icon::ARROW_LINE_DOWN, style, active > 0 && !is_group)
             .on_hover_text("Merge down")
             .clicked()
         {
             doc.merge_active_layer_down();
             ui_state.renaming_layer = None;
         }
-        if icon_button(ui, icon::ARROW_UP, style, active + 1 < count)
-            .on_hover_text("Move layer up")
+        if icon_button(ui, icon::ARROW_UP, style, true)
+            .on_hover_text("Move layer up (inside its group)")
             .clicked()
         {
             doc.move_active_layer(true);
             ui_state.renaming_layer = None;
         }
-        if icon_button(ui, icon::ARROW_DOWN, style, active > 0)
-            .on_hover_text("Move layer down")
+        if icon_button(ui, icon::ARROW_DOWN, style, true)
+            .on_hover_text("Move layer down (inside its group)")
             .clicked()
         {
             doc.move_active_layer(false);
             ui_state.renaming_layer = None;
         }
         if icon_button(ui, icon::COPY, style, true)
-            .on_hover_text("Duplicate layer")
+            .on_hover_text("Duplicate layer (a group with its contents)")
             .clicked()
         {
             doc.duplicate_active_layer();
+            ui_state.renaming_layer = None;
         }
     });
 }
@@ -650,13 +723,19 @@ fn layer_operations(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     }
 }
 
-/// Final index of a layer dragged from `from` and dropped above (`true`) or
-/// below row `target`. Rows run top layer first, so "above" is a higher index.
-fn drop_index(from: usize, target: usize, above: bool) -> usize {
-    match (above, from > target) {
-        (true, true) => target + 1,
-        (true, false) | (false, true) => target,
-        (false, false) => target - 1,
+/// Drop zone of the pointer at height `y` over a row: the upper third
+/// drops above and the lower third below; the middle of a group row drops
+/// into it (other rows split at the middle). The lower third of an
+/// expanded group with children also drops into it, as its top child,
+/// since that is where the row below it is.
+fn drop_zone(row: Rect, y: f32, i: usize, group: bool, open_children: bool) -> LayerDrop {
+    let t = (y - row.top()) / row.height().max(1.0);
+    match (group, t) {
+        (false, t) if t < 0.5 => LayerDrop::Above(i),
+        (false, _) => LayerDrop::Below(i),
+        (true, t) if t < 1.0 / 3.0 => LayerDrop::Above(i),
+        (true, t) if t < 2.0 / 3.0 || open_children => LayerDrop::Into(i),
+        (true, _) => LayerDrop::Below(i),
     }
 }
 
@@ -664,11 +743,16 @@ fn layer_row(
     ui: &mut Ui,
     doc: &mut Document,
     i: usize,
+    info: &RowInfo,
     ui_state: &mut UiState,
 ) -> Option<LayerAction> {
     let layer = &doc.data.layers[i];
     let (visible, locked) = (layer.visible, layer.locked);
     let name = layer.name.clone();
+    let group = match layer.kind() {
+        LayerKind::Group { collapsed } => Some(*collapsed),
+        _ => None,
+    };
     let voxels = layer.volume.voxel_count();
     let selected_cells = layer.selection.len();
     let count = doc.data.layers.len();
@@ -699,24 +783,21 @@ fn layer_row(
         rect.left_center() + egui::vec2(16.0, 0.0),
         egui::vec2(18.0, 18.0),
     );
-    let (eye_glyph, eye_color) = if visible {
-        let color = if selected {
-            theme::TEXT
-        } else {
-            theme::TEXT_DIM
-        };
-        (icon::EYE, color)
-    } else {
-        (icon::EYE_SLASH, Color32::from_rgb(0x4b, 0x55, 0x63))
+    let dim = Color32::from_rgb(0x4b, 0x55, 0x63);
+    let (eye_glyph, eye_color) = match (visible, info.hidden_by_group) {
+        (false, _) => (icon::EYE_SLASH, dim),
+        (true, true) => (icon::EYE, dim),
+        (true, false) if selected => (icon::EYE, theme::TEXT),
+        (true, false) => (icon::EYE, theme::TEXT_DIM),
     };
     let eye = ui
         .put(eye_rect, |ui: &mut Ui| {
             icon_button(ui, eye_glyph, IconStyle::small().color(eye_color), true)
         })
-        .on_hover_text(if visible {
-            "Hide layer (Ctrl+click: show only this layer)"
-        } else {
-            "Show layer (Ctrl+click: show only this layer)"
+        .on_hover_text(match (visible, info.hidden_by_group) {
+            (true, true) => "Hidden by its group (Ctrl+click: show only this layer)",
+            (true, false) => "Hide layer (Ctrl+click: show only this layer)",
+            (false, _) => "Show layer (Ctrl+click: show only this layer)",
         });
     if eye.clicked() {
         let solo = ui.input(|inp| inp.modifiers.command);
@@ -727,13 +808,19 @@ fn layer_row(
         });
     }
 
-    // Lock toggle.
+    // Lock toggle; a lock inherited from a group shows dimmed.
     let lock_rect = Rect::from_center_size(
         rect.right_center() - egui::vec2(16.0, 0.0),
         egui::vec2(18.0, 18.0),
     );
-    let lock_glyph = if locked { icon::LOCK } else { icon::LOCK_OPEN };
-    let lock_color = if selected && !locked {
+    let lock_glyph = if locked || info.locked_by_group {
+        icon::LOCK
+    } else {
+        icon::LOCK_OPEN
+    };
+    let lock_color = if !locked && info.locked_by_group {
+        dim
+    } else if selected && !locked {
         theme::TEXT_MUTED
     } else {
         theme::TEXT_DIM
@@ -742,15 +829,24 @@ fn layer_row(
         .put(lock_rect, |ui: &mut Ui| {
             icon_button(ui, lock_glyph, IconStyle::small().color(lock_color), true)
         })
-        .on_hover_text(if locked { "Unlock layer" } else { "Lock layer" });
+        .on_hover_text(match (locked, info.locked_by_group) {
+            (true, _) => "Unlock layer",
+            (false, true) => "Locked by its group (click to lock this layer too)",
+            (false, false) => "Lock layer",
+        });
     if lock.clicked() {
         action = Some(LayerAction::ToggleLocked(i));
     }
 
-    // Voxel count, right-aligned before the lock.
+    // Voxel count (voxel layers), right-aligned before the lock.
+    let count_text = if group.is_some() {
+        String::new()
+    } else {
+        voxels.to_string()
+    };
     let count_galley =
         ui.painter()
-            .layout_no_wrap(voxels.to_string(), theme::regular(10.0), theme::TEXT_MUTED);
+            .layout_no_wrap(count_text, theme::regular(10.0), theme::TEXT_MUTED);
     let count_pos = egui::pos2(
         lock_rect.left() - 6.0 - count_galley.size().x,
         rect.center().y - count_galley.size().y / 2.0,
@@ -780,9 +876,52 @@ fn layer_row(
         count_left = badge.left();
     }
 
+    // Indent, then the collapse caret and folder icon of a group.
+    let mut name_left = eye_rect.right() + 10.0 + info.depth as f32 * LAYER_INDENT;
+    if let Some(collapsed) = group {
+        let caret_rect = Rect::from_center_size(
+            egui::pos2(name_left + 7.0, rect.center().y),
+            egui::vec2(16.0, 18.0),
+        );
+        let caret = if collapsed {
+            icon::CARET_RIGHT
+        } else {
+            icon::CARET_DOWN
+        };
+        let toggle = ui
+            .put(caret_rect, |ui: &mut Ui| {
+                icon_button(ui, caret, IconStyle::small().color(theme::TEXT_DIM), true)
+            })
+            .on_hover_text(if collapsed {
+                "Expand group"
+            } else {
+                "Collapse group"
+            });
+        if toggle.clicked() {
+            action = Some(LayerAction::ToggleCollapsed(i));
+        }
+        let folder = if collapsed || !info.has_children {
+            icon::FOLDER
+        } else {
+            icon::FOLDER_OPEN
+        };
+        ui.painter().text(
+            egui::pos2(caret_rect.right() + 8.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            folder,
+            egui::FontId::proportional(14.0),
+            if selected {
+                theme::TEXT
+            } else {
+                theme::TEXT_DIM
+            },
+        );
+        name_left = caret_rect.right() + 18.0;
+    }
+
     // Name (inline rename on double-click).
     let name_rect = Rect::from_min_max(
-        egui::pos2(eye_rect.right() + 10.0, rect.top() + 4.0),
+        egui::pos2(name_left, rect.top() + 4.0),
         egui::pos2(count_left - 6.0, rect.bottom() - 4.0),
     );
     let renaming = matches!(&ui_state.renaming_layer, Some((r, _)) if *r == i);
@@ -806,8 +945,9 @@ fn layer_row(
             }
         }
     } else if name_rect.width() > 0.0 {
+        let shown = visible && !info.hidden_by_group;
         let mut text = RichText::new(&name).size(12.0);
-        text = match (selected, visible) {
+        text = match (selected, shown) {
             (true, _) => text.color(theme::TEXT_STRONG).font(theme::semibold(12.0)),
             (false, false) => text.color(theme::TEXT_DIM).italics(),
             (false, true) => text.color(theme::TEXT_DIM),
@@ -822,30 +962,35 @@ fn layer_row(
         ui.painter().galley(pos, galley, theme::TEXT);
     }
 
-    // Drag a row onto another to reorder: the upper half drops above it.
+    // Drag a row onto another: above, below or into a group. Drops the
+    // document refuses (into its own subtree) show no marker.
+    let zone = |ui: &Ui| {
+        ui.input(|inp| inp.pointer.interact_pos()).map(|p| {
+            let open = group == Some(false) && info.has_children;
+            drop_zone(rect, p.y, i, group.is_some(), open)
+        })
+    };
     if let Some(from) = response.dnd_hover_payload::<LayerDrag>().map(|p| p.0) {
-        if from != i {
-            let above = ui
-                .input(|inp| inp.pointer.interact_pos())
-                .is_some_and(|p| p.y < rect.center().y);
-            let y = if above {
-                rect.top() - 2.0
-            } else {
-                rect.bottom() + 2.0
-            };
-            ui.painter()
-                .hline(rect.x_range(), y, Stroke::new(2.0, theme::ACCENT));
+        if let Some(target) = zone(ui).filter(|&t| doc.drop_destination(from, t).is_some()) {
+            let stroke = Stroke::new(2.0, theme::ACCENT);
+            let indented = (name_left - 4.0)..=rect.right();
+            match target {
+                LayerDrop::Above(_) => {
+                    ui.painter().hline(indented, rect.top() - 2.0, stroke);
+                }
+                LayerDrop::Below(_) => {
+                    ui.painter().hline(indented, rect.bottom() + 2.0, stroke);
+                }
+                LayerDrop::Into(_) => {
+                    ui.painter()
+                        .rect_stroke(rect, theme::RADIUS, stroke, StrokeKind::Inside);
+                }
+            }
         }
     }
     if let Some(from) = response.dnd_release_payload::<LayerDrag>().map(|p| p.0) {
-        if from != i {
-            let above = ui
-                .input(|inp| inp.pointer.interact_pos())
-                .is_some_and(|p| p.y < rect.center().y);
-            action = Some(LayerAction::Move {
-                from,
-                to: drop_index(from, i, above),
-            });
+        if let Some(target) = zone(ui) {
+            action = Some(LayerAction::Drop { from, target });
         }
     }
 
@@ -857,40 +1002,76 @@ fn layer_row(
         }
     }
 
+    let can_delete_contents = doc.can_delete_group_with_contents(i);
     response
-        .on_hover_text("Double-click to rename, drag to reorder, right-click for more")
+        .on_hover_text(
+            "Double-click to rename, drag to reorder or into a group, right-click for more",
+        )
         .context_menu(|ui| {
-            ui.set_min_width(180.0);
-            let item = |ui: &mut Ui, glyph: &str, label: &str, enabled: bool| {
-                let button = egui::Button::new(icon_label(ui, glyph, label, None));
+            ui.set_min_width(200.0);
+            let item = |ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool| {
+                let button =
+                    egui::Button::new(icon_label(ui, glyph, label, None)).shortcut_text(shortcut);
                 let clicked = ui.add_enabled(enabled, button).clicked();
                 if clicked {
                     ui.close();
                 }
                 clicked
             };
-            if item(ui, icon::PENCIL_SIMPLE, "Rename", true) {
+            if item(ui, icon::PENCIL_SIMPLE, "Rename", "", true) {
                 action = Some(LayerAction::StartRename(i));
             }
-            if item(ui, icon::COPY, "Duplicate", true) {
+            if item(ui, icon::COPY, "Duplicate", "", true) {
                 action = Some(LayerAction::Duplicate(i));
             }
-            if item(ui, icon::ARROW_LINE_DOWN, "Merge Down", i > 0) {
+            if item(
+                ui,
+                icon::ARROW_LINE_DOWN,
+                "Merge Down",
+                "",
+                i > 0 && group.is_none(),
+            ) {
                 action = Some(LayerAction::MergeDown(i));
             }
             ui.separator();
-            if item(ui, icon::ARROW_UP, "Move Up", i + 1 < count) {
-                action = Some(LayerAction::Move { from: i, to: i + 1 });
+            if item(ui, icon::FOLDER_PLUS, "Group", "Ctrl+G", true) {
+                action = Some(LayerAction::Group(i));
             }
-            if item(ui, icon::ARROW_DOWN, "Move Down", i > 0) {
-                action = Some(LayerAction::Move { from: i, to: i - 1 });
+            if group.is_some() {
+                if item(ui, icon::FOLDER_MINUS, "Ungroup", "Ctrl+Shift+G", count > 1) {
+                    action = Some(LayerAction::Ungroup(i));
+                }
+                if item(ui, icon::STACK, "Merge Group", "", info.has_children) {
+                    action = Some(LayerAction::MergeGroup(i));
+                }
             }
-            if item(ui, icon::EYE, "Show Only This", true) {
+            ui.separator();
+            if item(ui, icon::ARROW_UP, "Move Up", "", true) {
+                action = Some(LayerAction::Step { index: i, up: true });
+            }
+            if item(ui, icon::ARROW_DOWN, "Move Down", "", true) {
+                action = Some(LayerAction::Step {
+                    index: i,
+                    up: false,
+                });
+            }
+            if item(ui, icon::EYE, "Show Only This", "", true) {
                 action = Some(LayerAction::Solo(i));
             }
             ui.separator();
-            if item(ui, icon::TRASH, "Delete", count > 1) {
+            if item(ui, icon::TRASH, "Delete", "", count > 1) {
                 action = Some(LayerAction::Delete(i));
+            }
+            if group.is_some()
+                && item(
+                    ui,
+                    icon::TRASH,
+                    "Delete Group and Contents",
+                    "",
+                    can_delete_contents,
+                )
+            {
+                action = Some(LayerAction::DeleteGroup(i));
             }
         });
     action
@@ -959,14 +1140,21 @@ fn bounds_section(ui: &mut Ui, doc: &mut Document) {
 
 #[cfg(test)]
 mod tests {
-    use super::drop_index;
+    use super::drop_zone;
+    use egui::{pos2, Rect};
+    use rizxel_app::LayerDrop;
 
     #[test]
-    fn drop_index_places_layer_next_to_target() {
-        // Layers [0, 1, 2, 3], list shows 3 at the top.
-        assert_eq!(drop_index(0, 2, true), 2, "0 above 2 -> [1,2,0,3]");
-        assert_eq!(drop_index(0, 2, false), 1, "0 below 2 -> [1,0,2,3]");
-        assert_eq!(drop_index(3, 1, true), 2, "3 above 1 -> [0,1,3,2]");
-        assert_eq!(drop_index(3, 1, false), 1, "3 below 1 -> [0,3,1,2]");
+    fn drop_zones_split_rows() {
+        let r = Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 130.0));
+        // Plain rows split at the middle.
+        assert_eq!(drop_zone(r, 105.0, 3, false, false), LayerDrop::Above(3));
+        assert_eq!(drop_zone(r, 125.0, 3, false, false), LayerDrop::Below(3));
+        // Group rows: thirds, the middle drops into the group.
+        assert_eq!(drop_zone(r, 105.0, 3, true, false), LayerDrop::Above(3));
+        assert_eq!(drop_zone(r, 115.0, 3, true, false), LayerDrop::Into(3));
+        assert_eq!(drop_zone(r, 125.0, 3, true, false), LayerDrop::Below(3));
+        // An expanded group's lower third leads to its first child.
+        assert_eq!(drop_zone(r, 125.0, 3, true, true), LayerDrop::Into(3));
     }
 }
