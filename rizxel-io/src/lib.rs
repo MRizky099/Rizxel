@@ -40,5 +40,5 @@ pub use format_rzxl::{
 };
 pub use format_stl::{read_stl, write_stl, DEFAULT_STL_SCALE, STL_EXTENSION};
 pub use format_vox::{read_vox, write_vox, VOX_EXTENSION};
-pub use interchange::{evaluate_layer, ExportLayer, ExportScene};
+pub use interchange::{evaluate_layer, ExportGroup, ExportLayer, ExportScene};
 pub use mesh_import::{project_from_mesh, uncolored, MeshImportInfo, UpAxis};

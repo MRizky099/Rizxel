@@ -75,7 +75,7 @@ impl FileFormat {
         match self {
             FileFormat::Obj => "OBJ + MTL + palette PNG (MagicaVoxel layout, scale 0.1)",
             FileFormat::Mtl => "MTL + palette PNG",
-            FileFormat::Vox => "one model per layer",
+            FileFormat::Vox => "one model per layer, groups kept",
             FileFormat::Gox => "layers, groups, clones, shapes, materials",
             FileFormat::Stl => "binary, Z-up, 1 voxel = 1 mm",
             FileFormat::Rzxl => "",

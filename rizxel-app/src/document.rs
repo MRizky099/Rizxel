@@ -2336,24 +2336,52 @@ impl Document {
     /// (shapes rasterized, clones resolved, crops applied) with its
     /// effective visibility.
     pub fn export_scene(&self) -> rizxel_io::ExportScene {
-        let layers = (0..self.data.layers.len())
-            .filter_map(|i| {
-                let geometry = match self.data.evaluate(i)? {
-                    Derived::Own => self.data.layers[i].volume.clone(),
-                    Derived::Owned(v) => v,
-                };
-                Some(rizxel_io::ExportLayer {
-                    name: self.data.layers[i].name.clone(),
-                    visible: self.data.effectively_visible(i),
-                    volume: geometry,
-                })
-            })
+        let group_index: HashMap<LayerId, usize> = self
+            .data
+            .layers
+            .iter()
+            .filter(|l| l.kind().is_group())
+            .enumerate()
+            .map(|(g, l)| (l.id, g))
             .collect();
+        let group_of = |i: usize| {
+            self.data.layers[i]
+                .props
+                .parent
+                .and_then(|p| group_index.get(&p).copied())
+        };
+        let mut layers = Vec::new();
+        let mut groups = Vec::new();
+        for (i, l) in self.data.layers.iter().enumerate() {
+            if l.kind().is_group() {
+                groups.push(rizxel_io::ExportGroup {
+                    name: l.name.clone(),
+                    visible: self.data.effectively_visible(i),
+                    parent: group_of(i),
+                    order: layers.len(),
+                });
+                continue;
+            }
+            let Some(derived) = self.data.evaluate(i) else {
+                continue;
+            };
+            let geometry = match derived {
+                Derived::Own => l.volume.clone(),
+                Derived::Owned(v) => v,
+            };
+            layers.push(rizxel_io::ExportLayer {
+                name: l.name.clone(),
+                visible: self.data.effectively_visible(i),
+                volume: geometry,
+                group: group_of(i),
+            });
+        }
         rizxel_io::ExportScene {
             name: self.name.clone(),
             bounds: self.data.bounds,
             palette: self.data.palette.clone(),
             layers,
+            groups,
         }
     }
 

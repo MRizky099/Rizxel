@@ -297,3 +297,36 @@ fn files_with_groups_first_are_reordered_on_load() {
     assert_eq!(d.data.layers[d.active_layer].name, "D", "active follows");
     assert!(!d.is_dirty());
 }
+
+/// Names and group names, bottom to top, ignoring the order of siblings'
+/// groups within the list.
+fn tree_shape(d: &Document) -> Vec<(String, Option<String>, bool)> {
+    let mut v: Vec<_> = d
+        .data
+        .layers
+        .iter()
+        .map(|l| (l.name.clone(), parent_name(d, &l.name), l.kind().is_group()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn nested_groups_survive_vox_and_gox() {
+    // A, [B, [C] Inner] Outer, D
+    let mut d = grouped();
+    d.rename_layer(index_of(&d, "Group"), "Outer".into());
+    d.group_layer(index_of(&d, "C")).unwrap();
+    d.rename_layer(index_of(&d, "Group"), "Inner".into());
+    assert_eq!(names(&d), ["A", "B", "C", "Inner", "Outer", "D"]);
+
+    let vox = rizxel_io::write_vox(&d.export_scene()).unwrap();
+    let back = Document::from_project(rizxel_io::read_vox(&vox, "t").unwrap(), None).unwrap();
+    assert_eq!(tree_shape(&back), tree_shape(&d));
+    assert_eq!(names(&back), names(&d), "draw order is kept");
+
+    let gox = rizxel_io::write_gox(&d.to_project()).unwrap();
+    let back = Document::from_project(rizxel_io::read_gox(&gox, "t").unwrap(), None).unwrap();
+    assert_eq!(tree_shape(&back), tree_shape(&d));
+    assert!(back.data.structure_is_valid());
+}
