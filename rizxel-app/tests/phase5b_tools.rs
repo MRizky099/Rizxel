@@ -453,6 +453,13 @@ fn random_tool_sequences_undo_and_redo_exactly() {
         assert_eq!(d.data, initial, "seed {seed}: undo all");
         while d.redo() {}
         assert_eq!(d.data, last, "seed {seed}: redo all");
+        // The History panel's jumps land on the same states.
+        let (entries, position) = d.history_entries();
+        assert_eq!(position, entries.len());
+        d.jump_to(0);
+        assert_eq!(d.data, initial, "seed {seed}: jump to start");
+        d.jump_to(entries.len());
+        assert_eq!(d.data, last, "seed {seed}: jump to end");
     }
     assert!(
         effective.iter().all(|&n| n > 0),

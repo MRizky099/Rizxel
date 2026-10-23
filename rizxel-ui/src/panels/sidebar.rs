@@ -71,14 +71,20 @@ fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
     let Some(doc) = state.doc_mut() else { return };
     let selected = doc.selected_color;
     let mut message = None;
-    if ui.button("Sort by Hue").clicked() && doc.sort_palette(PaletteSort::Hue) {
+    if ui.button("Sort by Hue").clicked()
+        && doc.labeled("Sort Palette by Hue", |d| d.sort_palette(PaletteSort::Hue))
+    {
         message = Some("Palette sorted by hue".to_owned());
     }
-    if ui.button("Sort by Luminance").clicked() && doc.sort_palette(PaletteSort::Luminance) {
+    if ui.button("Sort by Luminance").clicked()
+        && doc.labeled("Sort Palette by Luminance", |d| {
+            d.sort_palette(PaletteSort::Luminance)
+        })
+    {
         message = Some("Palette sorted by luminance".to_owned());
     }
     if ui.button("Remove Duplicates").clicked() {
-        let n = doc.remove_duplicate_colors();
+        let n = doc.labeled("Remove Duplicate Colors", Document::remove_duplicate_colors);
         message = Some(format!("Removed {n} duplicate colors"));
     }
     ui.separator();
@@ -96,18 +102,22 @@ fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
                 .on_hover_text("Blend the slots between the marked and the selected color")
                 .clicked()
             {
-                message = Some(if doc.palette_gradient(m, selected) {
-                    format!("Gradient from color {m} to {selected}")
-                } else {
-                    "Gradient: the two colors need a slot between them".to_owned()
-                });
+                message = Some(
+                    if doc.labeled("Palette Gradient", |d| d.palette_gradient(m, selected)) {
+                        format!("Gradient from color {m} to {selected}")
+                    } else {
+                        "Gradient: the two colors need a slot between them".to_owned()
+                    },
+                );
             }
             if ui
                 .button(format!("Remap {m} → {selected}"))
                 .on_hover_text("Recolor every voxel of the marked color with the selected one")
                 .clicked()
             {
-                let n = doc.remap_color(m, selected);
+                let n = doc.labeled(format!("Remap Color {m} to {selected}"), |d| {
+                    d.remap_color(m, selected)
+                });
                 message = Some(format!("Remapped {n} voxels from color {m} to {selected}"));
             }
         }

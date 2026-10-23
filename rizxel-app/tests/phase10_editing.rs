@@ -472,3 +472,34 @@ fn palette_files_load_through_the_app() {
     assert!(text.starts_with("GIMP Palette"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------------ Track D
+
+#[test]
+fn history_lists_named_steps_and_jumps_between_them() {
+    let mut s = AppState::default();
+    let d = s.doc_mut().unwrap();
+    d.set_voxels(0, [(IVec3::ZERO, 2), (IVec3::X, 2)], false);
+    s.select_all();
+    s.grow_selection(1);
+    s.fit_bounds();
+    let d = s.doc_mut().unwrap();
+    let (entries, position) = d.history_entries();
+    assert_eq!(
+        entries,
+        ["Edit 2 Voxels", "Select All", "Fit Bounds"],
+        "grow changed nothing, so it is not listed"
+    );
+    assert_eq!(position, 3);
+    let fitted = d.data.clone();
+    assert!(d.jump_to(1));
+    assert_eq!(d.data.bounds, BoundSize::default());
+    assert!(d.selection().unwrap().is_empty());
+    assert_eq!(d.history_entries(), (entries.clone(), 1));
+    assert!(d.jump_to(3));
+    assert_eq!(d.data, fitted);
+    assert!(!d.jump_to(3));
+    assert!(!d.jump_to(99), "past the end stops at the last step");
+    assert!(d.jump_to(0));
+    assert!(d.data.layers[0].volume.is_empty());
+}

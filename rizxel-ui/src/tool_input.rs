@@ -1069,10 +1069,10 @@ impl ToolInput {
             _ => None,
         };
         let changed = doc.pending_changes();
-        let done = match carried {
+        let done = doc.labeled(drag.tool.label(), |doc| match carried {
             Some(sel) => doc.commit_edit_with_selection(drag.layer, sel),
             None => doc.commit_edit(),
-        };
+        });
         if done {
             state.status_message = Some(format!("{}: {changed} voxels changed", drag.tool.label()));
         }
@@ -1413,7 +1413,7 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
             return;
         }
     };
-    let n = doc.edit_voxels(layer, &changes);
+    let n = doc.labeled("Fill", |doc| doc.edit_voxels(layer, &changes));
     state.status_message = Some(format!("Fill: {n} voxels changed"));
 }
 

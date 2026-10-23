@@ -23,17 +23,19 @@ pub enum Panel {
     Palette,
     Layers,
     Bounds,
+    History,
 }
 
 impl Panel {
     /// Panels offered in *View > Panels*, in menu order.
-    pub const ALL: [Panel; 6] = [
+    pub const ALL: [Panel; 7] = [
         Panel::Viewport,
         Panel::Tools,
         Panel::Options,
         Panel::Palette,
         Panel::Layers,
         Panel::Bounds,
+        Panel::History,
     ];
 
     pub fn label(self) -> &'static str {
@@ -44,6 +46,7 @@ impl Panel {
             Panel::Palette => "Color Palette",
             Panel::Layers => "Layers",
             Panel::Bounds => "Bound Model",
+            Panel::History => "History",
         }
     }
 
@@ -68,7 +71,9 @@ impl Panel {
             Panel::Viewport => egui::vec2(240.0, 160.0),
             Panel::Tools => egui::vec2(48.0, 120.0),
             Panel::Options => egui::vec2(200.0, theme::OPTION_BAR_HEIGHT),
-            Panel::Palette | Panel::Layers | Panel::Bounds => egui::vec2(200.0, 80.0),
+            Panel::Palette | Panel::Layers | Panel::Bounds | Panel::History => {
+                egui::vec2(200.0, 80.0)
+            }
         };
         PanelLimits {
             min,
@@ -124,6 +129,11 @@ impl Default for Workspace {
                     panel: Panel::Bounds,
                     open: false,
                     height: Some(200.0),
+                },
+                StackEntry {
+                    panel: Panel::History,
+                    open: false,
+                    height: Some(220.0),
                 },
             ],
         };

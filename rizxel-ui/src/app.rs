@@ -290,6 +290,9 @@ impl eframe::App for RizxelApp {
                 dock::Panel::Bounds => {
                     scroll_panel(ui, panel, |ui| panels::sidebar::bounds(ui, state))
                 }
+                dock::Panel::History => {
+                    scroll_panel(ui, panel, |ui| panels::history::show(ui, state))
+                }
             });
             if let Some(error) = error {
                 log::warn!("{error}");

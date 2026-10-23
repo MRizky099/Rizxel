@@ -1013,7 +1013,7 @@ impl AppState {
 
     pub fn select_all(&mut self) {
         if let Some(d) = self.doc_mut() {
-            d.select_all();
+            d.labeled("Select All", Document::select_all);
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selected {n} voxels"));
         }
@@ -1021,7 +1021,7 @@ impl AppState {
 
     pub fn invert_selection(&mut self) {
         if let Some(d) = self.doc_mut() {
-            d.invert_selection();
+            d.labeled("Invert Selection", Document::invert_selection);
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selection inverted: {n} voxels"));
         }
@@ -1030,7 +1030,7 @@ impl AppState {
     /// *Selection ▸ Grow* by `steps` cells.
     pub fn grow_selection(&mut self, steps: u32) {
         if let Some(d) = self.doc_mut() {
-            d.grow_selection(steps);
+            d.labeled("Grow Selection", |d| d.grow_selection(steps));
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selection grown: {n} voxels"));
         }
@@ -1039,7 +1039,7 @@ impl AppState {
     /// *Selection ▸ Shrink* by `steps` cells.
     pub fn shrink_selection(&mut self, steps: u32) {
         if let Some(d) = self.doc_mut() {
-            d.shrink_selection(steps);
+            d.labeled("Shrink Selection", |d| d.shrink_selection(steps));
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selection shrunk: {n} voxels"));
         }
@@ -1051,7 +1051,9 @@ impl AppState {
         let threshold = self.options.fuzzy_select.threshold;
         if let Some(d) = self.doc_mut() {
             let color = d.selected_color as rizxel_math::Voxel;
-            d.select_by_color(color, threshold, MaskMode::Set);
+            d.labeled("Select by Color", |d| {
+                d.select_by_color(color, threshold, MaskMode::Set)
+            });
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selected {n} voxels of color {color}"));
         }
@@ -1088,7 +1090,7 @@ impl AppState {
     pub fn delete_selected(&mut self) {
         let Some(doc) = self.doc_mut() else { return };
         let protected = doc.selection_protected();
-        let removed = doc.delete_selected();
+        let removed = doc.labeled("Delete", Document::delete_selected);
         self.status_message = Some(match doc.editable_layer(doc.active_layer) {
             _ if protected => MASKED_MESSAGE.to_owned(),
             Err(e) if removed == 0 && e != EditBlock::Hidden => e.message().to_owned(),
@@ -1120,7 +1122,7 @@ impl AppState {
         };
         let block = doc.editable_layer(doc.active_layer).err();
         let protected = doc.selection_protected();
-        let clip = doc.cut();
+        let clip = doc.labeled("Cut", Document::cut);
         self.status_message = Some(match (&clip, block) {
             (Some(c), _) => format!("Cut {} voxels", c.cells.len()),
             (None, _) if protected => MASKED_MESSAGE.to_owned(),
@@ -1176,7 +1178,7 @@ impl AppState {
         let Some(doc) = self.doc_mut() else {
             return false;
         };
-        doc.paste_to_new_layer(&clip);
+        doc.labeled("Paste to New Layer", |d| d.paste_to_new_layer(&clip));
         self.status_message = Some(format!(
             "Pasted {} voxels into a new layer",
             clip.cells.len()
@@ -1187,7 +1189,7 @@ impl AppState {
     /// Places the floating paste of the active document.
     pub fn commit_paste(&mut self) {
         if let Some(doc) = self.doc_mut().filter(|d| d.floating_paste().is_some()) {
-            let n = doc.commit_paste();
+            let n = doc.labeled("Paste", Document::commit_paste);
             self.status_message = Some(format!("Pasted {n} voxels"));
         }
     }
@@ -1240,7 +1242,7 @@ impl AppState {
         f: impl FnOnce(&mut Document) -> Result<usize, TransformError>,
     ) {
         let Some(doc) = self.doc_mut() else { return };
-        self.status_message = Some(match f(doc) {
+        self.status_message = Some(match doc.labeled(label, f) {
             Ok(n) => format!("{label}: {n} voxels changed"),
             Err(e) => format!("{label}: {}", e.message()),
         });
@@ -1250,7 +1252,7 @@ impl AppState {
 
     fn run_op(&mut self, label: &str, f: impl FnOnce(&mut Document) -> Result<String, OpError>) {
         let Some(doc) = self.doc_mut() else { return };
-        self.status_message = Some(match f(doc) {
+        self.status_message = Some(match doc.labeled(label, f) {
             Ok(done) => format!("{label}: {done}"),
             Err(e) => format!("{label}: {}", e.message()),
         });
@@ -1340,9 +1342,9 @@ impl AppState {
             return Ok(());
         };
         if snap {
-            doc.snap_to_palette(&file.colors);
+            doc.labeled("Load and Snap Palette", |d| d.snap_to_palette(&file.colors));
         } else {
-            doc.load_palette(&file.colors);
+            doc.labeled("Load Palette", |d| d.load_palette(&file.colors));
         }
         let mut msg = format!(
             "Loaded {} colors from {}",

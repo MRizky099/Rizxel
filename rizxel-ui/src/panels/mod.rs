@@ -1,5 +1,6 @@
 //! UI panels, one module per dockable region of the workspace.
 
+pub mod history;
 pub mod options;
 pub mod sidebar;
 pub mod status;

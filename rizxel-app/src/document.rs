@@ -842,6 +842,42 @@ impl Document {
         done
     }
 
+    /// Names the next undo step in the history list.
+    pub fn label_next(&mut self, label: impl Into<String>) {
+        self.history.label_next(label);
+    }
+
+    /// Runs `f`, naming the undo step it records `label` (nothing is named
+    /// when `f` records no step).
+    pub fn labeled<R>(&mut self, label: impl Into<String>, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.history.label_next(label);
+        let out = f(self);
+        self.history.forget_label();
+        out
+    }
+
+    /// The undo history list (oldest first) and how many of its steps are
+    /// done; the rest are undone and can be redone.
+    pub fn history_entries(&self) -> (Vec<String>, usize) {
+        (self.history.entries(), self.history.position())
+    }
+
+    /// Undoes or redoes until `position` steps are done (the History panel:
+    /// clicking an entry goes to the state right after it; 0 is the
+    /// start). Returns whether anything changed.
+    pub fn jump_to(&mut self, position: usize) -> bool {
+        self.cancel_paste();
+        self.commit_edit();
+        let mut moved = false;
+        while self.history.position() > position && self.undo() {
+            moved = true;
+        }
+        while self.history.position() < position && self.redo() {
+            moved = true;
+        }
+        moved
+    }
+
     /// Records the current slice with the next undo steps.
     fn tag_history(&mut self) {
         self.history.tag = self.plane.slice.then_some(self.plane);
