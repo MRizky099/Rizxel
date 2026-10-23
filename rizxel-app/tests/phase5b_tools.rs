@@ -549,13 +549,39 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
             d.edit_voxels(layer, &changes);
             d.commit_edit();
         }
+        // A Transform tool session: rotated, scaled and moved, then
+        // applied (maybe clipped) or cancelled.
+        31 => {
+            use rizxel_engine::tools::TransformParams;
+            use rizxel_engine::Pivot;
+            let pivot = [Pivot::Center, Pivot::MinCorner, Pivot::Cursor][rng.below(3) as usize];
+            let cell = rng.cell(8);
+            if d.begin_transform(pivot, cell).is_ok() {
+                let mut p = TransformParams::default();
+                let axis = rng.below(3) as usize;
+                p.rotate[axis] = [0.0, 90.0, -90.0, 30.0, 45.0][rng.below(5) as usize];
+                p.scale[rng.below(3) as usize] = [1.0, 2.0, 0.5, 1.5][rng.below(4) as usize];
+                p.offset[rng.below(3) as usize] = rng.below(5) - 2;
+                d.set_transform(p, pivot, cell);
+                match rng.below(4) {
+                    0 => {
+                        d.cancel_transform();
+                    }
+                    _ => {
+                        if d.apply_transform(rng.below(2) == 0).is_err() {
+                            d.cancel_transform();
+                        }
+                    }
+                }
+            }
+        }
         _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 31;
+const OPS: usize = 32;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {

@@ -77,6 +77,7 @@ impl From<Tool> for Icon {
             Tool::Shape => Icon::Shape,
             Tool::Plane => Icon::Plane,
             Tool::Move => Icon::Move,
+            Tool::Transform => Icon::Transform,
             Tool::ColorPicker => Icon::ColorPicker,
             Tool::Selection => Icon::Selection,
             Tool::FuzzySelect => Icon::FuzzySelect,

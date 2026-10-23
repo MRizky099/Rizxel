@@ -55,7 +55,8 @@ pub use shape::{shape_box, shape_cells, shape_cells_toward};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
 pub use symmetry::{apply_symmetry, mirror};
 pub use transform::{
-    cells_box, flip, mirror as mirror_changes, relocate_changes, rotate90, Transform,
+    apply_transform, cells_box, flip, mirror as mirror_changes, relocate_changes, rotate90,
+    scale_cells, transform_cells, Transform, TransformParams, MAX_SCALE, MIN_SCALE,
 };
 pub use work_plane::WorkPlane;
 
@@ -92,6 +93,7 @@ pub enum Tool {
     #[default]
     Plane,
     Move,
+    Transform,
     ColorPicker,
     Selection,
     FuzzySelect,
@@ -110,8 +112,9 @@ impl Tool {
     ];
 
     /// Secondary manipulation tools (below the toolbar separator).
-    pub const SECONDARY: [Tool; 6] = [
+    pub const SECONDARY: [Tool; 7] = [
         Tool::Move,
+        Tool::Transform,
         Tool::ColorPicker,
         Tool::Selection,
         Tool::FuzzySelect,
@@ -127,6 +130,7 @@ impl Tool {
             Tool::Shape => "Shape",
             Tool::Plane => "Plane",
             Tool::Move => "Move",
+            Tool::Transform => "Transform",
             Tool::ColorPicker => "Color Picker",
             Tool::Selection => "Selection",
             Tool::FuzzySelect => "Fuzzy Select",
@@ -136,13 +140,14 @@ impl Tool {
     }
 
     /// Every tool, in toolbar order.
-    pub const ALL: [Tool; 11] = [
+    pub const ALL: [Tool; 12] = [
         Tool::Cursor,
         Tool::Brush,
         Tool::Line,
         Tool::Shape,
         Tool::Plane,
         Tool::Move,
+        Tool::Transform,
         Tool::ColorPicker,
         Tool::Selection,
         Tool::FuzzySelect,
@@ -151,8 +156,9 @@ impl Tool {
     ];
 
     /// Single-letter keyboard shortcut (Goxel / Photoshop conventions:
-    /// B brush, L line, S shape, P plane, M move, C color picker, R
-    /// rectangle select, W magic wand, E extrude, F fill, V cursor).
+    /// B brush, L line, S shape, P plane, M move, T transform, C color
+    /// picker, R rectangle select, W magic wand, E extrude, F fill, V
+    /// cursor).
     pub const fn shortcut(self) -> char {
         match self {
             Tool::Cursor => 'V',
@@ -161,6 +167,7 @@ impl Tool {
             Tool::Shape => 'S',
             Tool::Plane => 'P',
             Tool::Move => 'M',
+            Tool::Transform => 'T',
             Tool::ColorPicker => 'C',
             Tool::Selection => 'R',
             Tool::FuzzySelect => 'W',
@@ -185,6 +192,9 @@ impl Tool {
             Tool::Plane => "Click a face to place the work plane; other tools then draw on it.",
             Tool::Move => {
                 "Drag to move the selection (or the whole layer). Resize: drag to grow the bounds."
+            }
+            Tool::Transform => {
+                "Drag the rings to rotate, arrows and corners to scale, the box to move. Shift/Ctrl: finer steps. Enter: apply, Esc: cancel."
             }
             Tool::ColorPicker => {
                 "Click a voxel to pick its color. Ctrl+click: copy it into the swatch."

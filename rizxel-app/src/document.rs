@@ -27,6 +27,7 @@ use crate::clipboard::Clipboard;
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
 use crate::layer_tree::{canonical_order, LayerTree, Link};
 use crate::selection::Selection;
+use crate::transform_session::TransformSession;
 
 /// Layer properties other than name, visibility, lock and voxels. Changed as
 /// one undoable unit through [`Document::set_layer_props`].
@@ -454,6 +455,9 @@ pub struct Document {
     pub(crate) box_select: Option<BoxSelect>,
     /// Box of the last applied box selection.
     pub(crate) last_box: Option<LastBox>,
+    /// Open Transform tool session (see [`Document::begin_transform`]);
+    /// its voxels are written inside the open transaction.
+    pub(crate) transform: Option<TransformSession>,
     /// Mask Mode: tool writes skip the selected cells of their layer. Mirrors
     /// `ToolOptions::mask_selection` (set by the app). Not part of history.
     pub mask_selection: bool,
@@ -511,6 +515,7 @@ impl Document {
             paste: None,
             box_select: None,
             last_box: None,
+            transform: None,
             mask_selection: false,
             geometry: RefCell::new(None),
             view_cache: RefCell::new(ViewCache::default()),
@@ -886,7 +891,7 @@ impl Document {
     /// While slicing, the slice moves back to the one the step was made on.
     /// A floating paste is cancelled instead (it is the step in progress).
     pub fn undo(&mut self) -> bool {
-        if self.cancel_box_select() {
+        if self.cancel_box_select() || self.cancel_transform() {
             return true;
         }
         if self.paste.is_some() {
@@ -906,7 +911,7 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
-        if self.paste.is_some() {
+        if self.paste.is_some() || self.transform.is_some() {
             return false;
         }
         let done = self.history.redo(&mut self.data);
@@ -946,6 +951,7 @@ impl Document {
     /// start). Returns whether anything changed.
     pub fn jump_to(&mut self, position: usize) -> bool {
         self.cancel_box_select();
+        self.cancel_transform();
         self.cancel_paste();
         self.commit_edit();
         let mut moved = false;
@@ -1039,6 +1045,7 @@ impl Document {
     /// changed nothing (no undo entry is recorded then).
     pub fn commit_edit(&mut self) -> bool {
         self.paste = None;
+        self.transform = None;
         if !self.is_editing() {
             return false;
         }
@@ -1053,6 +1060,7 @@ impl Document {
     /// selection along). Returns `false` when nothing changed.
     pub fn commit_edit_with_selection(&mut self, layer: usize, selection: Selection) -> bool {
         self.paste = None;
+        self.transform = None;
         if !self.is_editing() {
             return false;
         }
@@ -1078,6 +1086,7 @@ impl Document {
     /// floating paste disappears).
     pub fn cancel_edit(&mut self) {
         self.paste = None;
+        self.transform = None;
         if self.is_editing() {
             self.history.cancel_transaction(&mut self.data);
             self.touch();
@@ -1328,7 +1337,7 @@ impl Document {
     // ---------------------------------------------------------- transforms
 
     /// Layer index a transform may write to, or why not (hidden is fine).
-    fn transform_layer(&self) -> Result<usize, TransformError> {
+    pub(crate) fn transform_layer(&self) -> Result<usize, TransformError> {
         if self.selection_protected() {
             return Err(TransformError::Masked);
         }

@@ -996,10 +996,16 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Ctrl+Alt+V", "Paste in place"),
         ("Ctrl+Shift+V", "Paste to new layer"),
         ("Enter / click", "Place the paste"),
-        ("Esc", "Cancel paste, drag, box, line or transform; deselect"),
+        (
+            "Esc",
+            "Cancel paste, drag, box, line or transform; deselect",
+        ),
         ("Enter", "Apply the open box, polyline, curve or transform"),
         ("Ctrl+click (Brush)", "Line from the last click"),
-        ("Right-click / double-click", "Finish a polyline (Line tool)"),
+        (
+            "Right-click / double-click",
+            "Finish a polyline (Line tool)",
+        ),
         ("Ctrl+A", "Select all"),
         ("Ctrl+D", "Deselect"),
         ("Ctrl+I", "Invert selection"),

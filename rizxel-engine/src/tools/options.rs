@@ -83,6 +83,42 @@ impl DragMode {
     }
 }
 
+/// Point the Transform tool rotates and scales about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum Pivot {
+    /// Center of the transformed box.
+    #[default]
+    Center,
+    /// Minimum corner of the box.
+    MinCorner,
+    /// A chosen voxel (the hovered one when picked; typed values move it).
+    Cursor,
+}
+
+impl Pivot {
+    pub const ALL: [Pivot; 3] = [Pivot::Center, Pivot::MinCorner, Pivot::Cursor];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Pivot::Center => "Center",
+            Pivot::MinCorner => "Min corner",
+            Pivot::Cursor => "Cursor",
+        }
+    }
+}
+
+/// Transform tool settings (the transform itself lives in the document).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TransformOptions {
+    pub pivot: Pivot,
+    /// Voxel used by [`Pivot::Cursor`].
+    pub pivot_cell: glam::IVec3,
+    /// Type sizes in voxels instead of scale percentages.
+    pub size_mode: bool,
+    /// Drop the voxels that leave the bounds instead of refusing Apply.
+    pub clip_to_bounds: bool,
+}
+
 /// When the Cursor tool shows layer names (Goxel cursor "Show names").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum NamesMode {
@@ -428,6 +464,7 @@ pub struct ToolOptions {
     pub shape: ShapeOptions,
     pub plane: PlaneOptions,
     pub moving: MoveOptions,
+    pub transform: TransformOptions,
     pub color_picker: ColorPickerOptions,
     pub selection: SelectionOptions,
     pub fuzzy_select: FuzzySelectOptions,

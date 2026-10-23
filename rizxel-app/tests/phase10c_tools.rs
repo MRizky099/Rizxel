@@ -291,3 +291,93 @@ fn lines_and_curves_are_one_step_each() {
     d.undo();
     assert_eq!(d.data.layers[0].volume.voxel_count(), 0);
 }
+
+// ------------------------------------------------------------ transform
+
+fn turn(axis: usize, degrees: f32) -> rizxel_engine::tools::TransformParams {
+    let mut p = rizxel_engine::tools::TransformParams::default();
+    p.rotate[axis] = degrees;
+    p
+}
+
+#[test]
+fn transform_apply_is_one_step_and_cancel_is_none() {
+    use rizxel_engine::Pivot;
+    let mut d = Document::with_layers("t", vec![solid_layer("A", 2)]);
+    // A 4×1×1 bar selected out of the solid.
+    let bar: Vec<IVec3> = (0..4).map(|x| IVec3::new(x, 3, 1)).collect();
+    d.select(bar.iter().copied(), MaskMode::Set);
+    let before = d.data.clone();
+    let steps = history_len(&d);
+
+    // Cancel: nothing recorded, voxels back.
+    d.begin_transform(Pivot::Center, IVec3::ZERO).unwrap();
+    d.set_transform(turn(1, 90.0), Pivot::Center, IVec3::ZERO);
+    assert_ne!(d.data.layers[0].volume, before.layers[0].volume, "preview");
+    assert!(d.cancel_transform());
+    assert_eq!(d.data, before);
+    assert_eq!(history_len(&d), steps);
+
+    // Identity: nothing recorded.
+    d.begin_transform(Pivot::Center, IVec3::ZERO).unwrap();
+    assert_eq!(d.apply_transform(false), Ok(0));
+    assert_eq!(history_len(&d), steps);
+
+    // A real turn: one step, the selection follows.
+    d.begin_transform(Pivot::Center, IVec3::ZERO).unwrap();
+    d.set_transform(turn(1, 90.0), Pivot::Center, IVec3::ZERO);
+    assert!(d.apply_transform(false).unwrap() > 0);
+    assert_eq!(history_len(&d), steps + 1);
+    assert_eq!(d.history_entries().0.last().unwrap(), "Transform");
+    let sel = d.selection().unwrap();
+    assert_eq!(sel.len(), 4);
+    let (lo, hi) = sel.bounds().unwrap();
+    assert_eq!(hi - lo, IVec3::new(1, 1, 4), "the bar now runs along Z");
+    assert!(d.transform_session().is_none());
+    assert!(d.undo());
+    assert_eq!(d.data, before);
+}
+
+#[test]
+fn transform_out_of_bounds_needs_clip() {
+    use rizxel_engine::tools::TransformParams;
+    use rizxel_engine::Pivot;
+    let mut d = Document::with_layers("t", vec![solid_layer("A", 2)]);
+    // The whole layer, doubled about its min corner, then moved off the
+    // bounds' far side.
+    d.begin_transform(Pivot::MinCorner, IVec3::ZERO).unwrap();
+    let mut p = TransformParams {
+        scale: glam::Vec3::splat(2.0),
+        ..TransformParams::default()
+    };
+    d.set_transform(p, Pivot::MinCorner, IVec3::ZERO);
+    assert_eq!(d.transform_session().unwrap().out_of_bounds.len(), 0);
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 512);
+    p.offset = IVec3::new(-2, 0, 0);
+    d.set_transform(p, Pivot::MinCorner, IVec3::ZERO);
+    assert_eq!(d.transform_session().unwrap().out_of_bounds.len(), 128);
+    assert!(d.apply_transform(false).is_err(), "refused without clip");
+    assert!(d.transform_session().is_some(), "still open");
+    assert!(d.apply_transform(true).is_ok());
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 384);
+    // Undo while a session is open only closes it.
+    d.begin_transform(Pivot::Center, IVec3::ZERO).unwrap();
+    d.set_transform(turn(0, 45.0), Pivot::Center, IVec3::ZERO);
+    assert!(d.undo());
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 384);
+    assert!(d.undo());
+    assert_eq!(d.data.layers[0].volume.voxel_count(), 64);
+}
+
+#[test]
+fn transform_refuses_locked_and_masked() {
+    use rizxel_engine::Pivot;
+    let mut d = Document::with_layers("t", vec![solid_layer("A", 2)]);
+    d.select([IVec3::ZERO], MaskMode::Set);
+    d.mask_selection = true;
+    assert!(d.begin_transform(Pivot::Center, IVec3::ZERO).is_err());
+    d.mask_selection = false;
+    d.toggle_layer_locked(0);
+    assert!(d.begin_transform(Pivot::Center, IVec3::ZERO).is_err());
+    assert!(d.transform_session().is_none());
+}

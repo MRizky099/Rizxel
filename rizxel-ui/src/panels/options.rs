@@ -233,6 +233,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 );
             });
         }
+        Tool::Transform => transform_rows(ui, state),
         Tool::ColorPicker => {
             ui.checkbox(
                 &mut opts.color_picker.sample_all_layers,
@@ -327,6 +328,137 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             }
         }
     }
+}
+
+/// Transform tool: typed rotation, scale (or size), move and pivot, live on
+/// the open transform (the first change opens one); Apply / Cancel.
+fn transform_rows(ui: &mut Ui, state: &mut AppState) {
+    use rizxel_engine::tools::{TransformParams, MAX_SCALE, MIN_SCALE};
+    let Some(doc) = state.doc() else { return };
+    let session = doc.transform_session();
+    let target = session
+        .map(|s| s.size)
+        .or_else(|| doc.transform_target_box().map(|b| b.size()));
+    let Some(source_size) = target else {
+        caption(ui, "Select voxels, or pick a layer that has some");
+        return;
+    };
+    let open = session.is_some();
+    let old = session.map(|s| s.params).unwrap_or_default();
+    let mut p = old;
+    let opts = &mut state.options.transform;
+
+    caption(ui, "Rotate");
+    for axis in 0..3 {
+        caption_small(ui, ["X", "Y", "Z"][axis]);
+        ui.add(
+            egui::DragValue::new(&mut p.rotate[axis])
+                .speed(1.0)
+                .range(-360.0..=360.0)
+                .suffix("°"),
+        );
+    }
+    gap(ui);
+    let modes = [(false, "%"), (true, "Size")];
+    segmented(ui, "transform_size_mode", &mut opts.size_mode, &modes);
+    for axis in 0..3 {
+        caption_small(ui, ["X", "Y", "Z"][axis]);
+        if opts.size_mode {
+            let src = source_size[axis].max(1);
+            let mut size = (src as f32 * p.scale[axis]).round() as i32;
+            let max = (src as f32 * MAX_SCALE) as i32;
+            if ui
+                .add(egui::DragValue::new(&mut size).speed(0.1).range(1..=max))
+                .changed()
+            {
+                p.scale[axis] = size as f32 / src as f32;
+            }
+        } else {
+            let mut percent = p.scale[axis] * 100.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut percent)
+                        .speed(1.0)
+                        .range(MIN_SCALE * 100.0..=MAX_SCALE * 100.0)
+                        .suffix("%"),
+                )
+                .changed()
+            {
+                p.scale[axis] = percent / 100.0;
+            }
+        }
+    }
+    gap(ui);
+    caption(ui, "Move");
+    for axis in 0..3 {
+        caption_small(ui, ["X", "Y", "Z"][axis]);
+        ui.add(egui::DragValue::new(&mut p.offset[axis]).speed(0.1));
+    }
+    gap(ui);
+    caption(ui, "Pivot");
+    let old_pivot = (opts.pivot, opts.pivot_cell);
+    egui::ComboBox::from_id_salt("transform_pivot")
+        .width(90.0)
+        .selected_text(opts.pivot.label())
+        .show_ui(ui, |ui| {
+            for pv in rizxel_engine::Pivot::ALL {
+                ui.selectable_value(&mut opts.pivot, pv, pv.label());
+            }
+        })
+        .response
+        .on_hover_text("Cursor: click a voxel off the gizmo to place it");
+    if opts.pivot == rizxel_engine::Pivot::Cursor {
+        for axis in 0..3 {
+            caption_small(ui, ["X", "Y", "Z"][axis]);
+            ui.add(egui::DragValue::new(&mut opts.pivot_cell[axis]).speed(0.1));
+        }
+    }
+    gap(ui);
+    ui.checkbox(&mut opts.clip_to_bounds, "Clip to bounds")
+        .on_hover_text("Drop the voxels that end up outside the bounds instead of refusing Apply");
+    let pivot_changed = (opts.pivot, opts.pivot_cell) != old_pivot;
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    let mut apply = false;
+    let mut cancel = false;
+    ui.add_enabled_ui(open, |ui| {
+        apply = ui
+            .button("Apply")
+            .on_hover_text("Apply the transform (Enter)")
+            .clicked();
+        cancel = ui
+            .button("Cancel")
+            .on_hover_text("Restore the voxels (Esc)")
+            .clicked();
+    });
+    if ui
+        .button("Reset")
+        .on_hover_text("Back to no rotation, 100% and no move")
+        .clicked()
+    {
+        p = TransformParams::default();
+    }
+    p.scale = p
+        .scale
+        .clamp(glam::Vec3::splat(MIN_SCALE), glam::Vec3::splat(MAX_SCALE));
+    if p != old || (open && pivot_changed) {
+        crate::tool_input::set_transform_params(state, p);
+    }
+    if apply {
+        crate::tool_input::apply_transform(state);
+    } else if cancel {
+        if let Some(doc) = state.doc_mut() {
+            doc.cancel_transform();
+        }
+        state.status_message = Some("Transform cancelled".to_owned());
+    }
+}
+
+fn caption_small(ui: &mut Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(11.0)
+            .color(theme::TEXT_MUTED),
+    );
 }
 
 /// Box mode: position (min corner) and size of the open box, typed values

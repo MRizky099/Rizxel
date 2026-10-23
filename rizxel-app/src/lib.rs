@@ -15,6 +15,7 @@ pub mod layer_tree;
 pub mod paths;
 pub mod recent;
 pub mod selection;
+pub mod transform_session;
 
 use std::path::Path;
 use std::time::Instant;
@@ -49,6 +50,7 @@ pub use rizxel_engine::Mesh;
 pub use rizxel_io::png_io::RgbaImage;
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use selection::Selection;
+pub use transform_session::{pivot_point, TransformSession};
 
 /// File extension of mesh exports.
 pub const OBJ_EXTENSION: &str = "obj";

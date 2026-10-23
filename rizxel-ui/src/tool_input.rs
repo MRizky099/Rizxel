@@ -35,10 +35,12 @@
 //! The Selection tool's *Box* mode (Phase 10c, [`box_select`]) leaves the
 //! dragged box open: its face arrows and faces move it, `Enter` (or a
 //! click outside it, or switching tools) applies it, `Esc` cancels it.
-//! The Line tool ([`line`]) keeps its own open line across clicks.
+//! The Line tool ([`line`]) keeps its own open line across clicks, and the
+//! Transform tool ([`transform`]) its gizmo drags.
 
 mod box_select;
 mod line;
+mod transform;
 
 use std::collections::HashSet;
 
@@ -92,6 +94,8 @@ pub struct ToolInput {
     /// Last brush stamp `(document id, layer, center)`: `Ctrl`+click draws
     /// a line from it.
     last_stamp: Option<(u64, usize, IVec3)>,
+    /// Transform gizmo drag in progress.
+    transform: Option<transform::TransformDrag>,
 }
 
 /// `(document id, revision, hit voxel, hit normal, options, selection
@@ -366,6 +370,7 @@ impl ToolInput {
             doc.sync_box_select();
         }
         self.sync_line(state);
+        self.sync_transform(state);
 
         // A drag survives only on its own document and while its
         // transaction is open (undo or a tab switch may have closed it).
@@ -409,6 +414,7 @@ impl ToolInput {
                 self.finish(state);
             }
         } else if !f.ui.ctx().egui_wants_keyboard_input() {
+            self.transform_keys(f, state);
             self.line_keys(f, state);
             box_select::keys(f, state, mods);
             selection_keys(f, state);
@@ -485,7 +491,13 @@ impl ToolInput {
         if line_tool {
             self.line_frame(f, state, press && edge.is_none(), mods, &mut preview);
         }
-        if press && (!line_tool || edge.is_some()) {
+        // So does the Transform tool (`Alt` is one of its drag modifiers).
+        let transform_tool = state.tool == Tool::Transform && self.drag.is_none();
+        if transform_tool {
+            self.transform_frame(f, state, press && edge.is_none(), mods, &mut preview);
+        }
+        let own_input = line_tool || transform_tool;
+        if press && (!own_input || edge.is_some()) {
             if let Some(p) = hover {
                 match box_grab {
                     Some(grab) => self.begin_box_drag(state, p, grab, mods),
@@ -558,7 +570,9 @@ impl ToolInput {
                     .and_then(box_select::feedback)
                     .unwrap_or_else(|| "Drag an arrow or a face to re-open the box".to_owned()),
             );
-        } else if let Some(hit) = hit.filter(|_| !(line_tool && self.line.is_some())) {
+        } else if let Some(hit) =
+            hit.filter(|_| !transform_tool && !(line_tool && self.line.is_some()))
+        {
             self.hover_preview(f, state, &hit, mods, &mut preview);
             if box_select::box_mode(state) {
                 if let Some(text) = state.doc().and_then(box_select::feedback) {
@@ -682,7 +696,9 @@ impl ToolInput {
         }
         match tool {
             // The Line tool takes its presses in `line_frame`.
-            Tool::Cursor | Tool::Line => {}
+            // The Line and Transform tools take their presses in their
+            // own frame functions.
+            Tool::Cursor | Tool::Line | Tool::Transform => {}
             Tool::ColorPicker => pick_color(f, state, pos, mods.command),
             Tool::Plane => {
                 let slicing = state.doc().is_some_and(|d| d.plane.slice);
@@ -1480,6 +1496,16 @@ impl ToolInput {
             ));
         }
     }
+}
+
+/// Option bar: opens the transform when needed and sets its parameters.
+pub fn set_transform_params(state: &mut AppState, params: rizxel_engine::tools::TransformParams) {
+    transform::set_params(state, params);
+}
+
+/// Option bar *Apply* of the open transform.
+pub fn apply_transform(state: &mut AppState) {
+    transform::apply(state, false);
 }
 
 /// True when the active document has an open box selection.
