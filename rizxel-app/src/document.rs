@@ -468,6 +468,19 @@ impl Document {
             .unwrap_or_else(|| format!("{}.{}", self.name, rizxel_io::RZXL_EXTENSION))
     }
 
+    /// Tab label: [`Document::title`] with `*` between the file name and its
+    /// extension while there are unsaved changes (`hero*.rzxl`).
+    pub fn tab_title(&self) -> String {
+        let title = self.title();
+        if !self.is_dirty() {
+            return title;
+        }
+        match title.rsplit_once('.') {
+            Some((stem, ext)) if !stem.is_empty() => format!("{stem}*.{ext}"),
+            _ => format!("{title}*"),
+        }
+    }
+
     pub fn selected_rgba(&self) -> Rgba8 {
         self.data
             .palette
@@ -2071,6 +2084,20 @@ mod tests {
         // Redo reproduces the live state, including the clipped voxel.
         assert!(d.redo());
         assert_eq!(d.data.layers[0].volume.voxel_count(), 1);
+    }
+
+    #[test]
+    fn tab_title_marks_unsaved_changes() {
+        let mut d = Document::new("hero");
+        assert_eq!(d.tab_title(), "hero.rzxl");
+        d.add_layer();
+        assert_eq!(d.tab_title(), "hero*.rzxl");
+        d.path = Some(PathBuf::from("/m/my.model.rzxl"));
+        assert_eq!(d.tab_title(), "my.model*.rzxl", "only the last extension");
+        let path = std::env::temp_dir().join(format!("rizxel_tab_{}.rzxl", std::process::id()));
+        d.save_to(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(d.tab_title(), d.title(), "saved: no marker");
     }
 
     #[test]

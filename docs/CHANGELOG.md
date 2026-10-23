@@ -38,6 +38,8 @@ All notable changes to Rizxel are documented here. Format follows
   Mirror. Items show their shortcut and are disabled when they can't apply.
 
 #### Changed
+- Document tabs mark unsaved changes with `*` between the file name and its
+  extension (`hero*.rzxl`), next to the existing dot on the close button.
 - *Help ▸ Keyboard Shortcuts* lists every command and tool key and scrolls.
 - Every paste, cut and transform is one undo step; the randomized undo-all /
   redo-all test now covers them.
