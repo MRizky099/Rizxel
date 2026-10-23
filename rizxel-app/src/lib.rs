@@ -3,6 +3,7 @@
 //! Headless application state. The UI layer reads this state and mutates it
 //! only through the methods below, so all behavior is testable without a window.
 
+pub mod close;
 pub mod document;
 pub mod history;
 pub mod interchange;
@@ -15,6 +16,7 @@ use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
+pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
@@ -366,6 +368,8 @@ pub struct AppState {
     /// Live feedback of the active tool (hovered slice plane, pending
     /// change count while dragging). Set by the viewport every frame.
     pub tool_feedback: Option<String>,
+    /// Open "Save changes?" prompt (tab close or exit).
+    closing: Option<CloseRequest>,
     untitled_counter: u32,
 }
 
@@ -382,6 +386,7 @@ impl Default for AppState {
             cursor_voxel: None,
             status_message: None,
             tool_feedback: None,
+            closing: None,
             untitled_counter: 0,
         };
         state.new_document();
@@ -431,6 +436,103 @@ impl AppState {
         } else if self.active_doc >= index && self.active_doc > 0 {
             self.active_doc -= 1;
         }
+    }
+
+    fn doc_index(&self, id: u64) -> Option<usize> {
+        self.documents.iter().position(|d| d.id() == id)
+    }
+
+    /// Closes tab `index`, asking first when it has unsaved changes. Returns
+    /// `true` when the tab closed right away; otherwise the prompt is open
+    /// (see [`AppState::close_prompt`]).
+    pub fn close_document_checked(&mut self, index: usize) -> bool {
+        let Some(doc) = self.documents.get(index) else {
+            return false;
+        };
+        if !doc.is_dirty() {
+            self.close_document(index);
+            return true;
+        }
+        let request = CloseRequest::close_tab(doc.id());
+        let step = request.start();
+        self.closing = Some(request);
+        self.follow_close(step);
+        false
+    }
+
+    /// Exit requested (menu, title bar, `Alt+F4`, the OS). Returns `true`
+    /// when nothing is unsaved and the app may quit now; otherwise the
+    /// prompt walks the dirty documents one at a time.
+    pub fn request_exit(&mut self) -> bool {
+        if self.closing.is_some() {
+            return false;
+        }
+        self.cancel_active_edit();
+        let dirty: Vec<u64> = self
+            .documents
+            .iter()
+            .filter(|d| d.is_dirty())
+            .map(Document::id)
+            .collect();
+        if dirty.is_empty() {
+            return true;
+        }
+        let request = CloseRequest::exit(dirty);
+        let step = request.start();
+        self.closing = Some(request);
+        self.follow_close(step) == CloseStep::Quit
+    }
+
+    /// Open close request, if any.
+    pub fn closing(&self) -> Option<&CloseRequest> {
+        self.closing.as_ref()
+    }
+
+    /// Document the "Save changes?" prompt is about (also the active one).
+    pub fn close_prompt(&self) -> Option<&Document> {
+        let id = self.closing.as_ref()?.current()?;
+        self.documents.iter().find(|d| d.id() == id)
+    }
+
+    /// Answers the prompt. [`CloseStep::Save`] asks the caller to save the
+    /// active document (Save As when untitled) and then call
+    /// [`AppState::close_after_save`]; [`CloseStep::Quit`] means the app may
+    /// quit. Closing tabs and walking to the next document happen here.
+    pub fn answer_close(&mut self, choice: CloseChoice) -> CloseStep {
+        let Some(request) = &mut self.closing else {
+            return CloseStep::Abort;
+        };
+        let step = request.answer(choice);
+        self.follow_close(step)
+    }
+
+    /// Continues after the save asked for by [`CloseStep::Save`]: a document
+    /// that is still dirty (Save As cancelled, write failed) aborts.
+    pub fn close_after_save(&mut self) -> CloseStep {
+        let saved = self.close_prompt().is_some_and(|d| !d.is_dirty());
+        let Some(request) = &mut self.closing else {
+            return CloseStep::Abort;
+        };
+        let step = request.saved(saved);
+        self.follow_close(step)
+    }
+
+    fn follow_close(&mut self, step: CloseStep) -> CloseStep {
+        match step {
+            CloseStep::Ask(id) | CloseStep::Save(id) => match self.doc_index(id) {
+                Some(i) => self.activate(i),
+                // Gone meanwhile: nothing left to ask about.
+                None => return self.answer_close(CloseChoice::DontSave),
+            },
+            CloseStep::Close(id) => {
+                self.closing = None;
+                if let Some(i) = self.doc_index(id) {
+                    self.close_document(i);
+                }
+            }
+            CloseStep::Quit | CloseStep::Abort => self.closing = None,
+        }
+        step
     }
 
     /// Opens a `.rzxl`. If it is already open, that tab is activated instead.
@@ -639,6 +741,97 @@ mod tests {
         assert_eq!(s.active_doc, 0);
         s.close_document(0);
         assert_eq!(s.documents.len(), 1, "always keeps one document");
+    }
+
+    fn dirty(s: &mut AppState) {
+        s.doc_mut().unwrap().add_layer();
+    }
+
+    #[test]
+    fn clean_documents_close_without_a_prompt() {
+        let mut s = AppState::default();
+        s.new_document();
+        assert!(s.close_document_checked(1));
+        assert_eq!(s.documents.len(), 1);
+        assert!(s.request_exit());
+        assert!(s.closing().is_none());
+    }
+
+    #[test]
+    fn cancel_keeps_everything_open() {
+        let mut s = AppState::default();
+        dirty(&mut s);
+        s.new_document();
+        assert!(!s.close_document_checked(0));
+        assert_eq!(s.active_doc, 0, "the prompt shows its document");
+        assert_eq!(
+            s.close_prompt().map(Document::id),
+            Some(s.documents[0].id())
+        );
+        assert_eq!(s.answer_close(CloseChoice::Cancel), CloseStep::Abort);
+        assert_eq!(s.documents.len(), 2);
+        assert!(s.close_prompt().is_none());
+
+        assert!(!s.request_exit());
+        assert_eq!(s.answer_close(CloseChoice::Cancel), CloseStep::Abort);
+        assert_eq!(s.documents.len(), 2);
+        assert!(s.documents[0].is_dirty());
+    }
+
+    #[test]
+    fn dont_save_on_a_tab_closes_it() {
+        let mut s = AppState::default();
+        s.new_document();
+        dirty(&mut s);
+        let id = s.doc().unwrap().id();
+        assert!(!s.close_document_checked(1));
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Close(id));
+        assert_eq!(s.documents.len(), 1);
+    }
+
+    #[test]
+    fn exit_asks_about_each_dirty_document() {
+        let mut s = AppState::default();
+        dirty(&mut s);
+        s.new_document();
+        s.new_document();
+        dirty(&mut s);
+        let (a, c) = (s.documents[0].id(), s.documents[2].id());
+        assert!(!s.request_exit());
+        assert_eq!(s.close_prompt().map(Document::id), Some(a));
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Ask(c));
+        assert_eq!(s.active_doc, 2);
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Quit);
+        assert!(s.closing().is_none());
+    }
+
+    #[test]
+    fn save_during_exit_continues_only_when_saved() {
+        let path = std::env::temp_dir().join(format!("rizxel_close_{}.rzxl", std::process::id()));
+        let mut s = AppState::default();
+        dirty(&mut s);
+        s.new_document();
+        dirty(&mut s);
+        let second = s.documents[1].id();
+
+        assert!(!s.request_exit());
+        assert!(matches!(
+            s.answer_close(CloseChoice::Save),
+            CloseStep::Save(_)
+        ));
+        // Save As cancelled: the untitled document stays dirty, exit aborts.
+        assert_eq!(s.close_after_save(), CloseStep::Abort);
+        assert!(s.closing().is_none());
+
+        assert!(!s.request_exit());
+        assert!(matches!(
+            s.answer_close(CloseChoice::Save),
+            CloseStep::Save(_)
+        ));
+        s.save_active_as(&path).unwrap();
+        assert_eq!(s.close_after_save(), CloseStep::Ask(second));
+        assert_eq!(s.answer_close(CloseChoice::DontSave), CloseStep::Quit);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

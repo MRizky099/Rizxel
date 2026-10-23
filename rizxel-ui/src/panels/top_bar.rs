@@ -3,7 +3,7 @@
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, FileFormat, SliceStep};
+use rizxel_app::{AppState, CloseAction, CloseChoice, CloseStep, FileFormat, SliceStep};
 
 use super::UiState;
 use crate::dock::{self, Workspace};
@@ -122,6 +122,8 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 }
             });
             ui.separator();
+            // Goes through the app's close request, which asks about
+            // unsaved documents first.
             if menu_item(ui, icon::SIGN_OUT, "Exit", "Alt+F4", true) {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);
             }
@@ -315,6 +317,71 @@ fn window_controls(ui: &mut Ui, height: f32) {
 fn toggle_maximize(ctx: &egui::Context) {
     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
     ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+}
+
+/// "Save changes to *name* before closing?" while a tab close or exit is
+/// pending: Save (`Enter`), Don't Save, Cancel (`Esc`). Returns `true` when
+/// every document is answered for and the app may quit.
+pub fn close_prompt(ctx: &egui::Context, state: &mut AppState) -> bool {
+    let Some(doc) = state.close_prompt() else {
+        return false;
+    };
+    let title = doc.title();
+    let exiting = state
+        .closing()
+        .is_some_and(|r| r.action == CloseAction::Exit);
+    let mut choice = None;
+    let modal = egui::Modal::new(Id::new("close_prompt")).show(ctx, |ui| {
+        ui.set_width(360.0);
+        ui.label(
+            egui::RichText::new(format!("Save changes to {title} before closing?"))
+                .font(theme::semibold(14.0))
+                .color(theme::TEXT_STRONG),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Your changes will be lost if you don't save them.")
+                .color(theme::TEXT_DIM),
+        );
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let save = if exiting { "Save and Exit" } else { "Save" };
+            if ui.button(save).clicked() {
+                choice = Some(CloseChoice::Save);
+            }
+            if ui.button("Don't Save").clicked() {
+                choice = Some(CloseChoice::DontSave);
+            }
+            if ui.button("Cancel").clicked() {
+                choice = Some(CloseChoice::Cancel);
+            }
+        });
+    });
+    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    if enter {
+        choice = Some(CloseChoice::Save);
+    } else if modal.should_close() {
+        choice = Some(CloseChoice::Cancel);
+    }
+    let Some(choice) = choice else {
+        return false;
+    };
+    let mut step = state.answer_close(choice);
+    if let CloseStep::Save(_) = step {
+        // The prompt's document is the active one; untitled ones open Save As.
+        state.status_message = None;
+        actions::save(state);
+        step = state.close_after_save();
+        // A failed save already reports its error.
+        let failed = state
+            .status_message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Failed"));
+        if step == CloseStep::Abort && !failed {
+            state.status_message = Some("Close cancelled: the document was not saved".to_owned());
+        }
+    }
+    step == CloseStep::Quit
 }
 
 /// Help dialogs opened from the menu.

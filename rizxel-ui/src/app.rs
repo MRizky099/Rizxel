@@ -1,7 +1,7 @@
 //! eframe application: owns [`AppState`] and lays out all panels in the same
 //! order as the HTML prototype.
 
-use egui::{Frame, Key, KeyboardShortcut, Modifiers, Panel};
+use egui::{Frame, Key, KeyboardShortcut, Modifiers, Panel, ViewportCommand};
 use rizxel_app::AppState;
 
 use eframe::egui_wgpu::wgpu;
@@ -22,6 +22,8 @@ pub struct RizxelApp {
     target_format: Option<wgpu::TextureFormat>,
     /// Dockable panel layout of the editor workspace.
     dock: dock::Workspace,
+    /// Every document is answered for: the next close request is let through.
+    quitting: bool,
 }
 
 impl RizxelApp {
@@ -45,6 +47,7 @@ impl RizxelApp {
             tools: ToolInput::default(),
             target_format,
             dock: dock::Workspace::default(),
+            quitting: false,
         }
     }
 
@@ -54,10 +57,28 @@ impl RizxelApp {
         actions::open_path(&mut self.state, path);
     }
 
+    /// Every exit path (title bar, *File ▸ Exit*, `Alt+F4`, the OS) ends in
+    /// a close request. While documents are unsaved it is cancelled and the
+    /// "Save changes?" prompt walks them; its last answer closes for real.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            if self.state.request_exit() {
+                self.quitting = true;
+            } else {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            }
+        }
+        if panels::top_bar::close_prompt(ctx, &mut self.state) {
+            self.quitting = true;
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+    }
+
     /// Global keyboard shortcuts. Skipped while a text field has focus so
-    /// e.g. Ctrl+Z edits text instead of the document.
+    /// e.g. Ctrl+Z edits text instead of the document, and while a modal
+    /// prompt is open.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() || self.state.closing().is_some() {
             return;
         }
         const CMD: Modifiers = Modifiers::COMMAND;
@@ -112,6 +133,7 @@ impl eframe::App for RizxelApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.handle_close(&ctx);
         self.handle_shortcuts(&ctx);
 
         let state = &mut self.state;

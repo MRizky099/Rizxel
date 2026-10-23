@@ -76,7 +76,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
 
     match action {
         Some(TabAction::Activate(i)) => state.activate(i),
-        Some(TabAction::Close(i)) => state.close_document(i),
+        // Unsaved documents ask first (the prompt is drawn by the app).
+        Some(TabAction::Close(i)) => {
+            state.close_document_checked(i);
+        }
         None => {}
     }
 }
