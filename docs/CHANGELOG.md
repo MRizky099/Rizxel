@@ -5,6 +5,11 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-23
+
+Milestone M2: users never lose work, plus a voxel clipboard, transforms and a
+complete Edit menu.
+
 ### Phase 8: Safe editing (2026-10-23)
 
 #### Added

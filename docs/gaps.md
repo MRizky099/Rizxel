@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.2.0` plus Phase 8 on its branch, 261 tests) and a
+Gaps between the current build (`v0.3.0`: Phases 1–8, 261 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
