@@ -16,9 +16,28 @@ struct Camera {
     grid_color: vec4<f32>,
     axis_x_color: vec4<f32>,
     axis_z_color: vec4<f32>,
+    // xyz = unit view direction, w = 1 for orthographic.
+    forward: vec4<f32>,
+    // xyz = center of the grid fade (eye, or orbit target in orthographic).
+    focus: vec4<f32>,
+    // View toggles (0 / 1): x = floor grid, y = voxel grid, z = ambient occlusion.
+    options: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
+
+/// Material table entry (Render mode). Must match `GpuMaterial` in Rust.
+struct Material {
+    // RGBA multiplier of the palette color.
+    tint: vec4<f32>,
+    // rgb = emission.
+    emission: vec4<f32>,
+    // x = metallic, y = roughness.
+    params: vec4<f32>,
+};
+
+/// Slot 0 is the default material, slot n the document's material n - 1.
+@group(0) @binding(1) var<uniform> materials: array<Material, 256>;
 
 /// Clip-space w of the near plane (must match `NEAR` in Rust).
 const NEAR_W: f32 = 0.1;
@@ -26,7 +45,17 @@ const NEAR_W: f32 = 0.1;
 /// camera so they never z-fight with the ground grid.
 const OVERLAY_PULL: f32 = 0.0015;
 
+fn is_ortho() -> bool {
+    return cam.forward.w > 0.5;
+}
+
 fn pull_to_eye(p: vec3<f32>) -> vec3<f32> {
+    if is_ortho() {
+        // Parallel rays: pull straight back along the view direction (the
+        // far orthographic eye would shift overlays sideways), by the same
+        // amount as a perspective eye at the orbit distance.
+        return p - cam.forward.xyz * (cam.eye.w * OVERLAY_PULL);
+    }
     return p + (cam.eye.xyz - p) * OVERLAY_PULL;
 }
 
@@ -102,7 +131,7 @@ fn grid_sample(ndc: vec2<f32>) -> GridSample {
     let axis_z = axis_coverage(p.x, 1.6);
 
     // "Infinity" look: fade with distance and at grazing angles.
-    let dist = length(p.xz - cam.eye.xz);
+    let dist = length(p.xz - cam.focus.xz);
     let fade_far = cam.viewport.w;
     var fade = 1.0 - smoothstep(fade_far * 0.25, fade_far, dist);
     fade *= smoothstep(0.0, 0.12, abs(normalize(dir).y));
@@ -142,7 +171,8 @@ fn fs_grid(in: GridOut) -> GridFrag {
         bg = mix(bg * 0.55, bg * 1.3, in.ndc.y * 0.5 + 0.5);
     }
 
-    let lines = f32(above);
+    // Hidden floor grid: background only.
+    let lines = f32(above) * cam.options.x;
     var color = bg;
     color = mix(color, cam.grid_color.rgb, s.lines * lines);
     color = mix(color, cam.axis_x_color.rgb, s.axis_x * lines);
@@ -265,12 +295,20 @@ struct VoxelIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) material: u32,
+    @location(4) ao: f32,
 };
 
 struct VoxelOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world: vec3<f32>,
+    // Layer opacity (1 in the opaque pass).
+    @location(3) alpha: f32,
+    @location(4) @interpolate(flat) material: u32,
+    // 0 = most occluded, 1 = open (interpolated across the quad).
+    @location(5) ao: f32,
 };
 
 /// Key light: above, slightly front-right of the default camera, so the top
@@ -278,30 +316,124 @@ struct VoxelOut {
 const KEY_LIGHT: vec3<f32> = vec3<f32>(0.4, 0.85, 0.35);
 const AMBIENT: f32 = 0.35;
 
-@vertex
-fn vs_voxel(v: VoxelIn) -> VoxelOut {
+fn voxel_out(v: VoxelIn, alpha: f32) -> VoxelOut {
     var out: VoxelOut;
     out.pos = cam.view_proj * vec4<f32>(v.pos, 1.0);
     out.normal = v.normal;
     out.color = v.color;
+    out.world = v.pos;
+    out.alpha = alpha;
+    out.material = min(v.material, 255u);
+    out.ao = v.ao;
     return out;
+}
+
+@vertex
+fn vs_voxel(v: VoxelIn) -> VoxelOut {
+    return voxel_out(v, 1.0);
+}
+
+/// Translucent layers: one instance per layer, its alpha in an
+/// instance-rate attribute so opacity changes never touch the mesh.
+@vertex
+fn vs_voxel_translucent(v: VoxelIn, @location(7) alpha: f32) -> VoxelOut {
+    return voxel_out(v, alpha);
+}
+
+/// Brightness of a fully occluded vertex.
+const AO_MIN: f32 = 0.5;
+
+/// Darkening of the voxel edge lines drawn on the model (Voxel Grid).
+const VOXEL_GRID_STRENGTH: f32 = 0.35;
+
+/// Coverage of the voxel edge lines at a fragment on a face with normal
+/// `n`: about one pixel wide, fading out when voxels get smaller than a few
+/// pixels. Works on greedy-merged quads because it only uses the position.
+fn voxel_grid_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    // Voxel corners sit on integers once the bounds' XZ offset is removed.
+    let coord = world - vec3<f32>(cam.grid_origin.x, 0.0, cam.grid_origin.y);
+    // Derivatives first, in uniform control flow, per axis so a face edge
+    // inside a 2x2 pixel quad does not blow them up.
+    let d = max(fwidth(coord), vec3<f32>(1e-6));
+    let g = abs(fract(coord - 0.5) - 0.5) / d;
+    let a = abs(n);
+    // Distance (in px) to the nearest line on the two in-plane axes.
+    var px = min(g.y, g.z);
+    var lod = max(d.y, d.z);
+    if a.y > 0.5 {
+        px = min(g.x, g.z);
+        lod = max(d.x, d.z);
+    } else if a.z > 0.5 {
+        px = min(g.x, g.y);
+        lod = max(d.x, d.y);
+    }
+    let line = 1.0 - min(px, 1.0);
+    // Voxels under ~4 px: fade the lines out instead of a solid tint.
+    return line * (1.0 - smoothstep(0.15, 0.3, lod));
+}
+
+/// Unit vector from a fragment toward the viewer.
+fn view_dir(world: vec3<f32>) -> vec3<f32> {
+    if is_ortho() {
+        return -cam.forward.xyz;
+    }
+    return normalize(cam.eye.xyz - world);
+}
+
+/// Render mode: palette color times the material tint, lit by the key light
+/// with a Blinn-Phong highlight (roughness sets its size, metallic tints it
+/// and darkens the diffuse part, Schlick Fresnel), plus emission.
+fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) -> vec3<f32> {
+    let l = normalize(KEY_LIGHT);
+    let v = view_dir(world);
+    let h = normalize(l + v);
+    let metallic = m.params.x;
+    let roughness = clamp(m.params.y, 0.02, 1.0);
+
+    // Lambert key light + ambient + a half-Lambert fill so faces turned away
+    // from the light never go fully black.
+    let ndl = dot(n, l);
+    let lambert = max(ndl, 0.0);
+    let half_lambert = ndl * 0.5 + 0.5;
+    let light = AMBIENT + 0.6 * lambert + 0.15 * half_lambert * half_lambert;
+    let diffuse = albedo * light * (1.0 - 0.75 * metallic);
+
+    let shininess = mix(512.0, 4.0, roughness);
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+    // Normalized so rough highlights get wider, not brighter.
+    let spec = pow(max(dot(n, h), 0.0), shininess) * (shininess + 8.0) / 64.0;
+    let specular = fresnel * spec * lambert * (1.0 - 0.6 * roughness);
+
+    return diffuse + specular + m.emission.rgb * m.tint.rgb;
+}
+
+/// Lit color of a voxel fragment (shared by both passes).
+fn voxel_color(in: VoxelOut) -> vec3<f32> {
+    let n = normalize(in.normal);
+    let grid = voxel_grid_coverage(in.world, n) * cam.options.y * VOXEL_GRID_STRENGTH;
+    var color: vec3<f32>;
+    if cam.viewport.z > 0.5 {
+        let m = materials[in.material];
+        color = render_shade(in.color.rgb * m.tint.rgb, n, in.world, m);
+    } else {
+        // Model: palette colors kept almost flat, with a fixed per-axis tint
+        // so adjacent faces of one color stay distinguishable.
+        let shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
+        color = in.color.rgb * shade;
+    }
+    // Ambient occlusion darkens corners and creases, never below half.
+    let ao = mix(1.0, AO_MIN + (1.0 - AO_MIN) * in.ao, cam.options.z);
+    return min(color * ao * (1.0 - grid), vec3<f32>(1.0));
 }
 
 @fragment
 fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
-    let n = normalize(in.normal);
-    var shade: f32;
-    if cam.viewport.z > 0.5 {
-        // Render: Lambert key light + ambient + a half-Lambert fill so faces
-        // turned away from the light never go fully black.
-        let ndl = dot(n, normalize(KEY_LIGHT));
-        let lambert = max(ndl, 0.0);
-        let half_lambert = ndl * 0.5 + 0.5;
-        shade = AMBIENT + 0.6 * lambert + 0.15 * half_lambert * half_lambert;
-    } else {
-        // Model: palette colors kept almost flat, with a fixed per-axis tint
-        // so adjacent faces of one color stay distinguishable.
-        shade = 1.0 - 0.08 * abs(n.x) - 0.16 * abs(n.z) - select(0.0, 0.3, n.y < -0.5);
-    }
-    return vec4<f32>(min(in.color.rgb * shade, vec3<f32>(1.0)), 1.0);
+    return vec4<f32>(voxel_color(in), 1.0);
+}
+
+/// Straight alpha, blended over what the opaque pass drew.
+@fragment
+fn fs_voxel_translucent(in: VoxelOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(voxel_color(in), in.alpha);
 }

@@ -7,14 +7,16 @@
 //!
 //! Builds a 128³ document holding about 50k voxels (a noisy terrain shell
 //! plus a few solid blocks), then times what one drag frame costs: one
-//! brush stamp through the edit transaction followed by `view_mesh`, as
-//! the viewport does once per revision. `view_mesh` re-meshes only the
-//! tiles the stamp touched; the full greedy mesh is timed for comparison.
+//! brush stamp through the edit transaction followed by `view_meshes`, as
+//! the viewport does once per revision. `view_meshes` re-meshes only the
+//! tiles the stamp touched; the full greedy mesh is timed for comparison,
+//! without ambient occlusion (exports) and with it (viewport).
 
 use std::time::Instant;
 
 use glam::IVec3;
 use rizxel_app::{Document, VoxelChange};
+use rizxel_engine::{mesh_volume_with, MeshParams};
 use rizxel_math::{BoundSize, Voxel};
 
 /// Deterministic height field in `4..=20`.
@@ -58,9 +60,18 @@ fn main() {
         start.elapsed().as_secs_f64() * 1e3,
         mesh.triangle_count()
     );
+    let palette = doc.data.palette.clone();
+    let ao = MeshParams::new(&palette).ao(true);
+    let start = Instant::now();
+    let mesh = mesh_volume_with(&doc.data.layers[0].volume, &ao);
+    println!(
+        "full mesh with AO: {:.2} ms, {} triangles",
+        start.elapsed().as_secs_f64() * 1e3,
+        mesh.triangle_count()
+    );
 
     // The viewport has meshed the model before the drag starts.
-    doc.view_mesh();
+    doc.view_meshes(false);
 
     // A drag: 30 frames, one 3³ stamp per frame along a line, each followed
     // by the re-mesh the viewport performs for the new revision.
@@ -80,14 +91,15 @@ fn main() {
             .collect();
         let start = Instant::now();
         doc.edit_voxels(0, &stamp);
-        let mesh = doc.view_mesh();
+        let mesh = doc.view_meshes(false).opaque;
         let ms = start.elapsed().as_secs_f64() * 1e3;
         assert!(!mesh.is_empty());
         total += ms;
         worst = worst.max(ms);
     }
     doc.commit_edit();
-    assert_eq!(doc.view_mesh(), doc.visible_mesh(), "incremental == full");
+    let full = mesh_volume_with(&doc.data.layers[0].volume, &ao);
+    assert_eq!(doc.view_mesh(), full, "incremental == full");
     println!(
         "drag frame (stamp + re-mesh): avg {:.2} ms, worst {:.2} ms over {frames} frames",
         total / frames as f64,

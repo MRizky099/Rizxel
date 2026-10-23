@@ -34,41 +34,113 @@ use crate::render::{GpuMesh, LineInstance, SceneFrame, ViewportCallback};
 use crate::theme;
 use crate::tool_input::{self, ToolInput};
 
+/// Viewport meshes of one document in world space.
+#[derive(Clone, Default)]
+pub struct DocMeshes {
+    /// Every fully opaque layer.
+    pub opaque: Arc<GpuMesh>,
+    /// Translucent (or ghosted) layers in layer order.
+    pub transparent: Vec<LayerMesh>,
+}
+
+/// One translucent layer.
+#[derive(Clone)]
+pub struct LayerMesh {
+    pub mesh: Arc<GpuMesh>,
+    pub alpha: f32,
+    /// World-space center of the layer's voxels (depth sorting).
+    pub center: Vec3,
+}
+
+/// What a document's meshes were built for: revision, slice clip, ghosts
+/// and (with ghosts) the active layer.
+type BuildKey = (u64, Option<VoxelBox>, bool, Option<usize>);
+
+/// A document's last build, with the source mesh behind each GPU mesh.
+struct CacheEntry {
+    key: BuildKey,
+    meshes: DocMeshes,
+    sources: Vec<(Arc<rizxel_app::Mesh>, Arc<GpuMesh>)>,
+}
+
 /// Viewport meshes per open document, rebuilt only when the document's
-/// revision changes (edits, undo/redo, load, visibility, palette, bounds)
-/// or its slice clip moves. Switching tabs therefore never re-meshes.
+/// revision changes (edits, undo/redo, load, visibility, opacity, palette,
+/// bounds), its slice clip moves or ghosts change. Switching tabs therefore
+/// never re-meshes, and parts the document did not re-mesh (e.g. after an
+/// opacity change) keep their GPU mesh. Large updates mesh in the
+/// background ([`Document::view_meshes_background`]); every call takes in
+/// the tiles finished since the last one.
 #[derive(Default)]
 pub struct MeshCache {
-    /// Per document: `(revision, slice clip, mesh)` the mesh was built for.
-    entries: HashMap<u64, (u64, Option<VoxelBox>, Arc<GpuMesh>)>,
+    entries: HashMap<u64, CacheEntry>,
     /// Source of unique [`GpuMesh::key`]s. The renderer re-uploads only
-    /// when the key changes, so every rebuild needs a fresh one: a moved
+    /// when the key changes, so every new mesh needs a fresh one: a moved
     /// slice plane changes the mesh without changing the revision.
     next_build: u64,
 }
 
 impl MeshCache {
-    /// Mesh of `doc`'s visible (slice-clipped) layers in world space.
-    pub fn get(&mut self, doc: &Document) -> Arc<GpuMesh> {
-        let revision = doc.revision();
-        let clip = doc.view_clip();
-        match self.entries.get(&doc.id()) {
-            Some((r, c, m)) if *r == revision && *c == clip => m.clone(),
-            _ => {
+    /// Meshes of `doc`'s visible (slice-clipped) layers in world space.
+    pub fn get(&mut self, doc: &Document, ghosts: bool) -> DocMeshes {
+        let key = (
+            doc.revision(),
+            doc.view_clip(),
+            ghosts,
+            ghosts.then_some(doc.active_layer),
+        );
+        // Same build: only background tiles that finished can change it.
+        let view = match self.entries.get(&doc.id()) {
+            Some(entry) if entry.key == key => match doc.poll_view_meshes() {
+                Some(view) => view,
+                None => return entry.meshes.clone(),
+            },
+            _ => doc.view_meshes_background(ghosts),
+        };
+        let old = self.entries.remove(&doc.id());
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        let mut sources = Vec::new();
+        let mut gpu = |mesh: &Arc<rizxel_app::Mesh>| {
+            let reused = old.as_ref().and_then(|e| {
+                e.sources
+                    .iter()
+                    .find(|(m, _)| Arc::ptr_eq(m, mesh))
+                    .map(|(_, g)| g.clone())
+            });
+            let g = reused.unwrap_or_else(|| {
                 self.next_build += 1;
-                let key = (doc.id(), self.next_build);
-                let (bmin, _) = bounds_box(doc.data.bounds);
-                let mesh = Arc::new(GpuMesh::from_mesh(key, &doc.view_mesh(), bmin));
-                log::debug!(
-                    "meshed {} rev {revision}: {} triangles",
-                    doc.title(),
-                    mesh.triangle_count()
-                );
-                self.entries
-                    .insert(doc.id(), (revision, clip, mesh.clone()));
-                mesh
-            }
-        }
+                Arc::new(GpuMesh::from_mesh((doc.id(), self.next_build), mesh, bmin))
+            });
+            sources.push((mesh.clone(), g.clone()));
+            g
+        };
+        let meshes = DocMeshes {
+            opaque: gpu(&view.opaque),
+            transparent: view
+                .transparent
+                .iter()
+                .map(|t| LayerMesh {
+                    mesh: gpu(&t.mesh),
+                    alpha: t.alpha,
+                    center: t.center + bmin,
+                })
+                .collect(),
+        };
+        log::debug!(
+            "meshed {} rev {}: {} opaque triangles, {} translucent layers",
+            doc.title(),
+            doc.revision(),
+            meshes.opaque.triangle_count(),
+            meshes.transparent.len()
+        );
+        self.entries.insert(
+            doc.id(),
+            CacheEntry {
+                key,
+                meshes: meshes.clone(),
+                sources,
+            },
+        );
+        meshes
     }
 
     /// Drops meshes of documents that are no longer open.
@@ -94,6 +166,9 @@ pub struct Projection {
     eye: Vec3,
     /// Unit view direction.
     forward: Vec3,
+    /// World units covered by the viewport height in orthographic mode;
+    /// `None` in perspective.
+    ortho_height: Option<f32>,
 }
 
 impl Projection {
@@ -104,27 +179,37 @@ impl Projection {
             rect,
             eye: camera.eye(target),
             forward: -camera.eye_direction(),
+            ortho_height: camera.is_ortho().then(|| camera.view_height()),
         }
     }
 
-    /// Camera position in world space.
+    /// Camera position in world space (far back along the line of sight in
+    /// orthographic mode).
     pub fn eye(&self) -> Vec3 {
         self.eye
     }
 
     /// On-screen size (logical points) of one world unit at `world`.
     pub fn points_per_unit(&self, world: Vec3) -> f32 {
-        let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
-        self.rect.height() / (2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan())
+        let span = self.ortho_height.unwrap_or_else(|| {
+            let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
+            2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan()
+        });
+        self.rect.height() / span
     }
 
     /// World-space mouse ray `(origin, unit direction)` through `screen`.
+    /// Perspective rays start at the eye; orthographic rays are parallel
+    /// and start on the near plane.
     pub fn world_ray(&self, screen: Pos2) -> (Vec3, Vec3) {
         let ndc = glam::Vec2::new(
             (screen.x - self.rect.center().x) / (self.rect.width() * 0.5),
             -(screen.y - self.rect.center().y) / (self.rect.height() * 0.5),
         );
         let inv = self.view_proj.inverse();
+        if self.ortho_height.is_some() {
+            return (inv.project_point3(ndc.extend(0.0)), self.forward);
+        }
         let far = inv.project_point3(ndc.extend(1.0));
         (self.eye, (far - self.eye).normalize_or_zero())
     }
@@ -165,9 +250,7 @@ fn view_rotation(camera: &OrbitCamera) -> Mat3 {
 
 /// World-space min/max of the model bounds, centered on the origin in XZ.
 fn bounds_box(bounds: BoundSize) -> (Vec3, Vec3) {
-    let size = bounds.0.as_vec3();
-    let half = Vec3::new(size.x * 0.5, 0.0, size.z * 0.5);
-    (-half, Vec3::new(half.x, size.y, half.z))
+    rizxel_app::world_bounds(bounds)
 }
 
 pub fn show(
@@ -204,7 +287,8 @@ pub fn show(
     if response.double_clicked_by(egui::PointerButton::Middle) {
         state.camera.reset();
     }
-    let target = Vec3::new(0.0, bmax.y * 0.4, 0.0) + state.camera.pan;
+    state.viewport_aspect = rect.width() / rect.height().max(1.0);
+    let target = rizxel_app::orbit_base(bounds) + state.camera.pan;
     let proj = Projection::new(&state.camera, target, rect);
 
     // --- Slice Mode: hide the camera's side, slider on the right edge -------
@@ -213,7 +297,8 @@ pub fn show(
     }
     let slider = slice_slider(ui, state, rect);
 
-    let voxels = state.doc().map(|d| meshes.get(d));
+    let ghosts = state.view.ghosts;
+    let voxels = state.doc().map(|d| meshes.get(d, ghosts));
     // Box around the visible voxels, in world space, when it is smaller than
     // the bounds (shows how much of the editable volume the model uses).
     let occupied = state
@@ -227,8 +312,11 @@ pub fn show(
         Pos2::new(rect.right() - 100.0, rect.top() + 16.0),
         Vec2::splat(84.0),
     );
+    let projection_rect = projection_button_rect(cube_rect);
+    let toggles_rect = view_toggles_rect(rect);
     let ppp = ui.ctx().pixels_per_point();
-    let blocked: Vec<Rect> = std::iter::once(cube_rect)
+    let blocked: Vec<Rect> = [cube_rect, projection_rect, toggles_rect]
+        .into_iter()
         .chain(slider.map(|(r, _)| r))
         .collect();
     let preview = tools.update(
@@ -243,15 +331,18 @@ pub fn show(
         state,
     );
     // Tool edits may have changed the document this frame.
-    let voxels = state.doc().map(|d| meshes.get(d)).or(voxels);
+    let voxels = state.doc().map(|d| meshes.get(d, ghosts)).or(voxels);
+    // Keep frames coming while background tiles arrive.
+    let meshing = state.doc().is_some_and(Document::view_meshing);
+    if meshing {
+        ui.ctx().request_repaint();
+    }
 
     // --- Scene (wgpu) -------------------------------------------------------
-    // While slicing, the bounds are drawn one voxel thick (Slice panel look).
-    let bold = state.doc().is_some_and(|d| d.plane.slice);
-    let mut frame = scene_frame(&state.camera, &proj, state.view_mode, bmin, bmax, ppp, bold);
+    let mut frame = scene_frame(state, &proj, target, bmin, bmax, ppp);
     frame.fills.extend(preview.fills);
     frame.lines.extend(preview.lines);
-    if let Some((lo, hi)) = occupied {
+    if let Some((lo, hi)) = occupied.filter(|_| state.view.model_bounds) {
         let color = theme::BOUND.gamma_multiply(0.45);
         frame.lines.extend(
             bounds_edges(lo, hi)
@@ -259,7 +350,10 @@ pub fn show(
                 .map(|(a, b)| LineInstance::new(a, b, color, ppp)),
         );
     }
-    frame.voxels = voxels;
+    if let Some(meshes) = voxels {
+        frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
+        frame.voxels = Some(meshes.opaque);
+    }
     match target_format {
         Some(format) => {
             let size_px = [
@@ -293,11 +387,38 @@ pub fn show(
         paint_slice_slider(&painter, state, track, active);
     }
     if let Some(target) = view_cube(ui, &state.camera, cube_rect) {
-        state.camera.snap(target);
+        state.snap_view(target);
+    }
+    if projection_button(ui, &state.camera, projection_rect) {
+        state.camera.toggle_projection();
+    }
+    view_toggles(ui, &mut state.view, toggles_rect);
+
+    if meshing {
+        painter.text(
+            Pos2::new(rect.left() + 12.0, rect.bottom() - 12.0),
+            Align2::LEFT_BOTTOM,
+            "Meshing...",
+            theme::regular(12.0),
+            theme::TEXT_DIM,
+        );
     }
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
+}
+
+/// Translucent layers ordered farthest first by the depth of their box
+/// center along the view direction. No per-triangle sort: voxel layers
+/// rarely interpenetrate.
+fn sorted_back_to_front(proj: &Projection, layers: &[LayerMesh]) -> Vec<(Arc<GpuMesh>, f32)> {
+    let depth = |l: &LayerMesh| (l.center - proj.eye).dot(proj.forward);
+    let mut sorted: Vec<&LayerMesh> = layers.iter().collect();
+    sorted.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
+    sorted
+        .into_iter()
+        .map(|l| (l.mesh.clone(), l.alpha))
+        .collect()
 }
 
 /// Width of the slice slider, in logical points.
@@ -308,8 +429,8 @@ const SLIDER_WIDTH: f32 = 12.0;
 fn slider_track(rect: Rect) -> Rect {
     let right = rect.right() - 8.0;
     Rect::from_min_max(
-        Pos2::new(right - SLIDER_WIDTH, rect.top() + 116.0),
-        Pos2::new(right, (rect.bottom() - 104.0).max(rect.top() + 160.0)),
+        Pos2::new(right - SLIDER_WIDTH, rect.top() + 132.0),
+        Pos2::new(right, (rect.bottom() - 104.0).max(rect.top() + 176.0)),
     )
 }
 
@@ -414,40 +535,51 @@ fn paint_slice_slider(painter: &egui::Painter, state: &AppState, track: Rect, ac
     }
 }
 
-/// Builds the GPU scene description for this frame.
+/// Builds the GPU scene description for this frame. While slicing, the
+/// bounds are drawn one voxel thick (Slice panel look).
 fn scene_frame(
-    camera: &OrbitCamera,
+    state: &AppState,
     proj: &Projection,
-    view_mode: ViewMode,
+    target: Vec3,
     bmin: Vec3,
     bmax: Vec3,
     pixels_per_point: f32,
-    bold: bool,
 ) -> SceneFrame {
+    let camera = &state.camera;
+    let view = state.view;
+    let bold = state.doc().is_some_and(|d| d.plane.slice);
     let bound_color = if bold {
         theme::BOUND
     } else {
         theme::BOUND.gamma_multiply(0.9)
     };
-    let lines: Vec<LineInstance> = bounds_edges(bmin, bmax)
-        .into_iter()
-        .map(|(a, b)| {
-            let width = if bold {
-                SLICE_BOUNDS_WIDTH
-            } else {
-                BOUNDS_WIDTH
-            } * pixels_per_point;
-            LineInstance::new(a, b, bound_color, width)
-        })
-        .collect();
+    let width = if bold {
+        SLICE_BOUNDS_WIDTH
+    } else {
+        BOUNDS_WIDTH
+    } * pixels_per_point;
+    let lines: Vec<LineInstance> = if view.model_bounds {
+        bounds_edges(bmin, bmax)
+            .into_iter()
+            .map(|(a, b)| LineInstance::new(a, b, bound_color, width))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     SceneFrame {
         view_proj: proj.view_proj,
         eye: proj.eye,
+        target,
+        forward: proj.forward,
+        ortho: camera.is_ortho(),
         distance: camera.distance,
         // Align grid lines with the voxel cells of the (possibly odd-sized) bounds.
         grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
-        render_mode: view_mode == ViewMode::Render,
+        render_mode: state.view_mode == ViewMode::Render,
+        floor_grid: view.floor_grid,
+        voxel_grid: view.voxel_grid,
+        ao: view.ao(state.view_mode),
         background: theme::WORKSPACE,
         grid_color: theme::GRID_LINE,
         axis_x: theme::AXIS_X,
@@ -455,6 +587,11 @@ fn scene_frame(
         lines,
         fills: Vec::new(),
         voxels: None,
+        translucent: Vec::new(),
+        materials: state
+            .doc()
+            .map(|d| d.data.materials.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -766,6 +903,100 @@ fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget
     response.clicked().then_some(hovered).flatten()
 }
 
+/// Perspective / orthographic toggle under the view cube.
+fn projection_button_rect(cube_rect: Rect) -> Rect {
+    Rect::from_center_size(
+        Pos2::new(cube_rect.center().x, cube_rect.bottom() + 12.0),
+        Vec2::new(64.0, 18.0),
+    )
+}
+
+/// Draws the projection toggle; true when clicked.
+fn projection_button(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> bool {
+    let response = ui
+        .interact(rect, ui.id().with("projection_toggle"), Sense::click())
+        .on_hover_text("Toggle perspective / orthographic (Numpad 5)");
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let painter = ui.painter();
+    let fill = if hovered {
+        Color32::from_rgb(0x62, 0x62, 0x6b)
+    } else {
+        Color32::from_rgb(0x52, 0x52, 0x5b)
+    };
+    painter.rect_filled(rect, 4.0, fill);
+    let label = if camera.is_ortho() { "Ortho" } else { "Persp" };
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        theme::semibold(11.0),
+        if camera.is_ortho() {
+            theme::BOUND
+        } else {
+            Color32::from_rgb(0xd4, 0xd4, 0xd8)
+        },
+    );
+    response.clicked()
+}
+
+/// Size of one view toggle button, in logical points.
+const TOGGLE_SIZE: f32 = 26.0;
+
+/// Row of view toggle buttons in the top-left corner of the viewport.
+fn view_toggles_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        rect.left_top() + Vec2::splat(10.0),
+        Vec2::new(TOGGLE_SIZE * 3.0 + 4.0, TOGGLE_SIZE),
+    )
+}
+
+/// Floor grid, voxel grid and model bounds buttons (same as *View ▸ Show*).
+fn view_toggles(ui: &mut Ui, view: &mut rizxel_app::ViewOptions, rect: Rect) {
+    use egui_phosphor::regular as icon;
+    let toggles: [(&mut bool, &str, &str); 3] = [
+        (&mut view.floor_grid, icon::GRID_FOUR, "Floor Grid (G)"),
+        (&mut view.voxel_grid, icon::HASH, "Voxel Grid (Shift+G)"),
+        (
+            &mut view.model_bounds,
+            icon::BOUNDING_BOX,
+            "Model Bounds (Shift+B)",
+        ),
+    ];
+    for (i, (on, glyph, tip)) in toggles.into_iter().enumerate() {
+        let r = Rect::from_min_size(
+            rect.min + Vec2::new(i as f32 * (TOGGLE_SIZE + 2.0), 0.0),
+            Vec2::splat(TOGGLE_SIZE),
+        );
+        let response = ui
+            .interact(r, ui.id().with(("view_toggle", i)), Sense::click())
+            .on_hover_text(tip);
+        if response.clicked() {
+            *on = !*on;
+        }
+        let fill = match (*on, response.hovered()) {
+            (true, _) => Color32::from_rgb(0x62, 0x62, 0x6b),
+            (false, true) => Color32::from_rgb(0x4a, 0x4a, 0x52),
+            (false, false) => Color32::from_black_alpha(90),
+        };
+        let painter = ui.painter();
+        painter.rect_filled(r, 4.0, fill);
+        painter.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            glyph,
+            theme::icon(15.0),
+            if *on {
+                theme::TEXT_STRONG
+            } else {
+                theme::TEXT_DIM
+            },
+        );
+    }
+}
+
 /// Linear blend from `a` toward `b` by `t` in 0..=1.
 fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
@@ -811,6 +1042,7 @@ fn paint_axis_gizmo(painter: &egui::Painter, camera: &OrbitCamera, center: Pos2)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rizxel_app::LayerProps;
 
     #[test]
     fn front_view_looks_down_negative_z() {
@@ -831,16 +1063,111 @@ mod tests {
         assert!(hit.length() < 0.5, "hit = {hit:?}");
     }
 
+    fn test_rect() -> Rect {
+        Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0))
+    }
+
+    #[test]
+    fn screen_round_trip_in_both_projections() {
+        let rect = test_rect();
+        for ortho in [false, true] {
+            let mut cam = OrbitCamera::default();
+            if ortho {
+                cam.toggle_projection();
+            }
+            let proj = Projection::new(&cam, Vec3::new(0.0, 5.0, 0.0), rect);
+            for world in [Vec3::new(3.0, 2.0, -4.0), Vec3::new(-10.0, 12.0, 7.5)] {
+                let screen = proj.to_screen(world).unwrap();
+                let (origin, dir) = proj.world_ray(screen);
+                // The ray through the point's pixel passes through the point.
+                let t = (world - origin).dot(dir);
+                let closest = origin + dir * t;
+                assert!(
+                    (closest - world).length() < 1e-2,
+                    "ortho {ortho}: {closest:?} vs {world:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ortho_rays_are_parallel_and_keep_the_framing() {
+        let rect = test_rect();
+        let mut cam = OrbitCamera::default();
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        let target = Vec3::new(0.0, 4.0, 0.0);
+        let persp = Projection::new(&cam, target, rect);
+        cam.toggle_projection();
+        let ortho = Projection::new(&cam, target, rect);
+        let (_, a) = ortho.world_ray(rect.left_top());
+        let (_, b) = ortho.world_ray(rect.right_bottom());
+        assert!((a - b).length() < 1e-5 && (a + Vec3::Z).length() < 1e-5);
+        // At the orbit target both projections show the same scale.
+        let (p, o) = (persp.points_per_unit(target), ortho.points_per_unit(target));
+        assert!((p - o).abs() < 1e-3, "{p} vs {o}");
+        // Ortho scale does not depend on depth.
+        assert_eq!(o, ortho.points_per_unit(target + Vec3::Z * 50.0));
+    }
+
+    #[test]
+    fn ortho_and_perspective_pick_the_same_voxel_in_a_face_view() {
+        // A voxel column seen from the front: the centre pixel of voxel
+        // (5, 3, *) picks the front-most voxel in both projections.
+        use rizxel_engine::raycast::{raycast_volume, Ray};
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, (0..6).map(|z| (IVec3::new(5, 3, z), 9)), false);
+        let bounds = doc.data.bounds;
+        let (bmin, _) = bounds_box(bounds);
+        let rect = test_rect();
+        let mut cam = OrbitCamera::default();
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        let target = rizxel_app::orbit_base(bounds);
+        let mut picks = Vec::new();
+        for ortho in [false, true] {
+            if ortho {
+                cam.toggle_projection();
+            }
+            let proj = Projection::new(&cam, target, rect);
+            let screen = proj.to_screen(bmin + Vec3::new(5.5, 3.5, 6.0)).unwrap();
+            let (origin, dir) = proj.world_ray(screen);
+            let hit = raycast_volume(&Ray::new(origin - bmin, dir), &doc.data.layers[0].volume);
+            picks.push(hit.map(|h| (h.voxel, h.normal)));
+        }
+        assert_eq!(picks[0], Some((IVec3::new(5, 3, 5), IVec3::Z)));
+        assert_eq!(picks[0], picks[1]);
+    }
+
+    #[test]
+    fn model_bounds_toggle_hides_the_wireframe() {
+        let mut state = AppState::default();
+        let rect = test_rect();
+        let bounds = state.doc().unwrap().data.bounds;
+        let (bmin, bmax) = bounds_box(bounds);
+        let proj = Projection::new(&state.camera, Vec3::ZERO, rect);
+        let frame = scene_frame(&state, &proj, Vec3::ZERO, bmin, bmax, 1.0);
+        assert_eq!(frame.lines.len(), 12);
+        assert!(frame.floor_grid && !frame.voxel_grid);
+        // Also while slicing (the bold slice frame).
+        state.doc_mut().unwrap().plane.slice = true;
+        state.view.model_bounds = false;
+        state.view.floor_grid = false;
+        let frame = scene_frame(&state, &proj, Vec3::ZERO, bmin, bmax, 1.0);
+        assert!(frame.lines.is_empty() && !frame.floor_grid);
+    }
+
     #[test]
     fn mesh_cache_rebuilds_only_on_new_revision() {
         let mut doc = Document::new("t");
         let mut cache = MeshCache::default();
-        let a = cache.get(&doc);
+        let a = cache.get(&doc, false).opaque;
         assert!(a.indices.is_empty());
-        assert!(Arc::ptr_eq(&a, &cache.get(&doc)), "same revision is cached");
+        assert!(
+            Arc::ptr_eq(&a, &cache.get(&doc, false).opaque),
+            "same revision is cached"
+        );
 
         doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
-        let b = cache.get(&doc);
+        let b = cache.get(&doc, false).opaque;
         assert_eq!(b.triangle_count(), 12);
         // Voxel (0,0,0) sits at the bounds' min corner in world space.
         let (bmin, _) = bounds_box(doc.data.bounds);
@@ -854,18 +1181,25 @@ mod tests {
     #[test]
     fn moving_the_slice_plane_gives_a_new_upload_key() {
         // Four voxels along X; slide the plane through them, then untick
-        // Slice. Every step must produce a mesh with a fresh key (the GPU
-        // re-uploads on key change only) and the right extent.
+        // Slice. Every step that changes the mesh must give it a fresh key
+        // (the GPU re-uploads on key change only) and the right extent; the
+        // plane at x = 4 shows the whole model, so that mesh keeps its key.
         let mut doc = Document::new("t");
         doc.set_voxels(0, (0..4).map(|x| (IVec3::new(x, 0, 0), 5)), false);
         let mut cache = MeshCache::default();
-        let mut keys = vec![cache.get(&doc).key];
+        let mut keys = vec![cache.get(&doc, false).opaque.key];
         doc.plane.axis = 0;
         doc.plane.slice = true;
+        doc.plane.coord = 4;
+        assert_eq!(
+            cache.get(&doc, false).opaque.key,
+            keys[0],
+            "same mesh, same key"
+        );
         let (bmin, _) = bounds_box(doc.data.bounds);
-        for coord in (1..=4).rev() {
+        for coord in (1..=3).rev() {
             doc.plane.coord = coord;
-            let mesh = cache.get(&doc);
+            let mesh = cache.get(&doc, false).opaque;
             let max_x = mesh
                 .vertices
                 .iter()
@@ -877,7 +1211,7 @@ mod tests {
             keys.push(mesh.key);
         }
         doc.plane.slice = false;
-        let full = cache.get(&doc);
+        let full = cache.get(&doc, false).opaque;
         let max_x = full
             .vertices
             .iter()
@@ -887,6 +1221,90 @@ mod tests {
         keys.push(full.key);
         let unique: std::collections::HashSet<_> = keys.iter().collect();
         assert_eq!(unique.len(), keys.len());
+    }
+
+    #[test]
+    fn opacity_changes_keep_the_uploaded_meshes() {
+        // Two layers; making the top one translucent moves it into its own
+        // mesh. Further opacity changes only change the alpha.
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
+        doc.add_layer();
+        doc.set_voxels(1, [(IVec3::new(3, 0, 0), 6)], false);
+        let mut cache = MeshCache::default();
+        let all = cache.get(&doc, false);
+        assert_eq!(all.opaque.triangle_count(), 24);
+        assert!(all.transparent.is_empty());
+
+        let set_opacity = |doc: &mut Document, opacity: f32| {
+            let props = LayerProps {
+                opacity,
+                ..doc.data.layers[1].props.clone()
+            };
+            assert!(doc.set_layer_props(1, props, false));
+        };
+        set_opacity(&mut doc, 0.5);
+        let half = cache.get(&doc, false);
+        assert_eq!(half.opaque.triangle_count(), 12);
+        assert_eq!(half.transparent.len(), 1);
+        assert_eq!(half.transparent[0].alpha, 0.5);
+        assert_eq!(half.transparent[0].mesh.triangle_count(), 12);
+
+        set_opacity(&mut doc, 0.3);
+        let less = cache.get(&doc, false);
+        assert_eq!(less.transparent[0].alpha, 0.3);
+        assert!(Arc::ptr_eq(&less.opaque, &half.opaque), "no re-mesh");
+        assert!(Arc::ptr_eq(
+            &less.transparent[0].mesh,
+            &half.transparent[0].mesh
+        ));
+
+        // Fully transparent layers are not drawn at all.
+        set_opacity(&mut doc, 0.0);
+        assert!(cache.get(&doc, false).transparent.is_empty());
+    }
+
+    #[test]
+    fn ghosts_dim_every_layer_but_the_active_one() {
+        let mut doc = Document::new("t");
+        doc.set_voxels(0, [(IVec3::ZERO, 5)], false);
+        doc.add_layer();
+        doc.set_voxels(1, [(IVec3::new(3, 0, 0), 6)], false);
+        doc.active_layer = 1;
+        let mut cache = MeshCache::default();
+        let ghosted = cache.get(&doc, true);
+        assert_eq!(ghosted.opaque.triangle_count(), 12);
+        assert_eq!(ghosted.transparent.len(), 1);
+        assert_eq!(ghosted.transparent[0].alpha, rizxel_app::GHOST_ALPHA);
+        // Switching the active layer swaps them without an edit.
+        doc.active_layer = 0;
+        let swapped = cache.get(&doc, true);
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        assert_eq!(
+            swapped.transparent[0].center,
+            bmin + Vec3::new(3.5, 0.5, 0.5)
+        );
+        assert!(cache.get(&doc, false).transparent.is_empty());
+    }
+
+    #[test]
+    fn translucent_layers_sort_back_to_front() {
+        let rect = test_rect();
+        let mut cam = OrbitCamera::default();
+        cam.snap(ViewTarget::Face(ViewFace::Front));
+        let proj = Projection::new(&cam, Vec3::ZERO, rect);
+        let layer = |z: f32, key: u64| LayerMesh {
+            mesh: Arc::new(GpuMesh {
+                key: (0, key),
+                ..GpuMesh::default()
+            }),
+            alpha: 0.5,
+            center: Vec3::new(0.0, 0.0, z),
+        };
+        // The camera looks down -Z: lower z is farther away.
+        let sorted = sorted_back_to_front(&proj, &[layer(5.0, 1), layer(-5.0, 2), layer(0.0, 3)]);
+        let keys: Vec<u64> = sorted.iter().map(|(m, _)| m.key.1).collect();
+        assert_eq!(keys, [2, 3, 1]);
     }
 
     #[test]

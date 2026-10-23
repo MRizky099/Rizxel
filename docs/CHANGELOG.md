@@ -5,6 +5,46 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-24
+
+Milestone M3: everything stored in the file is visible, and models look good
+in Render mode.
+
+### Phase 9: Visual fidelity (2026-10-23)
+
+#### Added
+- Orthographic camera: `Numpad 5` (or `5`) and a *Persp / Ortho* button under
+  the view cube. Orthographic keeps the framing of the perspective view, and
+  picking uses parallel rays, so face views pick the same voxel as
+  perspective.
+- *Auto Ortho on Face Snap* (on by default): snapping to a view cube face or
+  corner switches to orthographic; orbiting by hand returns to perspective.
+  Corners use true isometric angles (35.26°).
+- *Frame Selection* (`.`), *Frame Work Area* (`Home`) and *Home View*
+  (`Shift+Home`) in the View menu.
+- *View ▸ Show*: Floor Grid (`G`), Voxel Grid on the model's faces
+  (`Shift+G`, off by default) and Model Bounds (`Shift+B`), also as toggle
+  buttons in the viewport's top-left corner. Hiding the bounds also hides
+  the slice frame; dragging it still moves the slice.
+- Layer opacity is rendered: translucent layers are drawn after the opaque
+  ones, sorted back to front. A group's opacity multiplies its children's.
+  An opacity slider for the active layer is in the Layers panel.
+- *View ▸ Ghosts* (`Shift+H`): every layer but the active one at 25%.
+- Material preview in Render mode: tint, emission, and a highlight driven by
+  roughness and metallic. The Layers panel picks, adds and edits the active
+  layer's material. The tint's alpha acts as opacity.
+- Per-vertex ambient occlusion, on in Render mode and off in Model mode by
+  default (*View ▸ Ambient Occlusion*, per mode). Exports are unchanged.
+- Large updates (imports, undo of big edits) are meshed on background
+  threads; the viewport keeps drawing and shows "Meshing...". Brush strokes
+  and small edits stay immediate.
+
+#### Changed
+- Changing a layer's opacity or a material updates the viewport in the same
+  frame without re-meshing or re-uploading the model.
+- After an edit, only the neighbouring tiles that the change actually
+  touches are re-meshed.
+
 ## [0.3.0] — 2026-10-23
 
 Milestone M2: users never lose work, plus a voxel clipboard, transforms and a

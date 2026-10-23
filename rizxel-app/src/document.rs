@@ -1,13 +1,16 @@
 //! A single open project (one tab) and its undoable data.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use glam::IVec3;
+use glam::{IVec3, Vec3};
 use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
 use rizxel_engine::{
-    greedy_mesh, rasterize_shape, MaskMode, Mesh, SliceRequest, TileMeshCache, WorkPlane,
+    greedy_mesh, rasterize_shape, MaskMode, MaterialSlots, Mesh, MeshParams, SliceRequest,
+    TileMeshCache, WorkPlane,
 };
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
@@ -252,6 +255,45 @@ enum Derived {
     Owned(VoxelVolume),
 }
 
+/// Highest material slot ([`Document::material_slot`]); slot 0 is the
+/// default material.
+pub const MAX_MATERIAL_SLOT: usize = 255;
+
+/// Alpha of the layers drawn as ghosts (*View ▸ Ghosts*).
+pub const GHOST_ALPHA: f32 = 0.25;
+
+/// A layer drawn in the viewport's transparent pass.
+#[derive(Debug, Clone)]
+pub struct TransparentMesh {
+    pub layer: LayerId,
+    pub mesh: Arc<Mesh>,
+    /// Opacity in `0..1` (exclusive); comes from the layer, so changing it
+    /// does not touch the mesh.
+    pub alpha: f32,
+    /// Center of the layer's voxels in model space, for back-to-front sorting.
+    pub center: Vec3,
+}
+
+/// Viewport meshes of a document: every fully opaque layer merged into one
+/// mesh, and one mesh per translucent layer. A part that did not change
+/// keeps its `Arc`, so the renderer can skip the upload.
+#[derive(Debug, Clone, Default)]
+pub struct ViewMeshes {
+    pub opaque: Arc<Mesh>,
+    /// Bottom to top in layer order; the viewport sorts them by depth.
+    pub transparent: Vec<TransparentMesh>,
+}
+
+/// Incremental meshing state behind [`Document::view_meshes`].
+#[derive(Debug, Default)]
+struct ViewCache {
+    opaque: TileMeshCache,
+    /// Per translucent layer.
+    layers: HashMap<LayerId, TileMeshCache>,
+    /// The last result, updated in place by [`Document::poll_view_meshes`].
+    last: ViewMeshes,
+}
+
 /// Geometry of the effectively visible layers for one revision, in layer
 /// order. `None` entries mean "use the layer's own volume".
 #[derive(Debug)]
@@ -286,9 +328,9 @@ pub struct Document {
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
-    /// Per-tile meshes of the last [`Document::view_mesh`], so a drag
+    /// Per-tile meshes of the last [`Document::view_meshes`], so a drag
     /// re-meshes only the tiles it touched.
-    view_tiles: RefCell<TileMeshCache>,
+    view_cache: RefCell<ViewCache>,
 }
 
 impl Document {
@@ -334,7 +376,7 @@ impl Document {
             edits: 0,
             paste: None,
             geometry: RefCell::new(None),
-            view_tiles: RefCell::new(TileMeshCache::default()),
+            view_cache: RefCell::new(ViewCache::default()),
         }
     }
 
@@ -366,6 +408,14 @@ impl Document {
     /// clones, each clipped by its crop box. Groups contribute nothing; a
     /// hidden group hides its children. Cached per revision.
     pub fn with_visible_geometry<R>(&self, f: impl FnOnce(&[&VoxelVolume]) -> R) -> R {
+        self.with_visible_layers(|layers| {
+            let volumes: Vec<&VoxelVolume> = layers.iter().map(|(_, v)| *v).collect();
+            f(&volumes)
+        })
+    }
+
+    /// [`Document::with_visible_geometry`] with each volume's layer index.
+    fn with_visible_layers<R>(&self, f: impl FnOnce(&[(usize, &VoxelVolume)]) -> R) -> R {
         let mut cache = self.geometry.borrow_mut();
         if cache.as_ref().is_none_or(|c| c.revision != self.revision) {
             let layers = (0..self.data.layers.len())
@@ -382,16 +432,62 @@ impl Document {
                 layers,
             });
         }
-        let volumes: Vec<&VoxelVolume> = cache
+        let layers: Vec<(usize, &VoxelVolume)> = cache
             .as_ref()
             .map(|c| {
                 c.layers
                     .iter()
-                    .filter_map(|(i, v)| v.as_ref().or(self.data.layers.get(*i).map(|l| &l.volume)))
+                    .filter_map(|(i, v)| {
+                        let volume = v.as_ref().or(self.data.layers.get(*i).map(|l| &l.volume));
+                        volume.map(|v| (*i, v))
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        f(&volumes)
+        f(&layers)
+    }
+
+    /// Opacity a layer is drawn with: its own times every enclosing
+    /// group's. With `ghosts`, layers other than the active one are drawn at
+    /// most [`GHOST_ALPHA`].
+    pub fn view_alpha(&self, index: usize, ghosts: bool) -> f32 {
+        let mut alpha = 1.0;
+        let mut layer = self.data.layers.get(index);
+        for _ in 0..=rizxel_io::MAX_GROUP_DEPTH {
+            let Some(l) = layer else { break };
+            alpha *= l.props.opacity;
+            layer = l
+                .props
+                .parent
+                .and_then(|p| self.data.layer_index(p))
+                .and_then(|i| self.data.layers.get(i));
+        }
+        // The material tint's alpha is the material opacity.
+        if let Some(m) = self.layer_material(index) {
+            alpha *= m.tint[3];
+        }
+        if ghosts && index != self.active_layer {
+            alpha = alpha.min(GHOST_ALPHA);
+        }
+        alpha.clamp(0.0, 1.0)
+    }
+
+    /// The material a layer uses (`None` = the default material).
+    pub fn layer_material(&self, index: usize) -> Option<&Material> {
+        let m = self.data.layers.get(index)?.props.material?;
+        self.data.materials.get(m as usize)
+    }
+
+    /// Material slot of a layer for the mesher and the renderer's material
+    /// table: 0 = default, `m + 1` = material `m`. The table has 256 slots,
+    /// so the 256th material shares the last one (see [`MAX_MATERIAL_SLOT`]).
+    pub fn material_slot(&self, index: usize) -> u8 {
+        self.data
+            .layers
+            .get(index)
+            .and_then(|l| l.props.material)
+            .filter(|&m| (m as usize) < self.data.materials.len())
+            .map_or(0, |m| (m + 1).min(MAX_MATERIAL_SLOT as u32) as u8)
     }
 
     /// Greedy mesh of the visible layers, in model space.
@@ -414,33 +510,152 @@ impl Document {
         self.plane.slice_box(self.data.bounds)
     }
 
-    /// Viewport mesh: like [`Document::visible_mesh`] but clipped to
-    /// [`Document::view_clip`]. The mesher closes the cut, so the sliced
-    /// model shows a solid cut face. Incremental: only tiles that changed
-    /// since the previous call are re-meshed (same output as a full mesh).
+    /// Opaque viewport mesh: [`ViewMeshes::opaque`] without ghosts (with
+    /// ambient occlusion, so it has more quads than
+    /// [`Document::visible_mesh`], which exports use).
     pub fn view_mesh(&self) -> Mesh {
+        (*self.view_meshes(false).opaque).clone()
+    }
+
+    /// Viewport meshes clipped to [`Document::view_clip`]: fully opaque
+    /// layers merged into one mesh (later layers win), and one mesh per
+    /// translucent layer ([`Document::view_alpha`] below 1; fully
+    /// transparent layers are skipped). The mesher closes the cut, so the
+    /// sliced model shows a solid cut face. Meshes carry per-vertex ambient
+    /// occlusion (the renderer decides whether to show it). Incremental:
+    /// only tiles that changed since the previous call are re-meshed (same
+    /// output as a full mesh), and an opacity change alone re-meshes
+    /// nothing.
+    pub fn view_meshes(&self, ghosts: bool) -> ViewMeshes {
+        self.view_meshes_with(ghosts, false)
+    }
+
+    /// [`Document::view_meshes`] for the viewport: a large update (an
+    /// import, the undo of a big edit) is meshed by the background pool and
+    /// the result keeps the previous meshes of the waiting tiles; call
+    /// [`Document::poll_view_meshes`] every frame while
+    /// [`Document::view_meshing`]. Small edits mesh right here.
+    pub fn view_meshes_background(&self, ghosts: bool) -> ViewMeshes {
+        self.view_meshes_with(ghosts, true)
+    }
+
+    /// True while background meshing for the viewport is in progress.
+    pub fn view_meshing(&self) -> bool {
+        let cache = self.view_cache.borrow();
+        cache.opaque.pending() || cache.layers.values().any(TileMeshCache::pending)
+    }
+
+    /// Takes in finished background tiles. Returns the updated meshes of
+    /// the last [`Document::view_meshes_background`] call when any part
+    /// changed (alphas and centers unchanged).
+    pub fn poll_view_meshes(&self) -> Option<ViewMeshes> {
+        let mut cache = self.view_cache.borrow_mut();
+        let cache = &mut *cache;
+        let mut changed = false;
+        if cache.opaque.poll() {
+            if let Some(mesh) = cache.opaque.output() {
+                cache.last.opaque = mesh;
+                changed = true;
+            }
+        }
+        for t in &mut cache.last.transparent {
+            if let Some(tiles) = cache.layers.get_mut(&t.layer) {
+                if tiles.poll() {
+                    if let Some(mesh) = tiles.output() {
+                        t.mesh = mesh;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed.then(|| cache.last.clone())
+    }
+
+    fn view_meshes_with(&self, ghosts: bool, background: bool) -> ViewMeshes {
         let clip = self.view_clip();
-        self.with_visible_geometry(|volumes| {
+        let clipped = |v: &VoxelVolume| match clip {
+            Some(c) => v.cropped(&c),
+            None => v.clone(),
+        };
+        self.with_visible_layers(|layers| {
             let palette = &self.data.palette;
-            let mut tiles = self.view_tiles.borrow_mut();
-            let merged;
-            let volume = match (volumes, clip) {
-                ([], _) => return Mesh::default(),
-                ([single], None) => *single,
+            let mut cache = self.view_cache.borrow_mut();
+            let cache = &mut *cache;
+            let mut opaque = Vec::new();
+            let mut out = ViewMeshes::default();
+            let mut kept = Vec::new();
+            let mesh = |tiles: &mut TileMeshCache, volume: &VoxelVolume, params: &MeshParams| {
+                let params = params.ao(true);
+                if background {
+                    tiles.mesh_background(volume, &params)
+                } else {
+                    tiles.mesh_shared(volume, &params)
+                }
+            };
+            for &(index, volume) in layers {
+                let alpha = self.view_alpha(index, ghosts);
+                if alpha >= 1.0 {
+                    opaque.push((volume, self.material_slot(index)));
+                    continue;
+                }
+                let Some(layer) = self.data.layers.get(index).filter(|_| alpha > 0.0) else {
+                    continue;
+                };
+                let volume = clipped(volume);
+                let Some((lo, hi)) = volume.occupied_bounds() else {
+                    continue;
+                };
+                let tiles = cache.layers.entry(layer.id).or_default();
+                let slots = MaterialSlots::Uniform(self.material_slot(index));
+                out.transparent.push(TransparentMesh {
+                    layer: layer.id,
+                    mesh: mesh(tiles, &volume, &MeshParams::new(palette).slots(slots)),
+                    alpha,
+                    center: (lo + hi).as_vec3() * 0.5,
+                });
+                kept.push(layer.id);
+            }
+            cache.layers.retain(|id, _| kept.contains(id));
+
+            // Later layers win, for the palette index and for the material.
+            let (merged, merged_slots);
+            let (volume, slots) = match (opaque.as_slice(), clip) {
+                ([], _) => (None, MaterialSlots::Uniform(0)),
+                ([(single, slot)], None) => (Some(*single), MaterialSlots::Uniform(*slot)),
                 _ => {
-                    let mut out = VoxelVolume::new(self.data.bounds);
-                    for v in volumes {
+                    let mut all = VoxelVolume::new(self.data.bounds);
+                    let per_voxel = opaque.iter().any(|(_, s)| *s != opaque[0].1);
+                    let mut slots = VoxelVolume::new(self.data.bounds);
+                    for (v, slot) in &opaque {
                         for (pos, value) in v.iter() {
                             if clip.is_none_or(|c| c.contains(pos)) {
-                                out.set(pos, value);
+                                all.set(pos, value);
+                                if per_voxel {
+                                    slots.set(pos, *slot);
+                                }
                             }
                         }
                     }
-                    merged = out;
-                    &merged
+                    merged = all;
+                    merged_slots = slots;
+                    let slots = if per_voxel {
+                        MaterialSlots::PerVoxel(&merged_slots)
+                    } else {
+                        MaterialSlots::Uniform(opaque[0].1)
+                    };
+                    (Some(&merged), slots)
                 }
             };
-            tiles.mesh(volume, palette)
+            match volume {
+                Some(volume) => {
+                    let params = MeshParams::new(palette).slots(slots);
+                    out.opaque = mesh(&mut cache.opaque, volume, &params);
+                }
+                // Nothing opaque: drop the cache so no late tile lands here.
+                None => cache.opaque = TileMeshCache::default(),
+            }
+            cache.last = out.clone();
+            out
         })
     }
 
@@ -1420,6 +1635,40 @@ impl Document {
         true
     }
 
+    /// Replaces material `index` (`merge` folds slider drags into one undo
+    /// step). Refused for a missing index or invalid channels.
+    pub fn set_material(&mut self, index: usize, material: Material, merge: bool) -> bool {
+        if self.data.materials.get(index) == Some(&material) || !material.is_valid() {
+            return false;
+        }
+        let Some(_) = self.data.materials.get(index) else {
+            return false;
+        };
+        let mut new = self.data.materials.clone();
+        new[index] = material;
+        self.apply(
+            Edit::SetMaterials {
+                old: self.data.materials.clone(),
+                new,
+            },
+            merge,
+        );
+        true
+    }
+
+    /// Appends a default material named after its number and returns its
+    /// index (`None` when the list is full).
+    pub fn add_material(&mut self) -> Option<u32> {
+        if self.data.materials.len() >= rizxel_io::MAX_MATERIALS {
+            return None;
+        }
+        let index = self.data.materials.len();
+        let mut new = self.data.materials.clone();
+        new.push(Material::new(format!("Material {}", index + 1)));
+        self.set_materials(new);
+        Some(index as u32)
+    }
+
     /// The active layer can be deleted unless it is the last layer or linked
     /// clones still point at it.
     pub fn can_delete_active_layer(&self) -> bool {
@@ -2063,6 +2312,163 @@ mod tests {
         assert!(d.visible_mesh().is_empty());
         assert_eq!(d.visible_voxel_count(), 0);
         assert_eq!(d.occupied_bounds(), None);
+    }
+
+    #[test]
+    fn view_alpha_multiplies_groups_and_caps_ghosts() {
+        let mut d = Document::new("t");
+        d.set_voxels(0, [(IVec3::ZERO, 4)], false);
+        let group = d.add_group();
+        let g = d.data.layer_index(group).unwrap();
+        let set = |d: &mut Document, i: usize, f: &dyn Fn(&mut LayerProps)| {
+            let mut props = d.data.layers[i].props.clone();
+            f(&mut props);
+            assert!(d.set_layer_props(i, props, false));
+        };
+        set(&mut d, g, &|p| p.opacity = 0.5);
+        set(&mut d, 0, &|p| {
+            p.opacity = 0.5;
+            p.parent = Some(group);
+        });
+        assert_eq!(d.view_alpha(0, false), 0.25);
+        d.active_layer = 0;
+        assert_eq!(
+            d.view_alpha(0, true),
+            0.25,
+            "the active layer is not ghosted"
+        );
+        set(&mut d, 0, &|p| p.opacity = 1.0);
+        set(&mut d, g, &|p| p.opacity = 1.0);
+        assert_eq!(d.view_alpha(0, false), 1.0);
+        d.active_layer = g;
+        assert_eq!(d.view_alpha(0, true), GHOST_ALPHA);
+
+        // The translucent part matches meshing the layer alone.
+        set(&mut d, 0, &|p| p.opacity = 0.6);
+        let view = d.view_meshes(false);
+        assert!(view.opaque.is_empty());
+        assert_eq!(*view.transparent[0].mesh, d.visible_mesh());
+        assert_eq!(view.transparent[0].center, Vec3::splat(0.5));
+    }
+
+    #[test]
+    fn opaque_layers_carry_their_material_slots() {
+        let mut d = Document::new("t");
+        d.set_voxels(0, [(IVec3::ZERO, 4), (IVec3::X, 4)], false);
+        assert_eq!(d.add_material(), Some(0));
+        let glow = Material {
+            emission: [1.0, 0.5, 0.0],
+            ..d.data.materials[0].clone()
+        };
+        assert!(d.set_material(0, glow.clone(), false));
+        assert_eq!(d.data.materials[0], glow);
+        let props = LayerProps {
+            material: Some(0),
+            ..d.data.layers[0].props.clone()
+        };
+        assert!(d.set_layer_props(0, props, false));
+        assert_eq!(d.material_slot(0), 1);
+        let one = d.view_meshes(false);
+        assert!(one.opaque.materials.iter().all(|&s| s == 1));
+
+        // A later default-material layer wins where it overlaps.
+        d.add_layer();
+        d.set_voxels(1, [(IVec3::X, 6)], false);
+        let two = d.view_meshes(false);
+        assert!(two.opaque.materials.contains(&0) && two.opaque.materials.contains(&1));
+        // Different colors already split the quads: no extra triangles.
+        assert_eq!(
+            two.opaque.triangle_count(),
+            d.visible_mesh().triangle_count()
+        );
+
+        // Tint alpha acts as opacity; undo restores the material.
+        let faded = Material {
+            tint: [1.0, 1.0, 1.0, 0.5],
+            ..glow
+        };
+        assert!(d.set_material(0, faded, false));
+        assert_eq!(d.view_alpha(0, false), 0.5);
+        assert!(d.undo());
+        assert_eq!(d.view_alpha(0, false), 1.0);
+    }
+
+    #[test]
+    fn large_import_meshes_in_the_background() {
+        // A 256³ document like an import: the viewport call returns at
+        // once and the meshes fill in until they equal the synchronous ones.
+        let mut volume = VoxelVolume::new(BoundSize::new(256, 256, 256));
+        for z in 0..256 {
+            for x in 0..256 {
+                let h = 4 + ((x * 7 + z * 3) % 24);
+                for y in 0..h {
+                    volume.set(IVec3::new(x, y, z), 1 + ((x / 16 + z / 16) % 8) as Voxel);
+                }
+            }
+        }
+        let mut layer = Layer::new("import", BoundSize::new(256, 256, 256));
+        layer.volume = volume;
+        let d = Document::with_bounds("big", BoundSize::new(256, 256, 256), vec![layer]);
+
+        let start = std::time::Instant::now();
+        let first = d.view_meshes_background(false);
+        let returned = start.elapsed();
+        assert!(d.view_meshing(), "large updates go to the pool");
+        assert!(
+            first.opaque.is_empty(),
+            "nothing finished yet on a first call"
+        );
+        let mut polls = 0;
+        let mut last = first;
+        while d.view_meshing() {
+            if let Some(view) = d.poll_view_meshes() {
+                last = view;
+            }
+            polls += 1;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if let Some(view) = d.poll_view_meshes() {
+            last = view;
+        }
+        let total = start.elapsed();
+        println!("256³ import: returned in {returned:?}, meshed in {total:?} ({polls} polls)");
+        let params = MeshParams::new(&d.data.palette).ao(true);
+        let full = rizxel_engine::mesh_volume_with(&d.data.layers[0].volume, &params);
+        assert_eq!(*last.opaque, full);
+        assert!(returned < total);
+    }
+
+    #[test]
+    fn undoing_a_big_edit_meshes_in_the_background() {
+        let mut d = Document::new("t");
+        d.set_bounds(BoundSize::new(96, 32, 96), false);
+        d.view_meshes_background(false);
+        let wall: Vec<_> = (0..96)
+            .flat_map(|x| (0..32).map(move |y| (IVec3::new(x, y, 40), 5)))
+            .collect();
+        d.set_voxels(0, wall.clone(), false);
+        d.view_meshes_background(false);
+        while d.view_meshing() {
+            d.poll_view_meshes();
+        }
+        // Deleting only drops tiles: nothing to mesh.
+        d.set_voxels(0, wall.into_iter().map(|(p, _)| (p, EMPTY_VOXEL)), false);
+        assert!(d.view_meshes_background(false).opaque.is_empty());
+        assert!(!d.view_meshing());
+        // Undoing the delete brings back 12 tiles: background.
+        assert!(d.undo());
+        d.view_meshes_background(false);
+        assert!(d.view_meshing());
+        while d.view_meshing() {
+            d.poll_view_meshes();
+        }
+        // A brush-sized edit stays synchronous.
+        d.set_voxels(0, [(IVec3::new(3, 3, 3), 5)], false);
+        let view = d.view_meshes_background(false);
+        assert!(!d.view_meshing());
+        let params = MeshParams::new(&d.data.palette).ao(true);
+        let full = rizxel_engine::mesh_volume_with(&d.data.layers[0].volume, &params);
+        assert_eq!(*view.opaque, full);
     }
 
     #[test]
