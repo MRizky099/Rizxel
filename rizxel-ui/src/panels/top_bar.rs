@@ -612,42 +612,36 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
                 .color(theme::TEXT_DIM),
         );
         ui.add_space(8.0);
-        egui::Grid::new("recovery_entries")
-            .num_columns(2)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
-                for (i, entry) in ui_state.recovery.iter().enumerate() {
-                    let meta = &entry.meta;
-                    let minutes = now.saturating_sub(meta.saved_at) / 60;
-                    let when = match minutes {
-                        0 => "less than a minute ago".to_owned(),
-                        1 => "1 minute ago".to_owned(),
-                        m if m < 120 => format!("{m} minutes ago"),
-                        m => format!("{} hours ago", m / 60),
-                    };
-                    let place = meta
-                        .original
-                        .as_ref()
-                        .map_or("never saved".to_owned(), |p| p.display().to_string());
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(&meta.title).color(theme::TEXT_STRONG));
-                        ui.label(
-                            egui::RichText::new(format!("{place} · autosaved {when}"))
-                                .size(11.0)
-                                .color(theme::TEXT_DIM),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("Restore").clicked() {
-                            pick = Some(Pick::Restore(i));
-                        }
-                        if ui.button("Discard").clicked() {
-                            pick = Some(Pick::Discard(i));
-                        }
-                    });
-                    ui.end_row();
+        for (i, entry) in ui_state.recovery.iter().enumerate() {
+            let meta = &entry.meta;
+            let minutes = now.saturating_sub(meta.saved_at) / 60;
+            let when = match minutes {
+                0 => "less than a minute ago".to_owned(),
+                1 => "1 minute ago".to_owned(),
+                m if m < 120 => format!("{m} minutes ago"),
+                m => format!("{} hours ago", m / 60),
+            };
+            let place = meta
+                .original
+                .as_ref()
+                .map_or("never saved".to_owned(), |p| p.display().to_string());
+            ui.separator();
+            ui.label(egui::RichText::new(&meta.title).color(theme::TEXT_STRONG));
+            ui.label(
+                egui::RichText::new(format!("{place} · autosaved {when}"))
+                    .size(11.0)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Restore").clicked() {
+                    pick = Some(Pick::Restore(i));
+                }
+                if ui.button("Discard").clicked() {
+                    pick = Some(Pick::Discard(i));
                 }
             });
+        }
+        ui.separator();
         ui.add_space(8.0);
         if ui.button("Decide Later").clicked() {
             pick = Some(Pick::Later);
