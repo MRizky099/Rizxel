@@ -107,6 +107,25 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD, Key::Z)) {
             self.state.undo();
         }
+        // Clipboard. Paste follows the cursor from the hovered voxel.
+        match clipboard_command(ctx) {
+            Some(ClipboardCommand::Copy) => {
+                self.state.copy();
+            }
+            Some(ClipboardCommand::Cut) => {
+                self.state.cut();
+            }
+            Some(ClipboardCommand::Paste) => {
+                self.state.paste(self.state.cursor_voxel);
+            }
+            Some(ClipboardCommand::PasteInPlace) => {
+                self.state.paste_in_place();
+            }
+            Some(ClipboardCommand::PasteToNewLayer) => {
+                self.state.paste_to_new_layer();
+            }
+            None => {}
+        }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::S)) {
             actions::save_as(&mut self.state);
         }
@@ -214,6 +233,40 @@ impl eframe::App for RizxelApp {
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }
+}
+
+enum ClipboardCommand {
+    Copy,
+    Cut,
+    Paste,
+    PasteInPlace,
+    PasteToNewLayer,
+}
+
+/// `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+Alt+V` and `Ctrl+Shift+V`.
+/// egui-winit turns the first two into [`egui::Event::Copy`] / `Cut` and
+/// swallows the `Ctrl+V` press (it only reports OS clipboard text), so
+/// paste fires on the `V` release while `Ctrl` is held.
+fn clipboard_command(ctx: &egui::Context) -> Option<ClipboardCommand> {
+    ctx.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Copy => Some(ClipboardCommand::Copy),
+            egui::Event::Cut => Some(ClipboardCommand::Cut),
+            egui::Event::Key {
+                key: Key::V,
+                pressed: false,
+                modifiers,
+                ..
+            } if modifiers.command => Some(if modifiers.shift {
+                ClipboardCommand::PasteToNewLayer
+            } else if modifiers.alt {
+                ClipboardCommand::PasteInPlace
+            } else {
+                ClipboardCommand::Paste
+            }),
+            _ => None,
+        })
+    })
 }
 
 /// Panel body that scrolls (both ways) when its content outgrows its dock

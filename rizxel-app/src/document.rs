@@ -15,6 +15,7 @@ use rizxel_math::{
     VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
 };
 
+use crate::clipboard::Clipboard;
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
 use crate::selection::Selection;
 
@@ -193,6 +194,35 @@ pub struct SliceOutcome {
     pub locked_skipped: usize,
 }
 
+/// A paste that follows the cursor (like a selection Move) until it is
+/// committed (`Enter`, click) or cancelled (`Esc`). Its voxels are written
+/// tentatively inside an open edit transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatingPaste {
+    /// Target layer index.
+    pub layer: usize,
+    /// Minimum corner of the pasted box.
+    pub origin: IVec3,
+    /// Size of the pasted box.
+    pub size: IVec3,
+    /// Follows the cursor (Paste); Paste in Place stays where it was copied.
+    pub follows_cursor: bool,
+    /// Cells relative to `origin`, mapped onto the document palette.
+    cells: Vec<(IVec3, Voxel)>,
+}
+
+impl FloatingPaste {
+    /// Box origin that puts the paste's bottom center on `cell`.
+    pub fn origin_at(&self, cell: IVec3) -> IVec3 {
+        crate::clipboard::bottom_center_origin(self.size, cell)
+    }
+
+    /// Cells at their current position.
+    pub fn placed(&self) -> impl Iterator<Item = (IVec3, Voxel)> + '_ {
+        self.cells.iter().map(|&(p, v)| (p + self.origin, v))
+    }
+}
+
 /// Result of [`DocData::evaluate`]: the layer's own volume or a computed one.
 #[derive(Debug)]
 enum Derived {
@@ -229,6 +259,8 @@ pub struct Document {
     saved_revision: u64,
     /// Undo steps recorded, undone or redone so far (autosave counts them).
     edits: u64,
+    /// Paste in progress (see [`Document::begin_paste`]).
+    paste: Option<FloatingPaste>,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -278,6 +310,7 @@ impl Document {
             revision: 0,
             saved_revision: 0,
             edits: 0,
+            paste: None,
             geometry: RefCell::new(None),
             view_tiles: RefCell::new(TileMeshCache::default()),
         }
@@ -450,7 +483,12 @@ impl Document {
     /// Undoes the last step (an edit in progress is committed first, so it
     /// is what gets undone).
     /// While slicing, the slice moves back to the one the step was made on.
+    /// A floating paste is cancelled instead (it is the step in progress).
     pub fn undo(&mut self) -> bool {
+        if self.paste.is_some() {
+            self.cancel_paste();
+            return true;
+        }
         let done = self.history.undo(&mut self.data);
         if done {
             self.edits += 1;
@@ -463,6 +501,9 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.paste.is_some() {
+            return false;
+        }
         let done = self.history.redo(&mut self.data);
         if done {
             self.edits += 1;
@@ -553,6 +594,7 @@ impl Document {
     /// Closes the transaction as one undo step. Returns `false` when it
     /// changed nothing (no undo entry is recorded then).
     pub fn commit_edit(&mut self) -> bool {
+        self.paste = None;
         if !self.is_editing() {
             return false;
         }
@@ -566,6 +608,7 @@ impl Document {
     /// `layer`'s selection with `selection` (Move and Extrude carry the
     /// selection along). Returns `false` when nothing changed.
     pub fn commit_edit_with_selection(&mut self, layer: usize, selection: Selection) -> bool {
+        self.paste = None;
         if !self.is_editing() {
             return false;
         }
@@ -587,8 +630,10 @@ impl Document {
         done
     }
 
-    /// Closes the transaction and restores every voxel it changed.
+    /// Closes the transaction and restores every voxel it changed (a
+    /// floating paste disappears).
     pub fn cancel_edit(&mut self) {
+        self.paste = None;
         if self.is_editing() {
             self.history.cancel_transaction(&mut self.data);
             self.touch();
@@ -762,6 +807,143 @@ impl Document {
         let removed = self.edit_voxels(layer, &changes);
         self.commit_edit_with_selection(layer, Selection::default());
         removed
+    }
+
+    // ----------------------------------------------------------- clipboard
+
+    /// Copies the selection (or the whole active layer), then deletes it, as
+    /// one undo step. `None` when there is nothing to cut or the layer is
+    /// locked or not a voxel layer.
+    pub fn cut(&mut self) -> Option<Clipboard> {
+        let layer = self.active_layer;
+        if self
+            .editable_layer(layer)
+            .is_err_and(|e| e != EditBlock::Hidden)
+        {
+            return None;
+        }
+        let clip = Clipboard::copy(self)?;
+        if self.selection().is_some_and(|s| !s.is_empty()) {
+            self.delete_selected();
+        } else {
+            let changes: Vec<VoxelChange> = self.data.layers[layer]
+                .volume
+                .iter()
+                .map(|(pos, old)| VoxelChange {
+                    pos,
+                    old,
+                    new: EMPTY_VOXEL,
+                })
+                .collect();
+            self.edit_voxels(layer, &changes);
+        }
+        Some(clip)
+    }
+
+    /// Starts a floating paste of `clip` on the active layer with its box at
+    /// `origin`. Cells outside the bounds are clipped.
+    pub fn begin_paste(
+        &mut self,
+        clip: &Clipboard,
+        origin: IVec3,
+        follows_cursor: bool,
+    ) -> Result<(), EditBlock> {
+        let layer = self.active_layer;
+        if let Err(e) = self.editable_layer(layer) {
+            if e != EditBlock::Hidden {
+                return Err(e);
+            }
+        }
+        self.cancel_edit();
+        self.begin_edit();
+        self.paste = Some(FloatingPaste {
+            layer,
+            origin,
+            size: clip.size.as_ivec3(),
+            follows_cursor,
+            cells: clip.mapped(&self.data.palette),
+        });
+        self.write_paste();
+        Ok(())
+    }
+
+    pub fn floating_paste(&self) -> Option<&FloatingPaste> {
+        self.paste.as_ref()
+    }
+
+    /// Moves the floating paste so its box starts at `origin`.
+    pub fn move_paste(&mut self, origin: IVec3) {
+        match &mut self.paste {
+            Some(p) if p.origin != origin => p.origin = origin,
+            _ => return,
+        }
+        self.revert_pending();
+        self.write_paste();
+    }
+
+    /// Runs `f` on the document as it is without the floating paste's
+    /// voxels (the pick target while the paste follows the cursor).
+    pub fn without_paste<R>(&mut self, f: impl FnOnce(&Self) -> R) -> R {
+        if self.paste.is_none() {
+            return f(self);
+        }
+        self.revert_pending();
+        let out = f(self);
+        self.write_paste();
+        out
+    }
+
+    fn write_paste(&mut self) {
+        let Some(p) = &self.paste else { return };
+        let layer = p.layer;
+        let changes: Vec<VoxelChange> = p
+            .placed()
+            .map(|(pos, new)| VoxelChange {
+                pos,
+                old: EMPTY_VOXEL,
+                new,
+            })
+            .collect();
+        self.edit_voxels(layer, &changes);
+    }
+
+    /// Commits the floating paste as one undo step; the pasted cells become
+    /// the layer's selection. Returns the number of voxels pasted.
+    pub fn commit_paste(&mut self) -> usize {
+        let Some(p) = self.paste.take() else {
+            return 0;
+        };
+        let bounds = self.data.bounds;
+        let selection: Selection = p
+            .placed()
+            .map(|(pos, _)| pos)
+            .filter(|&pos| VoxelBox::from_bounds(bounds).contains(pos))
+            .collect();
+        let count = selection.len();
+        self.commit_edit_with_selection(p.layer, selection);
+        count
+    }
+
+    /// Drops the floating paste; no undo step is recorded.
+    pub fn cancel_paste(&mut self) {
+        if self.paste.is_some() {
+            self.cancel_edit();
+        }
+    }
+
+    /// Pastes `clip` at its original position into a new layer above the
+    /// active one, as one undo step. The pasted voxels are selected.
+    pub fn paste_to_new_layer(&mut self, clip: &Clipboard) -> LayerId {
+        self.cancel_edit();
+        let mut layer = Layer::new(self.unique_name_from("Pasted"), self.data.bounds);
+        for (p, v) in clip.mapped(&self.data.palette) {
+            let pos = p + clip.origin;
+            if layer.volume.in_bounds(pos) {
+                layer.volume.set(pos, v);
+                layer.selection.insert(pos);
+            }
+        }
+        self.insert_above_active(layer)
     }
 
     // ------------------------------------------------------ voxel helpers

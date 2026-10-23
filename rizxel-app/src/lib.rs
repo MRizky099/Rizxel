@@ -4,6 +4,7 @@
 //! only through the methods below, so all behavior is testable without a window.
 
 pub mod autosave;
+pub mod clipboard;
 pub mod close;
 pub mod document;
 pub mod history;
@@ -21,8 +22,9 @@ use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 
 pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
+pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
-pub use document::{DocData, Document, EditBlock, Layer, LayerProps, SliceOutcome};
+pub use document::{DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome};
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
 pub use paths::AppPaths;
@@ -383,6 +385,8 @@ pub struct AppState {
     /// *File ▸ Open Recent*.
     pub recent: RecentFiles,
     autosave: autosave::Autosave,
+    /// Voxels copied or cut, shared by every open document.
+    pub clipboard: Option<Clipboard>,
     untitled_counter: u32,
 }
 
@@ -403,6 +407,7 @@ impl Default for AppState {
             paths: None,
             recent: RecentFiles::default(),
             autosave: autosave::Autosave::default(),
+            clipboard: None,
             untitled_counter: 0,
         };
         state.new_document();
@@ -769,6 +774,107 @@ impl AppState {
         self.doc()
             .and_then(Document::selection)
             .map_or(0, Selection::len)
+    }
+
+    // --------------------------------------------------------- clipboard
+
+    /// Copies the selection (or the whole active layer) to the clipboard.
+    pub fn copy(&mut self) -> bool {
+        let clip = self.doc().and_then(Clipboard::copy);
+        self.status_message = Some(match &clip {
+            Some(c) => format!("Copied {} voxels", c.cells.len()),
+            None => "Nothing to copy".to_owned(),
+        });
+        let copied = clip.is_some();
+        if copied {
+            self.clipboard = clip;
+        }
+        copied
+    }
+
+    /// Copies, then deletes the selection (or the whole active layer), as
+    /// one undo step.
+    pub fn cut(&mut self) -> bool {
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        let block = doc.editable_layer(doc.active_layer).err();
+        let clip = doc.cut();
+        self.status_message = Some(match (&clip, block) {
+            (Some(c), _) => format!("Cut {} voxels", c.cells.len()),
+            (None, Some(e)) if e != EditBlock::Hidden => e.message().to_owned(),
+            (None, _) => "Nothing to cut".to_owned(),
+        });
+        let cut = clip.is_some();
+        if cut {
+            self.clipboard = clip;
+        }
+        cut
+    }
+
+    /// Starts a floating paste on the active layer that follows the cursor,
+    /// starting with its bottom center at `at` (the hovered cell) or, off
+    /// the model, where it was copied from.
+    pub fn paste(&mut self, at: Option<IVec3>) -> bool {
+        self.start_paste(at, true)
+    }
+
+    /// Floating paste at the position it was copied from; it stays there
+    /// until committed.
+    pub fn paste_in_place(&mut self) -> bool {
+        self.start_paste(None, false)
+    }
+
+    fn start_paste(&mut self, at: Option<IVec3>, follow: bool) -> bool {
+        let Some(clip) = self.clipboard.clone() else {
+            self.status_message = Some("The clipboard is empty".to_owned());
+            return false;
+        };
+        let origin = at.map_or(clip.origin, |cell| clip.origin_at(cell));
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        let result = doc.begin_paste(&clip, origin, follow);
+        self.status_message = Some(match result {
+            Ok(()) => format!(
+                "Pasting {} voxels: click or Enter to place, Esc to cancel",
+                clip.cells.len()
+            ),
+            Err(e) => e.message().to_owned(),
+        });
+        result.is_ok()
+    }
+
+    /// Pastes in place into a new layer (one undo step).
+    pub fn paste_to_new_layer(&mut self) -> bool {
+        let Some(clip) = self.clipboard.clone() else {
+            self.status_message = Some("The clipboard is empty".to_owned());
+            return false;
+        };
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        doc.paste_to_new_layer(&clip);
+        self.status_message = Some(format!(
+            "Pasted {} voxels into a new layer",
+            clip.cells.len()
+        ));
+        true
+    }
+
+    /// Places the floating paste of the active document.
+    pub fn commit_paste(&mut self) {
+        if let Some(doc) = self.doc_mut().filter(|d| d.floating_paste().is_some()) {
+            let n = doc.commit_paste();
+            self.status_message = Some(format!("Pasted {n} voxels"));
+        }
+    }
+
+    pub fn cancel_paste(&mut self) {
+        if let Some(doc) = self.doc_mut().filter(|d| d.floating_paste().is_some()) {
+            doc.cancel_paste();
+            self.status_message = Some("Paste cancelled".to_owned());
+        }
     }
 
     // ------------------------------------------------------------- slice
