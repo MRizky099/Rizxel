@@ -139,6 +139,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui_state.zen_mode = !ui_state.zen_mode;
             }
             slice_menu(ui, state);
+            show_menu(ui, state);
             ui.separator();
 
             // Standard views: each family of targets is its own submenu.
@@ -146,7 +147,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui.set_min_width(160.0);
                 for face in rizxel_app::ViewFace::ALL {
                     if menu_item(ui, icon::SQUARE, face.label(), "", true) {
-                        state.camera.snap(rizxel_app::ViewTarget::Face(face));
+                        state.snap_view(rizxel_app::ViewTarget::Face(face));
                     }
                 }
             });
@@ -155,7 +156,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui.set_min_width(160.0);
                 for edge in rizxel_app::ViewEdge::ALL {
                     if menu_item(ui, icon::LINE_SEGMENT, edge.label(), "", true) {
-                        state.camera.snap(rizxel_app::ViewTarget::Edge(edge));
+                        state.snap_view(rizxel_app::ViewTarget::Edge(edge));
                     }
                 }
             });
@@ -164,16 +165,13 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
                 ui.set_min_width(160.0);
                 for corner in rizxel_app::ViewCorner::ALL {
                     if menu_item(ui, icon::CUBE, corner.label(), "", true) {
-                        state.camera.snap(rizxel_app::ViewTarget::Corner(corner));
+                        state.snap_view(rizxel_app::ViewTarget::Corner(corner));
                     }
                 }
             });
 
             ui.separator();
-
-            if menu_item(ui, icon::ARROW_COUNTER_CLOCKWISE, "Reset Camera", "", true) {
-                state.camera = rizxel_app::OrbitCamera::default();
-            }
+            camera_items(ui, state);
 
             ui.separator();
             panels_menu(ui, dock);
@@ -189,6 +187,74 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
             }
         });
     });
+}
+
+/// View menu: projection and the camera framing commands.
+fn camera_items(ui: &mut Ui, state: &mut AppState) {
+    let has_doc = state.doc().is_some();
+    let ortho = state.camera.is_ortho();
+    if menu_item(ui, check_glyph(ortho), "Orthographic", "Numpad 5", true) {
+        state.camera.toggle_projection();
+    }
+    if menu_item(
+        ui,
+        check_glyph(state.view.auto_ortho),
+        "Auto Ortho on Face Snap",
+        "",
+        true,
+    ) {
+        state.view.auto_ortho = !state.view.auto_ortho;
+    }
+    ui.separator();
+    if menu_item(ui, icon::FRAME_CORNERS, "Frame Selection", ".", has_doc) {
+        state.frame_selection();
+    }
+    if menu_item(ui, icon::BOUNDING_BOX, "Frame Work Area", "Home", has_doc) {
+        state.frame_work_area();
+    }
+    if menu_item(ui, icon::HOUSE, "Home View", "Shift+Home", true) {
+        state.camera.reset();
+    }
+}
+
+/// View > Show: what the viewport draws besides the model (also on the
+/// viewport's toggle buttons).
+fn show_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.menu_button(icon_label(ui, icon::EYE, "Show", None), |ui| {
+        ui.set_min_width(200.0);
+        let view = &mut state.view;
+        for (on, label, shortcut) in [
+            (&mut view.floor_grid, "Floor Grid", "G"),
+            (&mut view.voxel_grid, "Voxel Grid", "Shift+G"),
+            (&mut view.model_bounds, "Model Bounds", "Shift+B"),
+        ] {
+            if menu_item(ui, check_glyph(*on), label, shortcut, true) {
+                *on = !*on;
+            }
+        }
+    });
+    let ghosts = state.view.ghosts;
+    if menu_item(ui, check_glyph(ghosts), "Ghosts", "Shift+H", true) {
+        state.view.ghosts = !ghosts;
+    }
+    // Per view mode: on in Render, off in Model by default.
+    let mode = state.view_mode;
+    let label = match mode {
+        rizxel_app::ViewMode::Model => "Ambient Occlusion (Model)",
+        rizxel_app::ViewMode::Render => "Ambient Occlusion (Render)",
+    };
+    if menu_item(ui, check_glyph(state.view.ao(mode)), label, "", true) {
+        state.view.toggle_ao(mode);
+    }
+}
+
+/// Leading glyph of a menu toggle.
+fn check_glyph(on: bool) -> &'static str {
+    if on {
+        icon::CHECK_SQUARE
+    } else {
+        icon::SQUARE
+    }
 }
 
 /// Edit menu: history, clipboard, selection, layer and transform commands.
@@ -737,6 +803,14 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Space", "Slice Mode on / off"),
         ("/", "Show or hide the work plane"),
         ("Ctrl+Shift+F", "Zen mode"),
+        ("Numpad 5 / 5", "Perspective / orthographic"),
+        (". / Numpad .", "Frame selection (or the model)"),
+        ("Home", "Frame work area (model bounds)"),
+        ("Shift+Home", "Home view (reset camera)"),
+        ("G", "Show or hide the floor grid"),
+        ("Shift+G", "Show or hide the voxel grid on the model"),
+        ("Shift+B", "Show or hide the model bounds"),
+        ("Shift+H", "Ghosts: other layers semi-transparent"),
         ("Right drag (viewport)", "Orbit camera"),
         ("Middle drag (viewport)", "Pan camera"),
         ("Middle double-click", "Reset camera"),

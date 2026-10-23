@@ -225,6 +225,13 @@ impl Edit {
                 *new = *n;
                 true
             }
+            // Material slider and color drags.
+            (Edit::SetMaterials { new, .. }, Edit::SetMaterials { new: n, .. })
+                if new.len() == n.len() =>
+            {
+                *new = n.clone();
+                true
+            }
             // Slider drags (opacity, crop) on one layer become one step.
             (
                 Edit::SetLayerProps { index, new, .. },

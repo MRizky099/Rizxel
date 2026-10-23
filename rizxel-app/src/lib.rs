@@ -16,17 +16,22 @@ pub mod selection;
 use std::path::Path;
 use std::time::Instant;
 
-use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
+use glam::camera::rh::{
+    proj::directx::{orthographic, perspective},
+    view::look_at_mat4,
+};
 use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::tools::Transform;
 use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
+use rizxel_math::BoundSize;
 
 pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
     DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
+    TransparentMesh, ViewMeshes, GHOST_ALPHA, MAX_MATERIAL_SLOT,
 };
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
@@ -77,6 +82,24 @@ pub enum ViewMode {
     Render,
 }
 
+/// Camera projection (`Numpad 5` toggles it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Projection {
+    #[default]
+    Perspective,
+    /// Parallel rays: pixel-accurate face views and isometric corners.
+    Orthographic,
+}
+
+impl Projection {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Projection::Perspective => "Perspective",
+            Projection::Orthographic => "Orthographic",
+        }
+    }
+}
+
 /// Orbit camera parameters (degrees). Driven by the placeholder viewport in
 /// Phase 2 and reused by the wgpu viewport in Phase 3.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,9 +108,15 @@ pub struct OrbitCamera {
     pub yaw: f32,
     /// Elevation, clamped to `-90..=90`.
     pub pitch: f32,
+    /// Orbit distance. The orthographic view height follows it (see
+    /// [`OrbitCamera::view_height`]), so zoom and framing match perspective.
     pub distance: f32,
     /// Pan offset added to the document's default orbit target (world units).
     pub pan: Vec3,
+    pub projection: Projection,
+    /// Orthographic was switched on by a view snap (*Auto ortho*); orbiting
+    /// by hand returns to perspective.
+    pub auto_ortho: bool,
 }
 
 impl OrbitCamera {
@@ -97,11 +126,21 @@ impl OrbitCamera {
     pub const FOV_Y: f32 = 45.0 * std::f32::consts::PI / 180.0;
     pub const NEAR: f32 = 0.1;
     pub const FAR: f32 = 4000.0;
+    /// Distance of the orthographic eye from the target: far enough that
+    /// every model and pan lie in front of it.
+    pub const ORTHO_EYE_DISTANCE: f32 = 2000.0;
+    /// Room left around a framed box (1 = touching the viewport edges).
+    pub const FRAME_MARGIN: f32 = 1.1;
 
-    /// Rotates by a delta (degrees), clamping pitch.
+    /// Rotates by a delta (degrees), clamping pitch. Leaves an orthographic
+    /// view that a snap switched on.
     pub fn orbit(&mut self, d_yaw: f32, d_pitch: f32) {
         self.yaw = (self.yaw + d_yaw).rem_euclid(360.0);
         self.pitch = (self.pitch + d_pitch).clamp(-90.0, 90.0);
+        if self.auto_ortho && (d_yaw != 0.0 || d_pitch != 0.0) {
+            self.auto_ortho = false;
+            self.projection = Projection::Perspective;
+        }
     }
 
     pub fn zoom(&mut self, factor: f32) {
@@ -109,12 +148,43 @@ impl OrbitCamera {
     }
 
     /// Snaps the camera so its view direction points at `target`.
-    /// Faces keep the level horizon; edges tilt 45 deg; corners use a
-    /// three-quarter view (yaw/pitch diagonals).
+    /// Faces keep the level horizon; edges tilt 45 deg; corners use the
+    /// isometric angles ([`ISO_PITCH`]).
     pub fn snap(&mut self, target: ViewTarget) {
         let (yaw, pitch) = target.angles();
         self.yaw = yaw;
         self.pitch = pitch;
+    }
+
+    /// [`OrbitCamera::snap`] that switches a perspective camera to
+    /// orthographic for faces (Qubicle's *Perpendicular View*) and corners
+    /// (isometric) when `auto_ortho` is on. Edges keep the projection.
+    pub fn snap_view(&mut self, target: ViewTarget, auto_ortho: bool) {
+        self.snap(target);
+        let flat = matches!(target, ViewTarget::Face(_) | ViewTarget::Corner(_));
+        if auto_ortho && flat && !self.is_ortho() {
+            self.projection = Projection::Orthographic;
+            self.auto_ortho = true;
+        }
+    }
+
+    /// Switches between perspective and orthographic (`Numpad 5`).
+    pub fn toggle_projection(&mut self) {
+        self.projection = match self.projection {
+            Projection::Perspective => Projection::Orthographic,
+            Projection::Orthographic => Projection::Perspective,
+        };
+        self.auto_ortho = false;
+    }
+
+    pub fn is_ortho(&self) -> bool {
+        self.projection == Projection::Orthographic
+    }
+
+    /// World units covered by the viewport height at the orbit target. The
+    /// orthographic view uses it as its height, so toggling keeps the framing.
+    pub fn view_height(&self) -> f32 {
+        2.0 * self.distance * (Self::FOV_Y * 0.5).tan()
     }
 
     /// Unit vector from the orbit target to the eye.
@@ -141,9 +211,14 @@ impl OrbitCamera {
         self.pan += (-right * dx + up * dy) * span;
     }
 
-    /// Eye position orbiting `target`.
+    /// Eye position orbiting `target`. The orthographic eye sits far back
+    /// ([`OrbitCamera::ORTHO_EYE_DISTANCE`]) on the same line of sight.
     pub fn eye(&self, target: Vec3) -> Vec3 {
-        target + self.eye_direction() * self.distance
+        let distance = match self.projection {
+            Projection::Perspective => self.distance,
+            Projection::Orthographic => Self::ORTHO_EYE_DISTANCE,
+        };
+        target + self.eye_direction() * distance
     }
 
     /// World -> view matrix (right-handed, +Y up).
@@ -152,16 +227,39 @@ impl OrbitCamera {
     }
 
     /// View -> clip matrix using the wgpu/DirectX convention (depth in `[0, 1]`).
-    pub fn projection_matrix(aspect: f32) -> Mat4 {
-        perspective(Self::FOV_Y, aspect.max(0.01), Self::NEAR, Self::FAR)
+    pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
+        let aspect = aspect.max(0.01);
+        match self.projection {
+            Projection::Perspective => perspective(Self::FOV_Y, aspect, Self::NEAR, Self::FAR),
+            Projection::Orthographic => {
+                let half_h = self.view_height() * 0.5;
+                let half_w = half_h * aspect;
+                orthographic(-half_w, half_w, -half_h, half_h, Self::NEAR, Self::FAR)
+            }
+        }
     }
 
     /// Combined world -> clip matrix for a viewport of the given aspect ratio.
     pub fn view_proj(&self, target: Vec3, aspect: f32) -> Mat4 {
-        Self::projection_matrix(aspect) * self.view_matrix(target)
+        self.projection_matrix(aspect) * self.view_matrix(target)
     }
 
-    /// Restores the default orientation, zoom and pan.
+    /// Aims at the world-space box `min..max` and zooms so it fills the
+    /// viewport, keeping the angles and the projection. `base` is the orbit
+    /// target without pan ([`orbit_base`]).
+    pub fn frame_box(&mut self, base: Vec3, min: Vec3, max: Vec3, aspect: f32) {
+        let radius = ((max - min).length() * 0.5).max(0.5);
+        // The narrower field of view decides; a sphere that fits the
+        // perspective view also fits the orthographic one.
+        let half_y = Self::FOV_Y * 0.5;
+        let half_x = (half_y.tan() * aspect.max(0.01)).atan();
+        let half = half_y.min(half_x);
+        self.distance = (radius * Self::FRAME_MARGIN / half.sin())
+            .clamp(Self::MIN_DISTANCE, Self::MAX_DISTANCE);
+        self.pan = (min + max) * 0.5 - base;
+    }
+
+    /// Restores the default orientation, zoom, pan and projection (*Home*).
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -175,9 +273,27 @@ impl Default for OrbitCamera {
             pitch: 20.0,
             distance: 64.0,
             pan: Vec3::ZERO,
+            projection: Projection::Perspective,
+            auto_ortho: false,
         }
     }
 }
+
+/// World-space min/max of the model bounds: centered on the origin in XZ and
+/// standing on the ground (`y = 0`). Voxel `v` spans `min + v..min + v + 1`.
+pub fn world_bounds(bounds: BoundSize) -> (Vec3, Vec3) {
+    let size = bounds.0.as_vec3();
+    let half = Vec3::new(size.x * 0.5, 0.0, size.z * 0.5);
+    (-half, Vec3::new(half.x, size.y, half.z))
+}
+
+/// Orbit target for `bounds` before [`OrbitCamera::pan`] is added.
+pub fn orbit_base(bounds: BoundSize) -> Vec3 {
+    Vec3::new(0.0, bounds.0.y as f32 * 0.4, 0.0)
+}
+
+/// Pitch of a true isometric view, `atan(1 / sqrt(2))` (about 35.26°).
+pub const ISO_PITCH: f32 = 35.264_39;
 
 /// View cube selection: 6 faces + 12 edges + 8 corners (26 total).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,14 +454,14 @@ impl ViewCorner {
 
     pub const fn angles(self) -> (f32, f32) {
         match self {
-            ViewCorner::FrontTopRight => (45.0, 35.0),
-            ViewCorner::FrontTopLeft => (315.0, 35.0),
-            ViewCorner::FrontBottomRight => (45.0, -35.0),
-            ViewCorner::FrontBottomLeft => (315.0, -35.0),
-            ViewCorner::BackTopRight => (135.0, 35.0),
-            ViewCorner::BackTopLeft => (225.0, 35.0),
-            ViewCorner::BackBottomRight => (135.0, -35.0),
-            ViewCorner::BackBottomLeft => (225.0, -35.0),
+            ViewCorner::FrontTopRight => (45.0, ISO_PITCH),
+            ViewCorner::FrontTopLeft => (315.0, ISO_PITCH),
+            ViewCorner::FrontBottomRight => (45.0, -ISO_PITCH),
+            ViewCorner::FrontBottomLeft => (315.0, -ISO_PITCH),
+            ViewCorner::BackTopRight => (135.0, ISO_PITCH),
+            ViewCorner::BackTopLeft => (225.0, ISO_PITCH),
+            ViewCorner::BackBottomRight => (135.0, -ISO_PITCH),
+            ViewCorner::BackBottomLeft => (225.0, -ISO_PITCH),
         }
     }
 
@@ -363,6 +479,60 @@ impl ViewCorner {
     }
 }
 
+/// What the viewport shows besides the model (*View* menu). View state, not
+/// stored in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewOptions {
+    /// Snapping to a face or corner switches to orthographic.
+    pub auto_ortho: bool,
+    /// The infinite ground grid (`G`). Off still clears to the background.
+    pub floor_grid: bool,
+    /// Thin lines along the voxel edges on the model's faces (`Shift+G`).
+    pub voxel_grid: bool,
+    /// The bounds wireframe, the occupied-region box and the slice frame
+    /// (`Shift+B`). The slice frame's drag handle works either way.
+    pub model_bounds: bool,
+    /// Layers other than the active one drawn at [`GHOST_ALPHA`].
+    pub ghosts: bool,
+    /// Ambient occlusion in Model mode (off by default: flat colors read
+    /// better while editing).
+    pub ao_model: bool,
+    /// Ambient occlusion in Render mode.
+    pub ao_render: bool,
+}
+
+impl ViewOptions {
+    /// Whether ambient occlusion is shown in `mode`.
+    pub fn ao(&self, mode: ViewMode) -> bool {
+        match mode {
+            ViewMode::Model => self.ao_model,
+            ViewMode::Render => self.ao_render,
+        }
+    }
+
+    /// Toggles ambient occlusion for `mode` only.
+    pub fn toggle_ao(&mut self, mode: ViewMode) {
+        match mode {
+            ViewMode::Model => self.ao_model = !self.ao_model,
+            ViewMode::Render => self.ao_render = !self.ao_render,
+        }
+    }
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            auto_ortho: true,
+            floor_grid: true,
+            voxel_grid: false,
+            model_bounds: true,
+            ghosts: false,
+            ao_model: false,
+            ao_render: true,
+        }
+    }
+}
+
 /// Top-level application state shared by every panel.
 #[derive(Debug)]
 pub struct AppState {
@@ -373,6 +543,11 @@ pub struct AppState {
     pub options: ToolOptions,
     pub view_mode: ViewMode,
     pub camera: OrbitCamera,
+    /// View toggles (*View* menu). View state: not saved in the file.
+    pub view: ViewOptions,
+    /// Width / height of the viewport, set by the viewport every frame; the
+    /// frame commands fit boxes to it.
+    pub viewport_aspect: f32,
     /// Voxel under the cursor (set by the viewport; `None` when off-model).
     pub cursor_voxel: Option<IVec3>,
     /// Transient message shown in the status bar (e.g. save errors).
@@ -403,6 +578,8 @@ impl Default for AppState {
             options: ToolOptions::default(),
             view_mode: ViewMode::default(),
             camera: OrbitCamera::default(),
+            view: ViewOptions::default(),
+            viewport_aspect: 16.0 / 9.0,
             cursor_voxel: None,
             status_message: None,
             tool_feedback: None,
@@ -1037,6 +1214,51 @@ impl AppState {
         Some((p.axis, p.slice_layer(bounds) + 1, p.slice_count(bounds)))
     }
 
+    // ------------------------------------------------------------ camera
+
+    /// Snaps the camera to a view cube target, switching to orthographic
+    /// for faces and corners when *Auto Ortho* is on.
+    pub fn snap_view(&mut self, target: ViewTarget) {
+        self.camera.snap_view(target, self.view.auto_ortho);
+    }
+
+    /// *Frame Selection* (`.`): fits the selection of the active layer, or
+    /// the visible voxels without one, or the bounds of an empty model.
+    pub fn frame_selection(&mut self) {
+        let Some(doc) = self.doc() else {
+            return;
+        };
+        let cells = doc
+            .selection()
+            .and_then(Selection::bounds)
+            .or_else(|| doc.occupied_bounds());
+        match cells {
+            Some(cells) => self.frame_cells(cells),
+            None => self.frame_work_area(),
+        }
+    }
+
+    /// *Frame Work Area* (`Home`): fits the model bounds.
+    pub fn frame_work_area(&mut self) {
+        if let Some(bounds) = self.doc().map(|d| d.data.bounds) {
+            self.frame_cells((IVec3::ZERO, bounds.0.as_ivec3()));
+        }
+    }
+
+    /// Fits the voxel box `(min, max exclusive)` of the active document.
+    fn frame_cells(&mut self, (lo, hi): (IVec3, IVec3)) {
+        let Some(bounds) = self.doc().map(|d| d.data.bounds) else {
+            return;
+        };
+        let (bmin, _) = world_bounds(bounds);
+        self.camera.frame_box(
+            orbit_base(bounds),
+            bmin + lo.as_vec3(),
+            bmin + hi.as_vec3(),
+            self.viewport_aspect,
+        );
+    }
+
     // ------------------------------------------------------------ status
 
     /// Hint text for the status bar.
@@ -1381,6 +1603,98 @@ mod tests {
         assert!((c.yaw - 85.0).abs() < 1e-4);
         c.snap(ViewTarget::Face(ViewFace::Left));
         assert_eq!((c.yaw, c.pitch), (270.0, 0.0));
+    }
+
+    #[test]
+    fn snapping_switches_to_ortho_until_orbiting() {
+        let mut c = OrbitCamera::default();
+        c.snap_view(ViewTarget::Edge(ViewEdge::FrontTop), true);
+        assert!(!c.is_ortho(), "edges keep the projection");
+        c.snap_view(ViewTarget::Face(ViewFace::Front), false);
+        assert!(!c.is_ortho(), "auto ortho off");
+        c.snap_view(ViewTarget::Face(ViewFace::Front), true);
+        assert!(c.is_ortho() && c.auto_ortho);
+        c.zoom(0.5);
+        assert!(c.is_ortho(), "zoom keeps ortho");
+        c.orbit(5.0, 0.0);
+        assert!(!c.is_ortho(), "orbiting leaves an automatic ortho view");
+
+        // A manual toggle sticks while orbiting.
+        c.toggle_projection();
+        c.orbit(5.0, 5.0);
+        assert!(c.is_ortho());
+        c.toggle_projection();
+        assert!(!c.is_ortho());
+    }
+
+    #[test]
+    fn corners_are_isometric() {
+        let mut c = OrbitCamera::default();
+        c.snap_view(ViewTarget::Corner(ViewCorner::FrontTopRight), true);
+        assert!(c.is_ortho());
+        // An isometric view sees all three axes at the same angle.
+        let d = c.eye_direction();
+        assert!(
+            (d.x - d.y).abs() < 1e-4 && (d.y - d.z).abs() < 1e-4,
+            "{d:?}"
+        );
+    }
+
+    #[test]
+    fn ortho_projection_keeps_the_view_height() {
+        let mut c = OrbitCamera::default();
+        let target = Vec3::new(0.0, 4.0, 0.0);
+        let persp = c.view_proj(target, 1.5);
+        c.toggle_projection();
+        let ortho = c.view_proj(target, 1.5);
+        // A point half a view height above the target sits on the top edge
+        // of both projections.
+        let up = c.view_height() * 0.5;
+        let view_up = {
+            let fwd = -c.eye_direction();
+            fwd.cross(Vec3::Y).normalize().cross(fwd)
+        };
+        let p = target + view_up * up;
+        assert!((persp.project_point3(p).y - 1.0).abs() < 1e-3);
+        assert!((ortho.project_point3(p).y - 1.0).abs() < 1e-3);
+        // Ortho depth stays inside 0..1 for the whole model range.
+        for d in [-500.0, 0.0, 500.0] {
+            let z = ortho.project_point3(target + c.eye_direction() * d).z;
+            assert!((0.0..=1.0).contains(&z), "{d}: {z}");
+        }
+    }
+
+    #[test]
+    fn frame_commands_fit_the_box() {
+        let mut s = AppState {
+            viewport_aspect: 1.0,
+            ..AppState::default()
+        };
+        let bounds = s.doc().unwrap().data.bounds;
+        s.frame_work_area();
+        let (lo, hi) = world_bounds(bounds);
+        assert_eq!(orbit_base(bounds) + s.camera.pan, (lo + hi) * 0.5);
+        let whole = s.camera.distance;
+        // A single voxel frames much closer, centred on that voxel.
+        s.doc_mut()
+            .unwrap()
+            .set_voxels(0, [(IVec3::new(2, 3, 4), 5)], false);
+        s.frame_selection();
+        assert!(s.camera.distance < whole * 0.5);
+        let target = orbit_base(bounds) + s.camera.pan;
+        assert_eq!(target, lo + Vec3::new(2.5, 3.5, 4.5));
+        // A selection wins over the visible voxels.
+        s.doc_mut()
+            .unwrap()
+            .set_voxels(0, [(IVec3::new(10, 0, 0), 5)], false);
+        s.doc_mut()
+            .unwrap()
+            .select([IVec3::new(10, 0, 0)], rizxel_engine::MaskMode::Set);
+        s.frame_selection();
+        assert_eq!(
+            orbit_base(bounds) + s.camera.pan,
+            lo + Vec3::new(10.5, 0.5, 0.5)
+        );
     }
 
     #[test]
