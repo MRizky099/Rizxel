@@ -909,7 +909,7 @@ fn layer_row(
             egui::pos2(caret_rect.right() + 8.0, rect.center().y),
             egui::Align2::CENTER_CENTER,
             folder,
-            egui::FontId::proportional(14.0),
+            theme::icon(14.0),
             if selected {
                 theme::TEXT
             } else {
