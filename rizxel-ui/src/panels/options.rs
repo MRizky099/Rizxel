@@ -344,8 +344,16 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
     if let Some(doc) = state.doc_mut() {
         let bounds = doc.data.bounds;
         let mut p = doc.plane.clamped(bounds);
-        ui.checkbox(&mut p.visible, "Visible")
-            .on_hover_text("Show the plane; drawing tools snap onto it");
+        let mut visible = p.visible;
+        if ui
+            .checkbox(&mut visible, "Visible")
+            .on_hover_text(
+                "Show the plane (/); drawing tools snap onto it. Hiding it ends Slice Mode                  until it is shown again",
+            )
+            .changed()
+        {
+            p.set_visible(visible, bounds);
+        }
         gap(ui);
         caption(ui, "Axis");
         let axes = [(0usize, "X"), (1, "Y"), (2, "Z")];

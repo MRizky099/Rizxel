@@ -38,6 +38,10 @@ pub struct WorkPlane {
     /// turned on away from a voxel.
     #[serde(default)]
     pub last_slice: Option<(usize, i32)>,
+    /// Slice Mode was on when the plane was hidden; showing the plane
+    /// again turns it back on ([`WorkPlane::set_visible`]).
+    #[serde(default)]
+    pub resume_slice: bool,
 }
 
 impl Default for WorkPlane {
@@ -49,6 +53,7 @@ impl Default for WorkPlane {
             slice: false,
             flip: false,
             last_slice: None,
+            resume_slice: false,
         }
     }
 }
@@ -142,6 +147,7 @@ impl WorkPlane {
             return false;
         }
         self.slice = true;
+        self.resume_slice = false;
         match hover {
             Some(hit) => self.slice_at(hit, bounds),
             None => {
@@ -151,6 +157,30 @@ impl WorkPlane {
             }
         }
         true
+    }
+
+    /// Shows or hides the plane. Hiding it while slicing turns Slice Mode
+    /// off as well, and showing it again brings that slice back.
+    pub fn set_visible(&mut self, visible: bool, bounds: BoundSize) {
+        if visible {
+            self.visible = true;
+            if std::mem::take(&mut self.resume_slice) && !self.slice {
+                self.toggle_slice(None, bounds);
+            }
+        } else {
+            self.visible = false;
+            if self.slice {
+                self.toggle_slice(None, bounds);
+                self.resume_slice = true;
+            }
+        }
+    }
+
+    /// The `/` shortcut: hides the plane while it is shown (visible or
+    /// slicing), otherwise shows it. Returns whether it is shown now.
+    pub fn toggle_visible(&mut self, bounds: BoundSize) -> bool {
+        self.set_visible(!self.active(), bounds);
+        self.active()
     }
 
     /// Moves the slice by `steps` layers away from the camera (Qubicle's
@@ -461,6 +491,35 @@ mod tests {
         p.axis = 1;
         p.toggle_slice(None, b());
         assert_eq!((p.axis, p.slice_layer(b())), (0, 2));
+    }
+
+    #[test]
+    fn hiding_the_plane_ends_slicing_and_showing_it_resumes() {
+        let mut p = WorkPlane::default();
+        // Plain plane: `/` only toggles its visibility.
+        assert!(p.toggle_visible(b()));
+        assert!(p.visible && !p.slice);
+        assert!(!p.toggle_visible(b()));
+        assert!(!p.visible && !p.slice && !p.resume_slice);
+
+        // Slicing (entered with Space, plane not ticked): `/` ends it.
+        p.toggle_slice(Some(&hit(IVec3::new(5, 4, 3), IVec3::Z)), b());
+        assert!(!p.toggle_visible(b()));
+        assert!(!p.slice && p.resume_slice);
+        assert_eq!(p.last_slice, Some((2, 3)));
+        // `/` again: shown and back on the same slice.
+        assert!(p.toggle_visible(b()));
+        assert!(p.visible && p.slice && !p.resume_slice);
+        assert_eq!((p.axis, p.slice_layer(b())), (2, 3));
+
+        // Unticking Visible while slicing does the same.
+        p.set_visible(false, b());
+        assert!(!p.slice && p.resume_slice);
+        // Slice Mode turned on another way forgets the pending resume.
+        p.toggle_slice(None, b());
+        p.toggle_slice(None, b());
+        p.set_visible(true, b());
+        assert!(p.visible && !p.slice);
     }
 
     #[test]

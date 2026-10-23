@@ -522,6 +522,24 @@ impl AppState {
         });
     }
 
+    /// Shows or hides the work plane (`/`). Hiding it ends Slice Mode, and
+    /// showing it again resumes that slice.
+    pub fn toggle_plane_visible(&mut self) {
+        let Some(doc) = self.doc_mut() else { return };
+        let bounds = doc.data.bounds;
+        let shown = doc.plane.toggle_visible(bounds);
+        self.status_message = Some(match (shown, self.slice_counter()) {
+            (true, Some((axis, n, count))) => {
+                format!(
+                    "Work plane shown, Slice Mode: {} slice {n} / {count}",
+                    AXIS_NAMES[axis]
+                )
+            }
+            (true, None) => "Work plane shown".to_owned(),
+            (false, _) => "Work plane hidden".to_owned(),
+        });
+    }
+
     /// Moves the slice of the active document (no undo step).
     pub fn step_slice(&mut self, step: SliceStep) {
         let Some(doc) = self.doc_mut().filter(|d| d.plane.slice) else {
@@ -596,6 +614,17 @@ mod tests {
         s.toggle_slice(None);
         assert_eq!(s.slice_counter(), None);
         assert_eq!(s.status_message.as_deref(), Some("Slice Mode off"));
+
+        // `/` while slicing hides the plane and ends Slice Mode; `/` again
+        // resumes it on the same slice.
+        s.toggle_slice(None);
+        s.step_slice(SliceStep::Next);
+        let before = s.slice_counter();
+        s.toggle_plane_visible();
+        assert_eq!(s.slice_counter(), None);
+        s.toggle_plane_visible();
+        assert_eq!(s.slice_counter(), before);
+        assert!(s.doc().unwrap().plane.visible);
     }
 
     #[test]

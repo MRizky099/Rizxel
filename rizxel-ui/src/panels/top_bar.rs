@@ -224,6 +224,11 @@ fn slice_menu(ui: &mut Ui, state: &mut AppState) {
         if menu_item(ui, glyph, "Slice Mode", "Space", has_doc) {
             state.toggle_slice(None);
         }
+        let shown = state.doc().is_some_and(|d| d.plane.active());
+        let glyph = if shown { icon::EYE } else { icon::EYE_SLASH };
+        if menu_item(ui, glyph, "Show Work Plane", "/", has_doc) {
+            state.toggle_plane_visible();
+        }
         ui.separator();
         let glyphs = [
             icon::CARET_DOWN,

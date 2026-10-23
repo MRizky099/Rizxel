@@ -1466,6 +1466,8 @@ fn place_plane(state: &mut AppState, hit: Option<RayHit>) {
     let Some(doc) = state.doc_mut() else { return };
     let Some(hit) = hit else { return };
     doc.plane.set_from_hit(&hit);
+    // Placing a plane is not a request to resume an earlier slice.
+    doc.plane.resume_slice = false;
     doc.plane.visible = true;
     state.status_message = Some(format!(
         "Work plane at {}",

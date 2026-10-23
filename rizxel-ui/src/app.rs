@@ -88,6 +88,10 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::F)) {
             self.ui.zen_mode = !self.ui.zen_mode;
         }
+        // `/`: show or hide the work plane (hiding it also ends Slice Mode).
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Slash)) {
+            self.state.toggle_plane_visible();
+        }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
         for tool in rizxel_engine::Tool::ALL {
