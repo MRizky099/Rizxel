@@ -1,6 +1,8 @@
 //! Phase 5b: selections (undoable, per layer), selection-aware Move and
 //! Extrude, Fill, Shape, and a randomized undo/redo round trip over all of
-//! them (extended in Phase 8 with copy, cut, paste and the transforms).
+//! them (extended in Phase 8 with copy, cut, paste and the transforms, and in
+//! Phase 10 with the selection operations, Mask Mode and the structure and
+//! palette operations).
 
 use glam::IVec3;
 use rizxel_app::{Clipboard, Document, Edit, Layer, Selection, VoxelChange};
@@ -349,15 +351,28 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 axis: rng.below(3) as usize,
             });
         }
-        _ => {
+        13 => {
             let _ = d.mirror(rng.below(3) as usize);
+        }
+        // Phase 10: grow / shrink the selection, select by color.
+        14 => {
+            let steps = 1 + rng.below(2) as u32;
+            if rng.below(2) == 0 {
+                d.grow_selection(steps);
+            } else {
+                d.shrink_selection(steps);
+            }
+        }
+        _ => {
+            let mode = MaskMode::ALL[rng.below(3) as usize];
+            d.select_by_color(2 + rng.below(2) as Voxel, 0, mode);
         }
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 14;
+const OPS: usize = 16;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {
@@ -371,6 +386,8 @@ fn random_tool_sequences_undo_and_redo_exactly() {
         let initial = d.data.clone();
         for _ in 0..60 {
             d.active_layer = rng.below(2) as usize;
+            // Mask Mode (Phase 10) on for about a quarter of the operations.
+            d.mask_selection = rng.below(4) == 0;
             let before = d.data.clone();
             let op = random_op(&mut d, &mut rng);
             // Every operation is a single undo step.

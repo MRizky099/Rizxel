@@ -195,6 +195,8 @@ impl AppState {
             && self.documents[0].path.is_none()
             && !self.documents[0].is_dirty();
         if replace_pristine {
+            let mut doc = doc;
+            doc.mask_selection = self.options.mask_selection;
             self.documents[0] = doc;
             self.active_doc = 0;
         } else {

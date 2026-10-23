@@ -131,6 +131,7 @@ fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut W
         });
 
         ui.menu_button("Edit", |ui| edit_menu(ui, state));
+        ui.menu_button("Selection", |ui| selection_menu(ui, state));
 
         ui.menu_button("View", |ui| {
             ui.set_min_width(220.0);
@@ -309,22 +310,6 @@ fn edit_menu(ui: &mut Ui, state: &mut AppState) {
     ) {
         state.paste_to_new_layer();
     }
-    ui.separator();
-    if menu_item(ui, icon::SELECTION_ALL, "Select All", "Ctrl+A", has_voxels) {
-        state.select_all();
-    }
-    if menu_item(ui, icon::SELECTION_SLASH, "Deselect", "Ctrl+D", selected) {
-        state.deselect();
-    }
-    if menu_item(
-        ui,
-        icon::SELECTION_INVERSE,
-        "Invert Selection",
-        "Ctrl+I",
-        has_voxels,
-    ) {
-        state.invert_selection();
-    }
     if menu_item(ui, icon::TRASH, "Delete", "Delete", selected && editable) {
         state.delete_selected();
     }
@@ -342,6 +327,43 @@ fn edit_menu(ui: &mut Ui, state: &mut AppState) {
     ui.separator();
     let can_transform = has_voxels && editable;
     ui.add_enabled_ui(can_transform, |ui| transform_menus(ui, state));
+}
+
+/// Selection menu: build and refine the active layer's selection, and Mask
+/// Mode, which protects it from every tool.
+fn selection_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.set_min_width(240.0);
+    let has_voxels = state.active_layer_has_voxels();
+    let selected = state.selected_voxels() > 0;
+    if menu_item(ui, icon::SELECTION_ALL, "Select All", "Ctrl+A", has_voxels) {
+        state.select_all();
+    }
+    if menu_item(ui, icon::SELECTION_SLASH, "Deselect", "Ctrl+D", selected) {
+        state.deselect();
+    }
+    if menu_item(ui, icon::SELECTION_INVERSE, "Invert", "Ctrl+I", has_voxels) {
+        state.invert_selection();
+    }
+    ui.separator();
+    if menu_item(ui, icon::ARROWS_OUT, "Grow", "", selected) {
+        state.grow_selection(1);
+    }
+    if menu_item(ui, icon::ARROWS_IN, "Shrink", "", selected) {
+        state.shrink_selection(1);
+    }
+    if menu_item(ui, icon::PALETTE, "By Color", "", has_voxels) {
+        state.select_by_color();
+    }
+    ui.label(
+        egui::RichText::new("By Color: the selected swatch, within the Fuzzy Select threshold")
+            .size(10.0)
+            .color(theme::TEXT_DIM),
+    );
+    ui.separator();
+    let mask = state.options.mask_selection;
+    if menu_item(ui, check_glyph(mask), "Mask Mode", "Shift+M", true) {
+        state.toggle_mask_selection();
+    }
 }
 
 /// Edit > Rotate 90°, Flip and Mirror. They act on the selection, or the
@@ -796,6 +818,7 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Ctrl+A", "Select all"),
         ("Ctrl+D", "Deselect"),
         ("Ctrl+I", "Invert selection"),
+        ("Shift+M", "Mask Mode: protect the selection"),
         ("Delete", "Delete selected voxels"),
         ("Ctrl+R", "Rotate 90° counterclockwise (facing axis)"),
         ("Ctrl+Shift+R", "Rotate 90° clockwise (facing axis)"),

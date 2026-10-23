@@ -201,6 +201,10 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::H)) {
             view.ghosts = !view.ghosts;
         }
+        // Before the tool letters: `M` is the Move tool.
+        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::M)) {
+            self.state.toggle_mask_selection();
+        }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
         for tool in rizxel_engine::Tool::ALL {

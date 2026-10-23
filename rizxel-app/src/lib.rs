@@ -22,7 +22,7 @@ use glam::camera::rh::{
 };
 use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::tools::Transform;
-use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
+use rizxel_engine::{MaskMode, RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 use rizxel_math::BoundSize;
 
@@ -31,7 +31,7 @@ pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
     DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
-    TransparentMesh, ViewMeshes, GHOST_ALPHA, MAX_MATERIAL_SLOT,
+    TransparentMesh, ViewMeshes, GHOST_ALPHA, MASKED_MESSAGE, MAX_MATERIAL_SLOT,
 };
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
 pub use interchange::FileFormat;
@@ -655,8 +655,9 @@ impl AppState {
         self.push_document(Document::new(name));
     }
 
-    pub fn push_document(&mut self, doc: Document) {
+    pub fn push_document(&mut self, mut doc: Document) {
         self.cancel_active_edit();
+        doc.mask_selection = self.options.mask_selection;
         self.documents.push(doc);
         self.active_doc = self.documents.len() - 1;
     }
@@ -797,6 +798,8 @@ impl AppState {
             && self.documents[0].path.is_none()
             && !self.documents[0].is_dirty();
         if replace_pristine {
+            let mut doc = doc;
+            doc.mask_selection = self.options.mask_selection;
             self.documents[0] = doc;
             self.active_doc = 0;
         } else {
@@ -992,6 +995,57 @@ impl AppState {
         }
     }
 
+    /// *Selection ▸ Grow* by `steps` cells.
+    pub fn grow_selection(&mut self, steps: u32) {
+        if let Some(d) = self.doc_mut() {
+            d.grow_selection(steps);
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selection grown: {n} voxels"));
+        }
+    }
+
+    /// *Selection ▸ Shrink* by `steps` cells.
+    pub fn shrink_selection(&mut self, steps: u32) {
+        if let Some(d) = self.doc_mut() {
+            d.shrink_selection(steps);
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selection shrunk: {n} voxels"));
+        }
+    }
+
+    /// *Selection ▸ By Color*: selects the active layer's voxels of the
+    /// selected palette color, within the Fuzzy Select threshold.
+    pub fn select_by_color(&mut self) {
+        let threshold = self.options.fuzzy_select.threshold;
+        if let Some(d) = self.doc_mut() {
+            let color = d.selected_color as rizxel_math::Voxel;
+            d.select_by_color(color, threshold, MaskMode::Set);
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selected {n} voxels of color {color}"));
+        }
+    }
+
+    /// Mask Mode on or off for every open document: tools then leave the
+    /// selected voxels alone.
+    pub fn set_mask_selection(&mut self, on: bool) {
+        self.options.mask_selection = on;
+        for d in &mut self.documents {
+            d.mask_selection = on;
+        }
+        self.status_message = Some(
+            if on {
+                "Mask Mode on: the selection is protected"
+            } else {
+                "Mask Mode off"
+            }
+            .to_owned(),
+        );
+    }
+
+    pub fn toggle_mask_selection(&mut self) {
+        self.set_mask_selection(!self.options.mask_selection);
+    }
+
     pub fn deselect(&mut self) {
         if self.doc_mut().is_some_and(Document::clear_selection) {
             self.status_message = Some("Selection cleared".to_owned());
@@ -1001,8 +1055,10 @@ impl AppState {
     /// Deletes the selected voxels of the active layer (`Delete`).
     pub fn delete_selected(&mut self) {
         let Some(doc) = self.doc_mut() else { return };
+        let protected = doc.selection_protected();
         let removed = doc.delete_selected();
         self.status_message = Some(match doc.editable_layer(doc.active_layer) {
+            _ if protected => MASKED_MESSAGE.to_owned(),
             Err(e) if removed == 0 && e != EditBlock::Hidden => e.message().to_owned(),
             _ => format!("Deleted {removed} selected voxels"),
         });
@@ -1031,9 +1087,11 @@ impl AppState {
             return false;
         };
         let block = doc.editable_layer(doc.active_layer).err();
+        let protected = doc.selection_protected();
         let clip = doc.cut();
         self.status_message = Some(match (&clip, block) {
             (Some(c), _) => format!("Cut {} voxels", c.cells.len()),
+            (None, _) if protected => MASKED_MESSAGE.to_owned(),
             (None, Some(e)) if e != EditBlock::Hidden => e.message().to_owned(),
             (None, _) => "Nothing to cut".to_owned(),
         });

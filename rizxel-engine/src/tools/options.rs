@@ -325,6 +325,9 @@ pub struct ToolOptions {
     pub fuzzy_select: FuzzySelectOptions,
     pub extrude: ExtrudeOptions,
     pub fill: FillOptions,
+    /// Mask Mode: every tool leaves the selected voxels alone (the
+    /// selection is protected instead of being the region to edit).
+    pub mask_selection: bool,
 }
 
 impl Tool {

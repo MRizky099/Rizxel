@@ -35,6 +35,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         }
         horizontal_divider(ui, 24.0);
         slice_toggle(ui, state);
+        mask_toggle(ui, state);
 
         // Settings pinned to the bottom.
         let remaining = ui.available_height() - 48.0;
@@ -102,6 +103,40 @@ fn slice_toggle(ui: &mut Ui, state: &mut AppState) {
         None => ("–".to_owned(), theme::TEXT_MUTED),
     };
     ui.label(RichText::new(label).size(10.0).color(color));
+}
+
+/// Mask Mode button (`Shift+M`): protects the selection from every tool.
+fn mask_toggle(ui: &mut Ui, state: &mut AppState) {
+    let active = state.options.mask_selection;
+    let size = Vec2::new(IconStyle::tool().size.x, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let painter = ui.painter();
+    if active {
+        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
+        painter.rect_filled(accent, 0.0, theme::ACCENT);
+    } else if response.hovered() {
+        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+    }
+    let color = if active || response.hovered() {
+        theme::TEXT_STRONG
+    } else {
+        INACTIVE_TINT
+    };
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        egui_phosphor::regular::SHIELD_CHECK,
+        theme::icon(16.0),
+        color,
+    );
+    let response = response.on_hover_text(
+        "Mask Mode (Shift+M): protect the selected voxels. Every tool then edits only the rest of the layer.",
+    );
+    if response.clicked() {
+        response.surrender_focus();
+        state.toggle_mask_selection();
+    }
 }
 
 /// 40x40 toolbar button showing a pixel-art texture. Active buttons get a

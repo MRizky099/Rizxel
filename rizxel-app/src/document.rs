@@ -192,6 +192,8 @@ pub enum TransformError {
     Empty,
     /// Some voxels would leave the bounds; nothing was changed.
     OutOfBounds,
+    /// Mask Mode protects the selection the transform would move.
+    Masked,
 }
 
 impl TransformError {
@@ -202,9 +204,13 @@ impl TransformError {
             TransformError::OutOfBounds => {
                 "The result would leave the bounds: enlarge them or move the voxels first"
             }
+            TransformError::Masked => MASKED_MESSAGE,
         }
     }
 }
+
+/// Why commands that act on the selection itself do nothing in Mask Mode.
+pub const MASKED_MESSAGE: &str = "Mask Mode protects the selection: turn it off (Shift+M) first";
 
 /// Summary of a [`Document::slice`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -325,6 +331,9 @@ pub struct Document {
     edits: u64,
     /// Paste in progress (see [`Document::begin_paste`]).
     paste: Option<FloatingPaste>,
+    /// Mask Mode: tool writes skip the selected cells of their layer. Mirrors
+    /// `ToolOptions::mask_selection` (set by the app). Not part of history.
+    pub mask_selection: bool,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -375,6 +384,7 @@ impl Document {
             saved_revision: 0,
             edits: 0,
             paste: None,
+            mask_selection: false,
             geometry: RefCell::new(None),
             view_cache: RefCell::new(ViewCache::default()),
         }
@@ -808,9 +818,10 @@ impl Document {
             self.begin_edit();
         }
         let mut applied = Vec::with_capacity(changes.len());
+        let mask = self.mask_selection;
         if let Some(l) = self.data.layers.get_mut(layer) {
             for c in changes {
-                if !l.volume.in_bounds(c.pos) {
+                if !l.volume.in_bounds(c.pos) || (mask && l.selection.contains(c.pos)) {
                     continue;
                 }
                 let old = l.volume.set(c.pos, c.new);
@@ -936,7 +947,14 @@ impl Document {
             }
             targets.push((i, &l.volume));
         }
-        let per_layer = slice_layers(&targets, self.data.bounds, req, cap_color);
+        let mut per_layer = slice_layers(&targets, self.data.bounds, req, cap_color);
+        if self.mask_selection {
+            for (layer, changes) in &mut per_layer {
+                let selection = &self.data.layers[*layer].selection;
+                changes.retain(|c| !selection.contains(c.pos));
+            }
+            per_layer.retain(|(_, changes)| !changes.is_empty());
+        }
         if per_layer.is_empty() {
             return outcome;
         }
@@ -1044,13 +1062,57 @@ impl Document {
         self.set_selection(self.active_layer, Selection::default())
     }
 
+    /// *Selection ▸ Grow*: adds the active layer's voxels touching the
+    /// selection, `steps` cells deep.
+    pub fn grow_selection(&mut self, steps: u32) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let grown = l.selection.grown(&l.volume, steps);
+        self.set_selection(self.active_layer, grown)
+    }
+
+    /// *Selection ▸ Shrink*: peels `steps` cells off the selection's surface.
+    pub fn shrink_selection(&mut self, steps: u32) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let shrunk = l.selection.shrunk(steps);
+        self.set_selection(self.active_layer, shrunk)
+    }
+
+    /// *Selection ▸ By Color*: the active layer's voxels within `threshold`
+    /// of palette entry `color`, combined with the selection by `mode`.
+    pub fn select_by_color(&mut self, color: Voxel, threshold: u8, mode: MaskMode) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let cells = Selection::by_color(&l.volume, &self.data.palette, color, threshold);
+        self.select(cells.iter(), mode)
+    }
+
+    /// True while Mask Mode protects a non-empty selection on the active
+    /// layer. Commands that act on the selection itself (Delete, Cut,
+    /// transforms) are refused then.
+    pub fn selection_protected(&self) -> bool {
+        self.mask_selection && self.selection().is_some_and(|s| !s.is_empty())
+    }
+
+    /// The selection tools work inside (Fill, Move, Extrude): the active
+    /// layer's selection, unless it is empty or Mask Mode protects it.
+    pub fn region_selection(&self) -> Option<&Selection> {
+        self.selection()
+            .filter(|s| !s.is_empty() && !self.mask_selection)
+    }
+
     /// Deletes the selected voxels of the active layer and clears the
     /// selection, as one undo step. Returns the number of voxels removed.
     pub fn delete_selected(&mut self) -> usize {
         let layer = self.active_layer;
-        if self
-            .editable_layer(layer)
-            .is_err_and(|e| e != EditBlock::Hidden)
+        if self.selection_protected()
+            || self
+                .editable_layer(layer)
+                .is_err_and(|e| e != EditBlock::Hidden)
         {
             return 0;
         }
@@ -1082,6 +1144,9 @@ impl Document {
 
     /// Layer index a transform may write to, or why not (hidden is fine).
     fn transform_layer(&self) -> Result<usize, TransformError> {
+        if self.selection_protected() {
+            return Err(TransformError::Masked);
+        }
         let layer = self.active_layer;
         match self.editable_layer(layer) {
             Ok(()) | Err(EditBlock::Hidden) => Ok(layer),
@@ -1175,9 +1240,10 @@ impl Document {
     /// locked or not a voxel layer.
     pub fn cut(&mut self) -> Option<Clipboard> {
         let layer = self.active_layer;
-        if self
-            .editable_layer(layer)
-            .is_err_and(|e| e != EditBlock::Hidden)
+        if self.selection_protected()
+            || self
+                .editable_layer(layer)
+                .is_err_and(|e| e != EditBlock::Hidden)
         {
             return None;
         }

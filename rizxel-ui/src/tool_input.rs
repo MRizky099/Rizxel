@@ -17,7 +17,8 @@
 //! Selections (Phase 5b) belong to the active layer. Move and Extrude act on
 //! the selection when there is one and carry it along in the same undo
 //! step; Fill stays inside it. `Esc` deselects, `Delete` removes the
-//! selected voxels.
+//! selected voxels. In Mask Mode (`Shift+M`) the selection is protected
+//! instead: every tool edits the whole layer around it.
 //!
 //! The Plane tool never writes voxels (Goxel / Qubicle behaviour): a click
 //! places the document's [`WorkPlane`] on the clicked face. While the plane
@@ -684,7 +685,7 @@ impl ToolInput {
                 pivot: hit.map_or(center, |h| h.voxel.as_vec3() + Vec3::splat(0.5)),
                 offset: IVec3::ZERO,
                 target: IVec3::ZERO,
-                selected: doc.selection().filter(|s| !s.is_empty()).cloned(),
+                selected: doc.region_selection().cloned(),
             },
             Tool::Shape => {
                 let Some(hit) = hit else { return };
@@ -717,7 +718,7 @@ impl ToolInput {
                 } else {
                     doc.merged_visible_volume()
                 };
-                let selection = doc.selection().filter(|s| !s.is_empty()).cloned();
+                let selection = doc.region_selection().cloned();
                 let region = match &selection {
                     Some(sel) => selection_region(&colors, sel.cells(), hit.normal),
                     None => extrude_region(&colors, &hit, &options.extrude, &doc.data.palette),
@@ -1153,7 +1154,7 @@ impl ToolInput {
             }
             Tool::Extrude if is_voxel(hit) => {
                 let opts = &state.options.extrude;
-                let selection = doc.selection().filter(|s| !s.is_empty());
+                let selection = doc.region_selection();
                 let key = (
                     doc.id(),
                     doc.revision(),
@@ -1388,10 +1389,7 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
     let limit = doc
         .edit_clip()
         .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
-    let allowed = doc
-        .selection()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.cells().clone());
+    let allowed = doc.region_selection().map(|s| s.cells().clone());
     let merged;
     let source = if opts.current_layer_only {
         &doc.data.layers[layer].volume
