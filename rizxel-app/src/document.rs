@@ -1543,6 +1543,112 @@ impl Document {
         Ok(self.move_parts_to_layers(layer, &[(suffix, side)]))
     }
 
+    /// *Selection ▸ To New Layer*: the selected voxels of the active layer
+    /// go into a new voxel layer right above it (same group, material and
+    /// opacity), which becomes active and carries the selection. `cut`
+    /// removes them from the source (a clone or shape source is baked into
+    /// voxels first); otherwise the source stays as it is. One undo step.
+    pub fn selection_to_new_layer(&mut self, cut: bool) -> Result<LayerId, OpError> {
+        let layer = self.active_layer;
+        let source = self
+            .data
+            .layers
+            .get(layer)
+            .ok_or(OpError::Blocked(EditBlock::NoLayer))?;
+        if source.kind().is_group() {
+            return Err(OpError::Blocked(EditBlock::NotVoxels));
+        }
+        if source.selection.is_empty() {
+            return Err(OpError::Nothing("Nothing is selected"));
+        }
+        if self.mask_selection {
+            return Err(OpError::Nothing(MASKED_MESSAGE));
+        }
+        if cut {
+            match self.editable_layer(layer) {
+                Ok(()) | Err(EditBlock::Hidden) | Err(EditBlock::NotVoxels) => {}
+                Err(e) => return Err(OpError::Blocked(e)),
+            }
+        }
+        let geometry = self
+            .layer_geometry(layer)
+            .ok_or(OpError::Nothing("The layer has no voxels"))?;
+        let picked: Vec<(IVec3, Voxel)> = source
+            .selection
+            .iter()
+            .map(|p| (p, geometry.get(p)))
+            .filter(|&(_, v)| v != EMPTY_VOXEL)
+            .collect();
+        if picked.is_empty() {
+            return Err(OpError::Nothing("The selection has no voxels"));
+        }
+        let mut new = Layer::new(
+            self.unique_name_from(&format!("{} part", source.name)),
+            self.data.bounds,
+        );
+        new.id = self.next_layer_id();
+        new.props.parent = source.props.parent;
+        new.props.material = source.props.material;
+        new.props.opacity = source.props.opacity;
+        for &(p, v) in &picked {
+            new.volume.set(p, v);
+            new.selection.insert(p);
+        }
+        let id = new.id;
+        let mut edits = Vec::new();
+        if cut {
+            let baked = !source.kind().stores_voxels();
+            let changes: Vec<VoxelChange> = if baked {
+                // The source becomes a voxel layer holding what is left.
+                let mut props = source.props.clone();
+                props.kind = LayerKind::Voxels;
+                edits.push(Edit::SetLayerProps {
+                    index: layer,
+                    old: source.props.clone(),
+                    new: props,
+                });
+                geometry
+                    .iter()
+                    .filter(|(p, _)| !source.selection.contains(*p))
+                    .map(|(pos, new)| VoxelChange {
+                        pos,
+                        old: source.volume.get(pos),
+                        new,
+                    })
+                    .filter(|c| c.old != c.new)
+                    .collect()
+            } else {
+                picked
+                    .iter()
+                    .map(|&(pos, old)| VoxelChange {
+                        pos,
+                        old,
+                        new: EMPTY_VOXEL,
+                    })
+                    .collect()
+            };
+            edits.push(Edit::Voxels { layer, changes });
+            edits.push(Edit::SetSelection {
+                layer,
+                old: source.selection.clone(),
+                new: Selection::default(),
+            });
+        }
+        edits.push(Edit::InsertLayer {
+            index: layer + 1,
+            layer: new,
+        });
+        let label = if cut {
+            "To New Layer (Cut)"
+        } else {
+            "To New Layer (Copy)"
+        };
+        self.cancel_edit();
+        self.labeled(label, |d| d.apply(Edit::Batch(edits), false));
+        self.active_layer = layer + 1;
+        Ok(id)
+    }
+
     /// Box around the geometry of every layer (hidden ones too).
     pub fn content_bounds(&self) -> Option<(IVec3, IVec3)> {
         (0..self.data.layers.len())

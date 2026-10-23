@@ -1291,6 +1291,22 @@ impl AppState {
         }
     }
 
+    /// *Selection ▸ To New Layer (Cut)* (`Ctrl+Shift+J`) or *(Copy)*
+    /// (`Ctrl+J`): the selected voxels go into a new layer above.
+    pub fn selection_to_new_layer(&mut self, cut: bool) {
+        let label = if cut {
+            "To New Layer (Cut)"
+        } else {
+            "To New Layer (Copy)"
+        };
+        self.run_op(label, |d| {
+            d.selection_to_new_layer(cut).map(|_| {
+                let n = d.selection().map_or(0, Selection::len);
+                format!("{n} voxels in a new layer")
+            })
+        });
+    }
+
     /// *Layer ▸ Separate Parts*.
     pub fn separate_parts(&mut self) {
         let min = self.structure.min_part_voxels;

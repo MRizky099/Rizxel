@@ -153,6 +153,12 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD, Key::D)) {
             self.state.deselect();
         }
+        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::J)) {
+            self.state.selection_to_new_layer(true);
+        }
+        if pressed(KeyboardShortcut::new(CMD, Key::J)) {
+            self.state.selection_to_new_layer(false);
+        }
         // Groups. Before the `G` view toggles, which plain patterns match.
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::G)) {
             self.state.ungroup_active_layer();

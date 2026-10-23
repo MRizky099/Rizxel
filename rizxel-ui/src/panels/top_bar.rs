@@ -376,6 +376,25 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
             .color(theme::TEXT_DIM),
     );
     ui.separator();
+    if menu_item(
+        ui,
+        icon::SCISSORS,
+        "To New Layer (Cut)",
+        "Ctrl+Shift+J",
+        selected,
+    ) {
+        state.selection_to_new_layer(true);
+    }
+    if menu_item(
+        ui,
+        icon::STACK_PLUS,
+        "To New Layer (Copy)",
+        "Ctrl+J",
+        selected,
+    ) {
+        state.selection_to_new_layer(false);
+    }
+    ui.separator();
     let mask = state.options.mask_selection;
     if menu_item(ui, check_glyph(mask), "Mask Mode", "Shift+M", true) {
         state.toggle_mask_selection();
@@ -981,6 +1000,8 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Ctrl+A", "Select all"),
         ("Ctrl+D", "Deselect"),
         ("Ctrl+I", "Invert selection"),
+        ("Ctrl+J", "Selection to a new layer (copy)"),
+        ("Ctrl+Shift+J", "Selection to a new layer (cut)"),
         ("Shift+M", "Mask Mode: protect the selection"),
         ("Alt+R", "Show or hide all reference images"),
         ("Ctrl+0 … 9", "Select favorite color 0–9"),

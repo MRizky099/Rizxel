@@ -379,9 +379,20 @@ enum LayerAction {
     ToggleCollapsed(usize),
     StartRename(usize),
     Duplicate(usize),
+    /// Selection to a new layer (`cut` or copy).
+    ToNewLayer {
+        index: usize,
+        cut: bool,
+    },
     MergeDown(usize),
-    Step { index: usize, up: bool },
-    Drop { from: usize, target: LayerDrop },
+    Step {
+        index: usize,
+        up: bool,
+    },
+    Drop {
+        from: usize,
+        target: LayerDrop,
+    },
     Group(usize),
     Ungroup(usize),
     MergeGroup(usize),
@@ -469,6 +480,12 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         LayerAction::Duplicate(i) => {
             doc.active_layer = i;
             doc.duplicate_active_layer();
+        }
+        LayerAction::ToNewLayer { index, cut } => {
+            doc.active_layer = index;
+            if let Err(e) = doc.selection_to_new_layer(cut) {
+                log::info!("Selection to new layer: {}", e.message());
+            }
         }
         LayerAction::MergeDown(i) => {
             doc.active_layer = i;
@@ -1023,6 +1040,31 @@ fn layer_row(
             }
             if item(ui, icon::COPY, "Duplicate", "", true) {
                 action = Some(LayerAction::Duplicate(i));
+            }
+            let selected = !doc.data.layers[i].selection.is_empty();
+            if item(
+                ui,
+                icon::SCISSORS,
+                "Selection to New Layer (Cut)",
+                "Ctrl+Shift+J",
+                selected,
+            ) {
+                action = Some(LayerAction::ToNewLayer {
+                    index: i,
+                    cut: true,
+                });
+            }
+            if item(
+                ui,
+                icon::STACK_PLUS,
+                "Selection to New Layer (Copy)",
+                "Ctrl+J",
+                selected,
+            ) {
+                action = Some(LayerAction::ToNewLayer {
+                    index: i,
+                    cut: false,
+                });
             }
             if item(
                 ui,

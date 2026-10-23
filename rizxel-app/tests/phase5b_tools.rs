@@ -509,13 +509,23 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 d.apply_box_select();
             }
         }
+        // Selection to a new layer, cut or copied.
+        29 => {
+            if d.selection().is_some_and(|s| s.is_empty()) {
+                let area = selection_box(rng.cell(6), rng.cell(6));
+                let cells = select_box(&[&d.data.layers[layer].volume], &area);
+                d.select(cells, MaskMode::Set);
+            } else {
+                let _ = d.selection_to_new_layer(rng.below(2) == 0);
+            }
+        }
         _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 29;
+const OPS: usize = 30;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {

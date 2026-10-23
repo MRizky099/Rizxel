@@ -386,10 +386,30 @@ fn axis_drag(ui: &mut Ui, label: &str, value: &mut i32, range: std::ops::RangeIn
     ui.add(egui::DragValue::new(value).speed(0.1).range(range));
 }
 
-/// Deselect / Delete buttons of the selection tools.
+/// Deselect / Delete / To New Layer buttons of the selection tools.
 fn selection_actions(ui: &mut Ui, state: &mut AppState) {
     vertical_divider(ui, DIVIDER_HEIGHT);
     let count = state.selected_voxels();
+    let mut to_layer = None;
+    ui.add_enabled_ui(count > 0, |ui| {
+        if ui
+            .button("Cut to Layer")
+            .on_hover_text("Move the selected voxels into a new layer above (Ctrl+Shift+J)")
+            .clicked()
+        {
+            to_layer = Some(true);
+        }
+        if ui
+            .button("Copy to Layer")
+            .on_hover_text("Copy the selected voxels into a new layer above (Ctrl+J)")
+            .clicked()
+        {
+            to_layer = Some(false);
+        }
+    });
+    if let Some(cut) = to_layer {
+        state.selection_to_new_layer(cut);
+    }
     let mut message = None;
     ui.add_enabled_ui(count > 0, |ui| {
         let Some(doc) = state.doc_mut() else { return };
