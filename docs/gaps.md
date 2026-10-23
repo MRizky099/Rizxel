@@ -52,6 +52,9 @@ No open bugs are known. Fixed bugs move to the table above.
 | Palette is limited to 255 colors, with no per-voxel RGBA | Medium | post | `Voxel = u8`. True-color imports (Goxel, OBJ textures) are quantized with median cut, so colors are lost. |
 | Selections aren't saved | Low | post | Each layer's selection is lost on save and reload. |
 | Dock layout isn't saved between sessions | Low | 12 | `Workspace::reset` exists, but the layout isn't written to disk. |
+| Panels on the right can't form tab groups | Medium | 10d | Palette, Layers and Bound Model sit in a craft-ui stack, which holds one panel per entry. |
+| Tab titles don't fill their strip, and overflowing tabs hide in a "…" menu | Low | 10d | Needs fill sizing and a scrolling strip in craft-ui. |
+| The Model / Render switch lives in the Tool Options bar | Low | 10d | It moves to the title bar next to the window controls. |
 
 ## Interchange
 
