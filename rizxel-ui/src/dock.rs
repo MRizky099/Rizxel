@@ -3,11 +3,12 @@
 //! Every panel can be dragged by its tab, re-docked as a tab or to any side of
 //! another group, floated into its own window, resized by its dividers, closed
 //! and reopened from *View > Panels*. The viewport is the protected canvas: it
-//! cannot move or close, but other panels split around it.
+//! cannot move or close, but other panels split around it. Every group is a
+//! tab strip, so any panel dropped on a strip joins it as a sub-tab; a
+//! double-click on a tab collapses its group to the strip.
 
 use craft_ui::docking::{
-    Action, DockArea, DockStyle, Layout, Location, Node, PanelLimits, Permissions, Placement,
-    StackEntry, Zone,
+    Action, DockArea, DockStyle, Layout, Location, Node, PanelLimits, Permissions, Placement, Zone,
 };
 use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Id, Stroke, Ui};
@@ -110,41 +111,37 @@ fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Pane
 pub struct Workspace {
     pub layout: Layout<Panel>,
     hidden: Vec<(Panel, Location<Panel>)>,
+    /// Groups collapsed to their tab strip by a double-click.
+    collapsed: Vec<Collapsed>,
+}
+
+/// A group shrunk to its tab strip, found again by any panel it held.
+#[derive(Debug, Clone, PartialEq)]
+struct Collapsed {
+    panel: Panel,
+    /// Split size the group had before collapsing, restored on expand.
+    restore: SplitSize,
+    /// Split size while collapsed; a divider drag that changes it expands.
+    size: SplitSize,
 }
 
 impl Default for Workspace {
     /// Option bar on top, tools rail on the left, viewport in the middle and
-    /// a collapsible inspector stack on the right — the prototype's arrangement.
+    /// two tab groups on the right: Palette and References above, Layers,
+    /// Bound Model and History below.
     fn default() -> Self {
-        let inspector = Node::Stack {
-            entries: vec![
-                StackEntry {
-                    panel: Panel::Palette,
-                    open: true,
-                    height: Some(320.0),
-                },
-                StackEntry {
-                    panel: Panel::Layers,
-                    open: true,
-                    height: None,
-                },
-                StackEntry {
-                    panel: Panel::References,
-                    open: false,
-                    height: Some(320.0),
-                },
-                StackEntry {
-                    panel: Panel::Bounds,
-                    open: false,
-                    height: Some(200.0),
-                },
-                StackEntry {
-                    panel: Panel::History,
-                    open: false,
-                    height: Some(220.0),
-                },
-            ],
-        };
+        let inspector = split(
+            SplitAxis::Vertical,
+            SplitSize::FixedFirst(320.0),
+            Node::Tabs {
+                panels: vec![Panel::Palette, Panel::References],
+                active: 0,
+            },
+            Node::Tabs {
+                panels: vec![Panel::Layers, Panel::Bounds, Panel::History],
+                active: 0,
+            },
+        );
         let center = split(
             SplitAxis::Horizontal,
             SplitSize::FixedSecond(288.0),
@@ -169,6 +166,7 @@ impl Default for Workspace {
                 floating: Vec::new(),
             },
             hidden: Vec::new(),
+            collapsed: Vec::new(),
         }
     }
 }
@@ -234,15 +232,30 @@ impl Workspace {
     /// Draws the workspace and applies the gestures it produced. Errors are
     /// returned so the caller can surface them in the status bar.
     pub fn show(&mut self, ui: &mut Ui, mut body: impl FnMut(&mut Ui, &Panel)) -> Option<String> {
+        self.prune_collapsed();
         let style = style(ui);
+        let collapsed: Vec<Panel> = Panel::ALL
+            .into_iter()
+            .filter(|p| self.is_collapsed(*p))
+            .collect();
         let output = DockArea::new(Id::new(AREA_ID)).show_with_limits(
             ui,
             &self.layout,
             &style,
             |panel| panel.label().to_owned(),
             permissions,
-            |panel| panel.limits(),
-            |ui, panel| body(ui, panel),
+            |panel| {
+                let mut limits = panel.limits();
+                if collapsed.contains(panel) {
+                    limits.min.y = 0.0;
+                }
+                limits
+            },
+            |ui, panel| {
+                if !collapsed.contains(panel) {
+                    body(ui, panel);
+                }
+            },
         );
         let mut error = output.error.map(|e| format!("Panel layout error: {e}"));
         for action in output.actions {
@@ -250,7 +263,90 @@ impl Workspace {
                 error = Some(format!("Panel move was not applied: {e}"));
             }
         }
+        // A double-click on a tab collapses its group to the strip, or
+        // expands it again.
+        let tab_id = |panel: &Panel| Id::new(AREA_ID).with(("tab", panel));
+        if let Some(panel) = Panel::ALL.into_iter().find(|p| {
+            ui.ctx()
+                .read_response(tab_id(p))
+                .is_some_and(|r| r.double_clicked())
+        }) {
+            self.toggle_collapsed(panel);
+        }
         error
+    }
+
+    /// Whether `panel`'s group is collapsed to its tab strip.
+    pub fn is_collapsed(&self, panel: Panel) -> bool {
+        self.collapsed_entry(panel).is_some()
+    }
+
+    fn collapsed_entry(&self, panel: Panel) -> Option<usize> {
+        let group = group_of(&self.layout, panel)?;
+        let slot = self
+            .layout
+            .root
+            .as_ref()
+            .and_then(|root| group_slot(root, panel, &mut Vec::new()))?;
+        self.collapsed
+            .iter()
+            .position(|c| group.contains(&c.panel) && slot.size == c.size)
+    }
+
+    /// Drops collapse records whose group moved, was resized or split up.
+    fn prune_collapsed(&mut self) {
+        let keep: Vec<bool> = self
+            .collapsed
+            .iter()
+            .map(|c| self.collapsed_entry(c.panel).is_some())
+            .collect();
+        let mut keep = keep.into_iter();
+        self.collapsed.retain(|_| keep.next().unwrap_or(false));
+    }
+
+    /// Collapses `panel`'s group to its tab strip, or expands it. Only a group
+    /// stacked above or below another one can collapse; returns whether
+    /// anything changed.
+    pub fn toggle_collapsed(&mut self, panel: Panel) -> bool {
+        self.prune_collapsed();
+        let Some(slot) = self
+            .layout
+            .root
+            .as_ref()
+            .and_then(|root| group_slot(root, panel, &mut Vec::new()))
+        else {
+            return false;
+        };
+        if let Some(index) = self.collapsed_entry(panel) {
+            let entry = self.collapsed.remove(index);
+            return self
+                .layout
+                .apply(Action::ResizeSplit {
+                    path: slot.path,
+                    size: entry.restore,
+                })
+                .is_ok();
+        }
+        let size = if slot.second {
+            SplitSize::FixedSecond(TAB_HEIGHT)
+        } else {
+            SplitSize::FixedFirst(TAB_HEIGHT)
+        };
+        let applied = self
+            .layout
+            .apply(Action::ResizeSplit {
+                path: slot.path,
+                size,
+            })
+            .is_ok();
+        if applied {
+            self.collapsed.push(Collapsed {
+                panel,
+                restore: slot.size,
+                size,
+            });
+        }
+        applied
     }
 
     /// Back to the default arrangement, cancelling any drag in flight.
@@ -260,10 +356,79 @@ impl Workspace {
     }
 }
 
+/// Members of the tab group holding `panel`, docked or floating.
+fn group_of(layout: &Layout<Panel>, panel: Panel) -> Option<Vec<Panel>> {
+    fn walk(node: &Node<Panel>, panel: Panel) -> Option<Vec<Panel>> {
+        match node {
+            Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),
+            Node::Stack { entries } => entries
+                .iter()
+                .any(|e| e.panel == panel)
+                .then(|| vec![panel]),
+            Node::Split { first, second, .. } => walk(first, panel).or_else(|| walk(second, panel)),
+        }
+    }
+    layout
+        .root
+        .as_ref()
+        .and_then(|root| walk(root, panel))
+        .or_else(|| {
+            layout
+                .floating
+                .iter()
+                .find(|f| f.panels.contains(&panel))
+                .map(|f| f.panels.clone())
+        })
+}
+
+/// A tab group that is a direct child of a top/bottom split.
+struct GroupSlot {
+    /// Path from the root to that split: `false` first child, `true` second.
+    path: Vec<bool>,
+    /// The group is the split's second (bottom) child.
+    second: bool,
+    size: SplitSize,
+}
+
+fn group_slot(node: &Node<Panel>, panel: Panel, path: &mut Vec<bool>) -> Option<GroupSlot> {
+    let Node::Split {
+        axis,
+        size,
+        first,
+        second,
+    } = node
+    else {
+        return None;
+    };
+    let holds = |n: &Node<Panel>| matches!(n, Node::Tabs { panels, .. } if panels.contains(&panel));
+    if *axis == SplitAxis::Vertical {
+        for (child, is_second) in [(first, false), (second, true)] {
+            if holds(child) {
+                return Some(GroupSlot {
+                    path: path.clone(),
+                    second: is_second,
+                    size: *size,
+                });
+            }
+        }
+    }
+    for (child, is_second) in [(first, false), (second, true)] {
+        path.push(is_second);
+        let found = group_slot(child, panel, path);
+        path.pop();
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 fn style(ui: &Ui) -> DockStyle {
     let mut style = DockStyle::from_ui(ui);
     style.tab_height = TAB_HEIGHT;
-    style.min_pane = 48.0;
+    // Every panel sets its own minimum size (`Panel::limits`); a zero floor
+    // lets a collapsed group shrink to its tab strip.
+    style.min_pane = 0.0;
     style.background = theme::BG_PANEL;
     style.tab_background = theme::BG_HEADER;
     style.active_background = theme::BG_PANEL;
@@ -286,6 +451,101 @@ mod tests {
         for panel in Panel::ALL {
             assert!(ws.is_visible(panel), "{panel:?} missing");
         }
+    }
+
+    fn tab_groups(node: &Node<Panel>, out: &mut Vec<Vec<Panel>>) {
+        match node {
+            Node::Tabs { panels, .. } => out.push(panels.clone()),
+            Node::Stack { .. } => panic!("stack in the layout"),
+            Node::Split { first, second, .. } => {
+                tab_groups(first, out);
+                tab_groups(second, out);
+            }
+        }
+    }
+
+    fn groups(ws: &Workspace) -> Vec<Vec<Panel>> {
+        let mut out = Vec::new();
+        tab_groups(ws.layout.root.as_ref().unwrap(), &mut out);
+        out
+    }
+
+    #[test]
+    fn default_layout_is_tab_groups_only() {
+        let groups = groups(&Workspace::default());
+        assert!(groups.contains(&vec![Panel::Palette, Panel::References]));
+        assert!(groups.contains(&vec![Panel::Layers, Panel::Bounds, Panel::History]));
+    }
+
+    #[test]
+    fn dropping_on_a_strip_makes_sub_tabs() {
+        let mut ws = Workspace::default();
+        ws.apply(Action::Move {
+            panel: Panel::Palette,
+            anchor: Panel::Layers,
+            placement: Placement::Tab { before: None },
+        })
+        .unwrap();
+        let groups = groups(&ws);
+        let layers = groups.iter().find(|g| g.contains(&Panel::Layers)).unwrap();
+        assert!(layers.contains(&Panel::Palette) && layers.contains(&Panel::Bounds));
+        assert_eq!(
+            groups
+                .iter()
+                .flatten()
+                .filter(|p| **p == Panel::Palette)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn dropping_on_an_edge_splits() {
+        let mut ws = Workspace::default();
+        ws.apply(Action::Move {
+            panel: Panel::Bounds,
+            anchor: Panel::Layers,
+            placement: Placement::Split(Zone::Right),
+        })
+        .unwrap();
+        let groups = groups(&ws);
+        assert!(groups.contains(&vec![Panel::Bounds]));
+        assert!(groups.contains(&vec![Panel::Layers, Panel::History]));
+        assert!(ws.layout.validate().is_ok());
+    }
+
+    #[test]
+    fn groups_collapse_to_their_strip_and_back() {
+        let mut ws = Workspace::default();
+        let before = ws.layout.clone();
+        assert!(ws.toggle_collapsed(Panel::Bounds));
+        assert!(ws.is_collapsed(Panel::Layers) && ws.is_collapsed(Panel::History));
+        assert!(!ws.is_collapsed(Panel::Palette));
+        assert!(ws.toggle_collapsed(Panel::History));
+        assert!(!ws.is_collapsed(Panel::Layers));
+        assert_eq!(ws.layout, before);
+
+        // The top group collapses too; the viewport and tools rail can't.
+        assert!(ws.toggle_collapsed(Panel::Palette));
+        assert!(ws.is_collapsed(Panel::References));
+        assert!(!ws.toggle_collapsed(Panel::Tools));
+        assert!(!ws.toggle_collapsed(Panel::Viewport));
+
+        // Moving a panel out ends the collapse record of the group it left.
+        ws.apply(Action::Move {
+            panel: Panel::Palette,
+            anchor: Panel::Layers,
+            placement: Placement::Tab { before: None },
+        })
+        .unwrap();
+        ws.apply(Action::Move {
+            panel: Panel::References,
+            anchor: Panel::Layers,
+            placement: Placement::Tab { before: None },
+        })
+        .unwrap();
+        ws.prune_collapsed();
+        assert!(ws.collapsed.is_empty());
     }
 
     #[test]
