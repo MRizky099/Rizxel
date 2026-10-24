@@ -49,7 +49,7 @@ pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::png_io::RgbaImage;
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
-pub use rizxel_io::{GltfColors, Pivot};
+pub use rizxel_io::{GltfColors, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
 pub use transform_session::{pivot_point, TransformSession};
 

@@ -30,6 +30,7 @@ use rizxel_math::{BoundSize, Material, Palette, Voxel, VoxelVolume};
 use serde_json::{json, Value};
 
 use crate::interchange::ExportScene;
+use crate::mesh_export::srgb_to_linear;
 use crate::RzxlError;
 
 pub const GLB_EXTENSION: &str = "glb";
@@ -201,16 +202,6 @@ impl Buffer {
     }
 }
 
-/// sRGB channel (0..255) -> linear 0..1, as glTF vertex colors are linear.
-fn linear(c: u8) -> f32 {
-    let c = c as f32 / 255.0;
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 /// Mesh attributes of one layer volume.
 struct LayerMesh {
     positions: Vec<[f32; 3]>,
@@ -231,7 +222,11 @@ fn layer_mesh(volume: &VoxelVolume, palette: &Palette, options: &GltfOptions) ->
     };
     let color_of = |v: Voxel| {
         let c = palette.get(v as usize).unwrap_or(rizxel_math::Rgba8::WHITE);
-        [linear(c.r), linear(c.g), linear(c.b)]
+        [
+            srgb_to_linear(c.r),
+            srgb_to_linear(c.g),
+            srgb_to_linear(c.b),
+        ]
     };
     for q in &quads {
         let base = m.positions.len() as u32;

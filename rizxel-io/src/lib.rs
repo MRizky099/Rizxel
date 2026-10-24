@@ -5,8 +5,8 @@
 //! - [`format_vox`]: MagicaVoxel `.vox` import/export.
 //! - [`format_gox`]: Goxel `.gox` import/export.
 //! - [`format_gltf`]: glTF 2.0 `.glb` / `.gltf` export.
-//! - [`format_obj`] / [`format_mtl`]: Wavefront OBJ + MTL export in the
-//!   MagicaVoxel layout, and OBJ import.
+//! - [`format_obj`] / [`format_mtl`]: Wavefront OBJ + MTL export (Fast load
+//!   or MagicaVoxel layout) and OBJ import.
 //! - [`format_ply`]: Stanford `.ply` export and import.
 //! - [`format_qb`]: Qubicle Binary `.qb` import/export.
 //! - [`format_qbt`]: Qubicle Binary Tree `.qbt` import/export.
@@ -14,6 +14,7 @@
 //! - [`format_stl`]: binary STL export, binary/ASCII STL import.
 //! - [`mesh_import`]: voxelizes imported OBJ/STL meshes into a project.
 //! - [`format_palette`]: GIMP `.gpl` and `.hex` palette files.
+//! - [`slices`]: Export Slices (one PNG per voxel slice).
 //! - [`image_io`]: PNG and JPEG reference images.
 
 pub mod format_gltf;
@@ -34,6 +35,7 @@ pub mod mesh_export;
 pub mod mesh_import;
 pub mod png_io;
 mod qubicle;
+pub mod slices;
 #[cfg(test)]
 mod test_samples;
 
@@ -44,8 +46,9 @@ pub use format_gltf::{
 pub use format_gox::{read_gox, write_gox, GOX_EXTENSION};
 pub use format_mtl::{palette_from_mtl, read_mtl, MtlMaterial, MTL_EXTENSION};
 pub use format_obj::{
-    build_obj_export, export_obj, read_obj, sibling_loader, write_obj_file, write_obj_set,
-    ObjExport, ObjMesh, DEFAULT_OBJ_SCALE, OBJ_EXTENSION,
+    build_obj, build_obj_export, export_obj, read_obj, sibling_loader, write_obj, write_obj_file,
+    write_obj_set, ObjExport, ObjLayout, ObjMesh, ObjOptions, DEFAULT_OBJ_SCALE, FAST_LOAD_MARK,
+    OBJ_EXTENSION,
 };
 pub use format_palette::{
     load_palette_file, read_gpl, read_hex, save_palette_file, write_gpl, write_hex, PaletteFile,
@@ -69,3 +72,4 @@ pub use image_io::{
 pub use interchange::{evaluate_layer, ExportGroup, ExportLayer, ExportScene};
 pub use mesh_export::Pivot;
 pub use mesh_import::{project_from_mesh, uncolored, MeshImportInfo, UpAxis};
+pub use slices::{export_slices, Slice, SliceAxis, MAX_SLICE_SCALE};

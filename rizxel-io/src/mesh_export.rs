@@ -39,6 +39,26 @@ impl Pivot {
     }
 }
 
+/// sRGB channel (0..255) -> linear 0..1.
+pub fn srgb_to_linear(c: u8) -> f32 {
+    let c = c as f32 / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Linear 0..1 -> sRGB 0..1.
+pub fn linear_to_srgb(v: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,5 +69,13 @@ mod tests {
         assert_eq!(Pivot::BottomCenter.origin(b), Vec3::new(2.0, 0.0, 4.0));
         assert_eq!(Pivot::Center.origin(b), Vec3::new(2.5, 2.0, 3.5));
         assert_eq!(Pivot::Corner.origin(b), Vec3::ZERO);
+    }
+
+    #[test]
+    fn srgb_survives_six_decimal_linear() {
+        for c in 0..=255u8 {
+            let stored: f32 = format!("{:.6}", srgb_to_linear(c)).parse().unwrap();
+            assert_eq!((linear_to_srgb(stored) * 255.0).round() as u8, c);
+        }
     }
 }

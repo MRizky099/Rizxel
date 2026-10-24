@@ -14,10 +14,14 @@
 //! - `--scale <units per voxel>` (default: the format's own)
 //! - `--pivot bottom-center|center|corner`
 //! - `--gltf-colors vertex|texture`
+//! - `--obj-layout fast|magicavoxel` (default fast)
+//!
+//! Export Slices: `--slices x|y|z [--slice-scale N] input outdir` writes
+//! one PNG per slice into the folder `outdir`.
 
 use std::path::PathBuf;
 
-use rizxel_app::{AppState, ExportOptions, FileFormat, GltfColors, Pivot};
+use rizxel_app::{AppState, ExportOptions, FileFormat, GltfColors, ObjLayout, Pivot, SliceAxis};
 
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("{msg}");
@@ -26,6 +30,8 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 
 fn main() {
     let mut options = ExportOptions::default();
+    let mut slices: Option<SliceAxis> = None;
+    let mut slice_scale = 1u32;
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
@@ -63,15 +69,36 @@ fn main() {
                     _ => fail("--gltf-colors is vertex or texture"),
                 }
             }
+            "--slices" => {
+                slices = Some(match value.as_str() {
+                    "x" => SliceAxis::X,
+                    "y" => SliceAxis::Y,
+                    "z" => SliceAxis::Z,
+                    _ => fail("--slices is x, y or z"),
+                })
+            }
+            "--slice-scale" => {
+                slice_scale = value
+                    .parse()
+                    .unwrap_or_else(|_| fail("--slice-scale needs a whole number"))
+            }
+            "--obj-layout" => {
+                options.obj_layout = match value.as_str() {
+                    "fast" | "fast-load" => ObjLayout::FastLoad,
+                    "magicavoxel" | "magica" => ObjLayout::MagicaVoxel,
+                    _ => fail("--obj-layout is fast or magicavoxel"),
+                }
+            }
             _ => fail(format!("unknown option {flag}")),
         }
     }
     let [input, output] = paths.as_slice() else {
         fail("usage: convert [options] <input> <output>");
     };
-    let Some(format) = FileFormat::from_path(output) else {
+    let format = FileFormat::from_path(output);
+    if slices.is_none() && format.is_none() {
         fail(format!("unsupported output type: {}", output.display()));
-    };
+    }
     let mut state = AppState::default();
     match state.import(input) {
         Ok(msg) => println!("{msg}"),
@@ -91,7 +118,12 @@ fn main() {
             doc.data.palette.len()
         );
     }
-    match state.export_active_with(output, format, &options) {
+    let result = match (slices, format) {
+        (Some(axis), _) => state.export_slices(output, axis, slice_scale),
+        (None, Some(format)) => state.export_active_with(output, format, &options),
+        (None, None) => unreachable!(),
+    };
+    match result {
         Ok(msg) => println!("{msg}"),
         Err(e) => {
             eprintln!("export failed: {e}");

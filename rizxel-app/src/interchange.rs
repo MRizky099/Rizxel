@@ -4,7 +4,7 @@
 //! |---|---|---|
 //! | MagicaVoxel `.vox` | new tab: layers, groups, linked clones, palette | one model per layer, names, hidden flags, palette |
 //! | Goxel `.gox` | new tab: layers, groups, clones, shapes, materials | same, natively where Goxel can |
-//! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` + palette `.png` in MagicaVoxel's layout |
+//! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` (Fast load), or + palette `.png` (MagicaVoxel layout) |
 //! | `.mtl` | palette and materials of the active document | `.mtl` + palette `.png` |
 //! | STL `.stl` | new tab: voxelized, one color | binary STL, Z-up, 1 voxel = 1 mm |
 //! | glTF `.glb` / `.gltf` | — | one node per visible layer, groups, instanced clones |
@@ -51,6 +51,7 @@ pub struct ExportOptions {
     pub scale: Option<f32>,
     pub pivot: rizxel_io::Pivot,
     pub gltf_colors: rizxel_io::GltfColors,
+    pub obj_layout: rizxel_io::ObjLayout,
 }
 
 impl ExportOptions {
@@ -165,7 +166,7 @@ impl FileFormat {
     /// What an export writes, for menus and tooltips.
     pub const fn export_note(self) -> &'static str {
         match self {
-            FileFormat::Obj => "OBJ + MTL + palette PNG (MagicaVoxel layout, scale 0.1)",
+            FileFormat::Obj => "OBJ + MTL, Fast load or MagicaVoxel layout, scale 0.1",
             FileFormat::Mtl => "MTL + palette PNG",
             FileFormat::Vox => "one model per layer, groups kept",
             FileFormat::Gox => "layers, groups, clones, shapes, materials",
@@ -455,14 +456,23 @@ impl AppState {
             .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
         let detail = match format {
             FileFormat::Obj => {
-                let tris = rizxel_io::write_obj_set(
-                    path,
-                    &doc.merged_visible_volume(),
-                    doc.data.bounds,
-                    &doc.data.palette,
-                    rizxel_io::DEFAULT_OBJ_SCALE,
-                )?;
-                format!("{tris} triangles, with .mtl and .png")
+                let scene = doc.export_scene();
+                let obj = rizxel_io::ObjOptions {
+                    layout: options.obj_layout,
+                    scale: options.scale_for(format),
+                    origin: options.pivot.origin(scene.bounds),
+                };
+                let e = rizxel_io::write_obj(path, &scene, &obj)?;
+                let files = if e.png.is_empty() {
+                    ".mtl"
+                } else {
+                    ".mtl and .png"
+                };
+                format!(
+                    "{} triangles, {} layout, with {files}",
+                    e.triangles,
+                    options.obj_layout.label()
+                )
             }
             FileFormat::Mtl => {
                 let stem = stem(path);
@@ -544,24 +554,51 @@ impl AppState {
         Ok(format!("Exported {} ({detail})", path.display()))
     }
 
+    /// *Export Slices*: one PNG per slice of the visible layers along
+    /// `axis`, `scale` pixels per voxel, into the folder `dir` (created when
+    /// missing). Returns a status message.
+    pub fn export_slices(
+        &self,
+        dir: &Path,
+        axis: rizxel_io::SliceAxis,
+        scale: u32,
+    ) -> Result<String, RzxlError> {
+        let doc = self
+            .doc()
+            .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
+        let slices = rizxel_io::export_slices(
+            &doc.merged_visible_volume(),
+            &doc.data.palette,
+            axis,
+            scale,
+            &doc.name,
+        )?;
+        std::fs::create_dir_all(dir)?;
+        for s in &slices {
+            std::fs::write(dir.join(&s.file_name), &s.png)?;
+        }
+        Ok(format!(
+            "Exported {} {} slices to {}",
+            slices.len(),
+            axis.label(),
+            dir.display()
+        ))
+    }
+
     /// True when the active document has visible voxels to export as OBJ.
     pub fn can_export_obj(&self) -> bool {
         self.can_export(FileFormat::Obj)
     }
 
-    /// Exports the visible layers of the active document as OBJ + MTL +
-    /// palette PNG (MagicaVoxel layout). Returns the number of triangles.
+    /// Exports the visible layers of the active document as OBJ + MTL in
+    /// the default (Fast load) layout. Returns the number of triangles.
     pub fn export_active_obj(&self, path: &Path) -> Result<usize, RzxlError> {
         let doc = self
             .doc()
             .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
-        rizxel_io::write_obj_set(
-            path,
-            &doc.merged_visible_volume(),
-            doc.data.bounds,
-            &doc.data.palette,
-            rizxel_io::DEFAULT_OBJ_SCALE,
-        )
+        let scene = doc.export_scene();
+        let options = rizxel_io::ObjOptions::new(scene.bounds);
+        Ok(rizxel_io::write_obj(path, &scene, &options)?.triangles)
     }
 }
 
@@ -651,8 +688,21 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        // OBJ export wrote its companions.
-        assert!(d.join("model.mtl").exists() && d.join("model.png").exists());
+        // The default Fast load OBJ needs only its .mtl.
+        assert!(d.join("model.mtl").exists() && !d.join("model.png").exists());
+        let magica = ExportOptions {
+            obj_layout: rizxel_io::ObjLayout::MagicaVoxel,
+            ..ExportOptions::default()
+        };
+        let path = d.join("magica.obj");
+        let msg = src
+            .export_active_with(&path, FileFormat::Obj, &magica)
+            .unwrap();
+        assert!(msg.contains("MagicaVoxel layout"), "{msg}");
+        assert!(d.join("magica.png").exists());
+        let mut dst = AppState::default();
+        dst.import(&path).unwrap();
+        assert_eq!(dst.doc().unwrap().visible_voxel_count(), visible);
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -680,6 +730,20 @@ mod tests {
             1,
             "clone instanced"
         );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn slices_are_written_into_a_folder() {
+        let d = dir().join("slices");
+        let s = sample_state();
+        let msg = s.export_slices(&d, rizxel_io::SliceAxis::Y, 2).unwrap();
+        let height = s.doc().unwrap().data.bounds.y() as usize;
+        assert!(msg.contains(&format!("{height} Y slices")), "{msg}");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), height);
+        assert!(AppState::default()
+            .export_slices(&d, rizxel_io::SliceAxis::Y, 1)
+            .is_err());
         std::fs::remove_dir_all(&d).ok();
     }
 
