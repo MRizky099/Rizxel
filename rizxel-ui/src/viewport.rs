@@ -31,7 +31,7 @@ use rizxel_app::{
 use rizxel_math::{BoundSize, ImageData, VoxelBox};
 
 use crate::render::{
-    GpuMesh, LineInstance, RefPixels, ReferenceDraw, SceneFrame, ViewportCallback,
+    GpuMesh, LineInstance, RefPixels, ReferenceDraw, RenderLook, SceneFrame, ViewportCallback,
 };
 use crate::theme;
 use crate::tool_input::{self, ToolInput};
@@ -224,13 +224,22 @@ pub struct Projection {
     /// World units covered by the viewport height in orthographic mode;
     /// `None` in perspective.
     ortho_height: Option<f32>,
+    /// Vertical field of view of the perspective camera (radians).
+    fov_y: f32,
 }
 
 impl Projection {
-    fn new(camera: &OrbitCamera, target: Vec3, rect: Rect) -> Self {
+    pub fn new(camera: &OrbitCamera, target: Vec3, rect: Rect) -> Self {
+        Self::with_fov(camera, target, rect, OrbitCamera::FOV_Y)
+    }
+
+    /// Camera with a perspective field of view of `fov_y` radians (Render
+    /// mode's lens setting).
+    pub fn with_fov(camera: &OrbitCamera, target: Vec3, rect: Rect, fov_y: f32) -> Self {
         let aspect = rect.width() / rect.height().max(1.0);
         Self {
-            view_proj: camera.view_proj(target, aspect),
+            fov_y,
+            view_proj: camera.view_proj_fov(target, aspect, fov_y),
             rect,
             eye: camera.eye(target),
             forward: -camera.eye_direction(),
@@ -244,11 +253,26 @@ impl Projection {
         self.eye
     }
 
+    /// World -> clip matrix.
+    pub fn view_proj(&self) -> Mat4 {
+        self.view_proj
+    }
+
+    /// Unit view direction.
+    pub fn forward(&self) -> Vec3 {
+        self.forward
+    }
+
+    /// Orthographic view height in world units (`None` in perspective).
+    pub fn ortho_height(&self) -> Option<f32> {
+        self.ortho_height
+    }
+
     /// On-screen size (logical points) of one world unit at `world`.
     pub fn points_per_unit(&self, world: Vec3) -> f32 {
         let span = self.ortho_height.unwrap_or_else(|| {
             let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
-            2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan()
+            2.0 * depth * (self.fov_y * 0.5).tan()
         });
         self.rect.height() / span
     }
@@ -291,6 +315,14 @@ impl Projection {
         }
         let t = -eye.y / dir.y;
         (t > 0.0).then(|| eye + dir * t)
+    }
+}
+
+/// Field of view of the viewport: the Render settings' lens in Render mode.
+pub fn view_fov(state: &AppState) -> f32 {
+    match (state.view_mode, state.doc()) {
+        (ViewMode::Render, Some(doc)) => doc.data.render.camera.fov.to_radians(),
+        _ => OrbitCamera::FOV_Y,
     }
 }
 
@@ -344,7 +376,7 @@ pub fn show(
     }
     state.viewport_aspect = rect.width() / rect.height().max(1.0);
     let target = rizxel_app::orbit_base(bounds) + state.camera.pan;
-    let proj = Projection::new(&state.camera, target, rect);
+    let proj = Projection::with_fov(&state.camera, target, rect, view_fov(state));
 
     // --- Slice Mode: hide the camera's side, slider on the right edge -------
     if let Some(doc) = state.doc_mut() {
@@ -470,6 +502,74 @@ pub fn show(
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
+}
+
+/// Source of upload keys for output meshes (never shared with the viewport's).
+static OUTPUT_BUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
+
+/// Camera matrices of a `size`-pixel output image seen through `camera`,
+/// with the Render settings' lens. Same framing as the viewport for the
+/// same camera and aspect ratio.
+pub fn output_projection(doc: &Document, camera: &OrbitCamera, size: [u32; 2]) -> Projection {
+    let target = rizxel_app::orbit_base(doc.data.bounds) + camera.pan;
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(size[0] as f32, size[1] as f32));
+    Projection::with_fov(
+        camera,
+        target,
+        rect,
+        doc.data.render.camera.fov.to_radians(),
+    )
+}
+
+/// Scene of the *Image* output: `doc`'s Render-mode raster view through
+/// `camera` at `size` pixels, without grid lines, bounds or references.
+/// The meshes are built here (not taken from the viewport cache), so the
+/// image never shows tiles still meshing in the background.
+pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bool) -> SceneFrame {
+    let bounds = doc.data.bounds;
+    let (bmin, _) = bounds_box(bounds);
+    let proj = output_projection(doc, camera, size);
+    let target = rizxel_app::orbit_base(bounds) + camera.pan;
+    let (look, background) = RenderLook::from_settings(&doc.data.render);
+    let view = doc.view_meshes(false);
+    let gpu = |mesh: &rizxel_app::Mesh| {
+        let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Arc::new(GpuMesh::from_mesh((doc.id(), key), mesh, bmin))
+    };
+    let transparent: Vec<LayerMesh> = view
+        .transparent
+        .iter()
+        .map(|t| LayerMesh {
+            mesh: gpu(&t.mesh),
+            alpha: t.alpha,
+            center: t.center + bmin,
+        })
+        .collect();
+    SceneFrame {
+        view_proj: proj.view_proj,
+        eye: proj.eye,
+        target,
+        forward: proj.forward,
+        ortho: camera.is_ortho(),
+        distance: camera.distance,
+        grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
+        render_mode: true,
+        floor_grid: false,
+        voxel_grid: false,
+        ao,
+        background,
+        grid_color: theme::GRID_LINE,
+        axis_x: theme::AXIS_X,
+        axis_z: theme::AXIS_Z,
+        lines: Vec::new(),
+        fills: Vec::new(),
+        voxels: Some(gpu(&view.opaque)),
+        translucent: sorted_back_to_front(&proj, &transparent),
+        materials: doc.data.materials.clone(),
+        references: Vec::new(),
+        look,
+        screen_y: [1.0, 0.0],
+    }
 }
 
 /// Render mode has no editing tools: a click on the model sets the depth
@@ -659,6 +759,15 @@ fn scene_frame(
 ) -> SceneFrame {
     let camera = &state.camera;
     let view = state.view;
+    let (look, background) = match (state.view_mode, state.doc()) {
+        (ViewMode::Render, Some(doc)) => {
+            let (mut look, bg) = RenderLook::from_settings(&doc.data.render);
+            // The viewport never shows the transparency; output does.
+            look.transparent = false;
+            (look, bg)
+        }
+        _ => (RenderLook::default(), theme::WORKSPACE),
+    };
     let bold = state.doc().is_some_and(|d| d.plane.slice);
     let bound_color = if bold {
         theme::BOUND
@@ -689,10 +798,12 @@ fn scene_frame(
         // Align grid lines with the voxel cells of the (possibly odd-sized) bounds.
         grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
         render_mode: state.view_mode == ViewMode::Render,
+        look,
+        screen_y: [1.0, 0.0],
         floor_grid: view.floor_grid,
         voxel_grid: view.voxel_grid,
         ao: view.ao(state.view_mode),
-        background: theme::WORKSPACE,
+        background,
         grid_color: theme::GRID_LINE,
         axis_x: theme::AXIS_X,
         axis_z: theme::AXIS_Z,

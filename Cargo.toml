@@ -52,6 +52,10 @@ egui-phosphor = "0.14"
 craft-ui = { path = "vendor/craft-ui" }
 # Same major as the wgpu pulled in by eframe 0.36; used to validate WGSL in tests.
 naga = { version = "30", features = ["wgsl-in"] }
+# Blocks on wgpu futures for headless renders (already in the tree through eframe).
+pollster = "1"
+# Animated GIF turntables (small; LZW shared with the image crate).
+gif = "0.14"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

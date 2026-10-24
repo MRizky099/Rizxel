@@ -29,6 +29,7 @@ log.workspace = true
 env_logger.workspace = true
 image.workspace = true
 bytemuck.workspace = true
+pollster.workspace = true
 
 [dev-dependencies]
 naga.workspace = true

@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
+pub mod offscreen;
+
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
 use egui::Color32;
@@ -58,8 +60,16 @@ struct CameraUniform {
     /// orthographic mode).
     focus: [f32; 4],
     /// View toggles as 0 / 1: x = floor grid, y = voxel grid, z = ambient
-    /// occlusion, w unused.
+    /// occlusion, w = transparent background.
     options: [f32; 4],
+    /// Render mode key light: xyz = unit direction toward it, w = strength.
+    light: [f32; 4],
+    /// rgb = key light color.
+    light_color: [f32; 4],
+    /// rgb = ground color, w = 1 when the ground is drawn (Render mode).
+    ground: [f32; 4],
+    /// rgb = top color of the background gradient, w = 1 for a gradient.
+    background_top: [f32; 4],
 }
 
 /// One thick line segment (instanced; see `vs_line`).
@@ -258,6 +268,75 @@ fn rgba(c: Color32) -> [f32; 4] {
     [r, g, b, a].map(|v| v as f32 / 255.0)
 }
 
+/// Render mode's look from the document's render settings: key light,
+/// ground and background (colors in sRGB, like the rest of the scene).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderLook {
+    /// Unit direction toward the key light.
+    pub light_dir: Vec3,
+    /// 1 = the default brightness.
+    pub light_strength: f32,
+    pub light_color: [f32; 3],
+    /// Ground color, `None` without a ground.
+    pub ground: Option<[f32; 3]>,
+    /// Top color of a gradient background (`SceneFrame::background` is
+    /// the bottom).
+    pub background_top: Option<[f32; 3]>,
+    /// Background pixels get alpha 0 (PNG output).
+    pub transparent: bool,
+}
+
+impl Default for RenderLook {
+    /// The fixed Phase 9 key light; no ground.
+    fn default() -> Self {
+        Self {
+            light_dir: Vec3::new(0.4, 0.85, 0.35).normalize(),
+            light_strength: 1.0,
+            light_color: [1.0; 3],
+            ground: None,
+            background_top: None,
+            transparent: false,
+        }
+    }
+}
+
+impl RenderLook {
+    /// Look of `s`; returns it with the background's bottom color.
+    pub fn from_settings(s: &rizxel_math::RenderSettings) -> (Self, Color32) {
+        use rizxel_math::render::{sun_direction, BackgroundMode};
+        let l = &s.light;
+        let d = &s.display;
+        let srgb = |c: [f32; 3]| {
+            let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            Color32::from_rgb(r, g, b)
+        };
+        // No sun: light from straight above, dimmed, so the model still reads.
+        let (dir, strength) = if l.sun {
+            (
+                sun_direction(l.sun_azimuth, l.sun_elevation.max(1.0)),
+                (l.sun_intensity / 3.0).min(3.0),
+            )
+        } else {
+            (Vec3::Y, 0.3)
+        };
+        let (bottom, top) = match d.background {
+            BackgroundMode::Color => (d.background_color, None),
+            BackgroundMode::Gradient => (d.background_color, Some(d.background_top)),
+            BackgroundMode::Sky => (l.sky_color, Some(l.sky_zenith)),
+            BackgroundMode::Transparent => (d.background_color, None),
+        };
+        let look = Self {
+            light_dir: dir,
+            light_strength: strength,
+            light_color: l.sun_color,
+            ground: d.ground.then_some(d.ground_color),
+            background_top: top,
+            transparent: d.background == BackgroundMode::Transparent || s.output.transparent,
+        };
+        (look, srgb(bottom))
+    }
+}
+
 /// Everything the renderer needs for one frame. Built by the viewport UI.
 #[derive(Clone, Debug)]
 pub struct SceneFrame {
@@ -292,6 +371,11 @@ pub struct SceneFrame {
     pub materials: Vec<rizxel_math::Material>,
     /// Visible reference images, in draw order.
     pub references: Vec<ReferenceDraw>,
+    /// Render mode light, ground and background.
+    pub look: RenderLook,
+    /// Maps this frame's NDC y to the full image's (scale, offset): a tile
+    /// of a large output keeps the background gradient of the whole image.
+    pub screen_y: [f32; 2],
 }
 
 impl SceneFrame {
@@ -308,7 +392,12 @@ impl SceneFrame {
                 if self.render_mode { 1.0 } else { 0.0 },
                 grid_fade_distance(self.distance),
             ],
-            grid_origin: [self.grid_origin.x, self.grid_origin.y, 0.0, 0.0],
+            grid_origin: [
+                self.grid_origin.x,
+                self.grid_origin.y,
+                self.screen_y[0],
+                self.screen_y[1],
+            ],
             background: v4(self.background),
             grid_color: v4(self.grid_color),
             axis_x_color: v4(self.axis_x),
@@ -321,8 +410,27 @@ impl SceneFrame {
                 flag(self.floor_grid),
                 flag(self.voxel_grid),
                 flag(self.ao),
+                flag(self.look.transparent),
+            ],
+            light: self
+                .look
+                .light_dir
+                .extend(self.look.light_strength)
+                .to_array(),
+            light_color: [
+                self.look.light_color[0],
+                self.look.light_color[1],
+                self.look.light_color[2],
                 0.0,
             ],
+            ground: match self.look.ground {
+                Some([r, g, b]) => [r, g, b, 1.0],
+                None => [0.0; 4],
+            },
+            background_top: match self.look.background_top {
+                Some([r, g, b]) => [r, g, b, 1.0],
+                None => [0.0; 4],
+            },
         }
     }
 }
@@ -403,6 +511,8 @@ struct Targets {
     msaa_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     resolve_view: wgpu::TextureView,
+    /// The resolved image (copied out by offscreen renders).
+    resolve_texture: wgpu::Texture,
     blit_bind_group: wgpu::BindGroup,
 }
 
@@ -516,7 +626,7 @@ impl ViewportRenderer {
             .insert(renderer);
     }
 
-    fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let scene_shader = device.create_shader_module(wgpu::include_wgsl!("scene.wgsl"));
         let blit_shader = device.create_shader_module(wgpu::include_wgsl!("blit.wgsl"));
 
@@ -1058,18 +1168,20 @@ impl ViewportRenderer {
             height: size[1],
             depth_or_array_layers: 1,
         };
+        let raw_texture = |label, samples, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
         let texture = |label, samples, format, usage| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: extent,
-                    mip_level_count: 1,
-                    sample_count: samples,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
+            raw_texture(label, samples, format, usage)
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
         let msaa_view = texture(
@@ -1084,12 +1196,15 @@ impl ViewportRenderer {
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
-        let resolve_view = texture(
+        let resolve_texture = raw_texture(
             "rizxel_resolve",
             1,
             format,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
         );
+        let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rizxel_blit"),
             layout: &self.blit_layout,
@@ -1109,12 +1224,13 @@ impl ViewportRenderer {
             msaa_view,
             depth_view,
             resolve_view,
+            resolve_texture,
             blit_bind_group,
         });
     }
 
     /// Uploads per-frame data and records the offscreen scene pass.
-    fn render_scene(
+    pub(crate) fn render_scene(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1273,8 +1389,8 @@ mod tests {
 
     #[test]
     fn gpu_struct_sizes_match_wgsl() {
-        // WGSL struct: 2 mat4 + 10 vec4 = 128 + 160 bytes.
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 288);
+        // WGSL struct: 2 mat4 + 14 vec4 = 128 + 224 bytes.
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 352);
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
@@ -1409,6 +1525,8 @@ mod tests {
             translucent: Vec::new(),
             materials: Vec::new(),
             references: Vec::new(),
+            look: RenderLook::default(),
+            screen_y: [1.0, 0.0],
         };
         let u = frame.uniform([100, 100]);
         assert_eq!(u.options[..2], [1.0, 0.0]);

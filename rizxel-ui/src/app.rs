@@ -24,6 +24,10 @@ pub struct RizxelApp {
     docks: dock::Workspaces,
     /// Every document is answered for: the next close request is let through.
     quitting: bool,
+    /// The window's wgpu device (renders outputs); `None` without wgpu.
+    render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// Image, photo-realistic and turntable outputs.
+    outputs: crate::output::Outputs,
 }
 
 impl RizxelApp {
@@ -54,6 +58,8 @@ impl RizxelApp {
             target_format,
             docks: dock::Workspaces::default(),
             quitting: false,
+            render_state: cc.wgpu_render_state.clone(),
+            outputs: Default::default(),
         }
     }
 
@@ -350,6 +356,9 @@ impl eframe::App for RizxelApp {
                 state.status_message = Some(error);
             }
         });
+
+        self.outputs
+            .update(self.render_state.as_ref(), state, &mut ui_state.render);
 
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);

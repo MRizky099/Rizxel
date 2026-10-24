@@ -14,6 +14,7 @@ pub mod interchange;
 pub mod layer_tree;
 pub mod paths;
 pub mod recent;
+pub mod render_job;
 pub mod render_presets;
 pub mod selection;
 pub mod transform_session;
@@ -245,9 +246,15 @@ impl OrbitCamera {
 
     /// View -> clip matrix using the wgpu/DirectX convention (depth in `[0, 1]`).
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
+        self.projection_matrix_fov(aspect, Self::FOV_Y)
+    }
+
+    /// [`OrbitCamera::projection_matrix`] with a perspective field of view
+    /// of `fov_y` radians (Render mode's lens). Orthographic ignores it.
+    pub fn projection_matrix_fov(&self, aspect: f32, fov_y: f32) -> Mat4 {
         let aspect = aspect.max(0.01);
         match self.projection {
-            Projection::Perspective => perspective(Self::FOV_Y, aspect, Self::NEAR, Self::FAR),
+            Projection::Perspective => perspective(fov_y, aspect, Self::NEAR, Self::FAR),
             Projection::Orthographic => {
                 let half_h = self.view_height() * 0.5;
                 let half_w = half_h * aspect;
@@ -259,6 +266,11 @@ impl OrbitCamera {
     /// Combined world -> clip matrix for a viewport of the given aspect ratio.
     pub fn view_proj(&self, target: Vec3, aspect: f32) -> Mat4 {
         self.projection_matrix(aspect) * self.view_matrix(target)
+    }
+
+    /// [`OrbitCamera::view_proj`] with a field of view of `fov_y` radians.
+    pub fn view_proj_fov(&self, target: Vec3, aspect: f32, fov_y: f32) -> Mat4 {
+        self.projection_matrix_fov(aspect, fov_y) * self.view_matrix(target)
     }
 
     /// Aims at the world-space box `min..max` and zooms so it fills the
