@@ -1,12 +1,12 @@
-//! Option bar: history, voxel operations, per-tool parameters and view mode.
+//! Option bar: history, voxel operations and per-tool parameters.
 //!
 //! The parameters after the Paint button follow the active tool. Their set
-//! mirrors Goxel's tool panels (`src/tools/*.c`). The whole left part scrolls
-//! horizontally when the window is too narrow; the Model/Render toggle stays
-//! pinned to the right.
+//! mirrors Goxel's tool panels (`src/tools/*.c`). The bar scrolls
+//! horizontally when the window is too narrow. The Model/Render switch lives
+//! in the title bar.
 
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
-use rizxel_app::{AppState, ViewMode};
+use rizxel_app::AppState;
 use rizxel_engine::{
     BrushShape, Connectivity, DragMode, ExtrudeOptions, FillMode, LineMode, MaskMode, NamesMode,
     SelectionMode, Symmetry, Tool, VoxelOp, WorkPlane,
@@ -19,34 +19,15 @@ use crate::widgets::{hscroll_strip, vertical_divider};
 const BUTTON_SIZE: f32 = 32.0;
 const ICON_SIZE: f32 = 20.0;
 const DIVIDER_HEIGHT: f32 = 20.0;
-/// Gap between the scrolling strip and the pinned view toggle.
-const TOGGLE_GAP: f32 = 8.0;
-const VIEW_MODES: [(ViewMode, &str); 2] =
-    [(ViewMode::Model, "Model"), (ViewMode::Render, "Render")];
 
 pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let height = ui.max_rect().height();
-    let toggle_width = segmented_width(ui, &VIEW_MODES);
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        hscroll_strip(
-            ui,
-            "option_bar",
-            height,
-            toggle_width + TOGGLE_GAP,
-            theme::HOVER,
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                common_controls(ui, state, icons);
-                vertical_divider(ui, DIVIDER_HEIGHT);
-                tool_parameters(ui, state);
-                ui.add_space(8.0);
-            },
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            segmented(ui, "view_mode", &mut state.view_mode, &VIEW_MODES);
-        });
+    hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        common_controls(ui, state, icons);
+        vertical_divider(ui, DIVIDER_HEIGHT);
+        tool_parameters(ui, state);
+        ui.add_space(8.0);
     });
 }
 
@@ -813,13 +794,18 @@ fn segment_widths<T>(ui: &Ui, items: &[(T, &str)]) -> (Vec<f32>, f32) {
     (widths, height + SEG_PAD.y * 2.0)
 }
 
-fn segmented_width<T>(ui: &Ui, items: &[(T, &str)]) -> f32 {
+pub(crate) fn segmented_width<T>(ui: &Ui, items: &[(T, &str)]) -> f32 {
     segment_widths(ui, items).0.iter().sum()
 }
 
 /// Segmented control sized to its labels (`px-3 py-1` in the HTML), used for
 /// Model/Render and the single-choice tool options.
-fn segmented<T: PartialEq + Copy>(ui: &mut Ui, id: &str, value: &mut T, items: &[(T, &str)]) {
+pub(crate) fn segmented<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut T,
+    items: &[(T, &str)],
+) {
     let labels: Vec<&str> = items.iter().map(|(_, l)| *l).collect();
     let active: Vec<bool> = items.iter().map(|(item, _)| item == value).collect();
     if let Some(i) = segments(ui, id, &labels, &active) {

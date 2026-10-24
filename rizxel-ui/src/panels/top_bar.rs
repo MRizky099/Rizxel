@@ -1,12 +1,15 @@
-//! Title bar: app icon, menus, centered title and window controls.
+//! Title bar: app icon, menus, centered title, the Model/Render switch and
+//! window controls.
 //! Doubles as the drag handle for the frameless window.
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, CloseAction, CloseChoice, CloseStep, CoreOp, FileFormat, SliceStep};
+use rizxel_app::{
+    AppState, CloseAction, CloseChoice, CloseStep, CoreOp, FileFormat, SliceStep, ViewMode,
+};
 use rizxel_engine::tools::BooleanOp;
 
-use super::UiState;
+use super::{options, UiState};
 use crate::dock::{self, Workspace};
 use crate::widgets::{icon_button, icon_label, IconStyle};
 use crate::{actions, theme};
@@ -26,183 +29,308 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
         toggle_maximize(ui.ctx());
     }
 
-    // Centered title (painted, not interactive).
     let title = match state.doc() {
         Some(d) if d.is_dirty() => format!("{} \u{2022} Rizxel - Voxel Editor", d.title()),
         Some(d) => format!("{} - Rizxel - Voxel Editor", d.title()),
         None => "Rizxel - Voxel Editor".to_owned(),
     };
-    ui.painter().text(
-        bar.center(),
-        Align2::CENTER_CENTER,
-        title,
-        theme::regular(12.0),
-        theme::TEXT_MUTED,
+    let font = theme::regular(12.0);
+    let title_width = ui
+        .painter()
+        .layout_no_wrap(title.clone(), font.clone(), theme::TEXT_MUTED)
+        .size()
+        .x;
+    let menus_id = Id::new("title_bar_menus_width");
+    let menus_width = ui.data(|d| d.get_temp(menus_id)).unwrap_or(MENUS_ESTIMATE);
+    let layout = bar_layout(
+        bar.width(),
+        menus_width,
+        title_width,
+        options::segmented_width(ui, &VIEW_MODES),
     );
+    let span = |(left, right): (f32, f32)| {
+        egui::Rect::from_x_y_ranges(bar.left() + left..=bar.left() + right, bar.y_range())
+    };
 
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
+    // Title (painted, not interactive), centered on the bar while it fits,
+    // otherwise in the free space between the menus and the mode switch.
+    if let Some(range) = layout.title {
+        let rect = span(range);
+        let mut job = egui::text::LayoutJob::single_section(
+            title,
+            egui::TextFormat::simple(font, theme::TEXT_MUTED),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width());
+        let galley = ui.fonts_mut(|f| f.layout_job(job));
+        let pos = Align2::CENTER_CENTER
+            .align_size_within_rect(galley.size(), rect)
+            .min;
+        ui.painter()
+            .with_clip_rect(rect)
+            .galley(pos, galley, theme::TEXT_MUTED);
+    }
 
-        // App icon.
-        let (r, _) = ui.allocate_exact_size(egui::vec2(32.0, bar.height()), Sense::hover());
-        crate::widgets::paint_icon(ui, r, icon::CUBE, 15.0, theme::ACCENT);
+    // App icon.
+    let icon_rect = span((0.0, ICON_WIDTH));
+    crate::widgets::paint_icon(ui, icon_rect, icon::CUBE, 15.0, theme::ACCENT);
 
-        menus(ui, state, ui_state, dock);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(span(layout.menus))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 0.0;
+    menu_style(&mut child);
+    if layout.collapsed {
+        child.menu_button(
+            egui::RichText::new(icon::LIST).font(theme::icon(16.0)),
+            |ui| menu_entries(ui, state, ui_state, dock),
+        );
+    } else {
+        let width = egui::MenuBar::new()
+            .ui(&mut child, |ui| menu_entries(ui, state, ui_state, dock))
+            .response
+            .rect
+            .width();
+        ui.data_mut(|d| d.insert_temp(menus_id, width));
+    }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            window_controls(ui, bar.height());
-        });
-    });
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(span(layout.switch))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    options::segmented(&mut child, "view_mode", &mut state.view_mode, &VIEW_MODES);
+    child
+        .interact(child.min_rect(), Id::new("view_mode_hint"), Sense::hover())
+        .on_hover_text("View mode: Model for editing, Render for the lit preview");
+
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(span(layout.controls))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 0.0;
+    window_controls(&mut child, bar.height());
 }
 
-fn menus(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
+const VIEW_MODES: [(ViewMode, &str); 2] =
+    [(ViewMode::Model, "Model"), (ViewMode::Render, "Render")];
+const ICON_WIDTH: f32 = 32.0;
+const CONTROLS_WIDTH: f32 = CONTROL_WIDTH * 3.0;
+/// Space between the mode switch and its neighbours.
+const SWITCH_GAP: f32 = 8.0;
+/// Width of the ☰ button that replaces the menus in narrow windows.
+const COLLAPSED_MENUS_WIDTH: f32 = 36.0;
+/// Narrower than this, the title is hidden rather than squeezed.
+const MIN_TITLE_WIDTH: f32 = 48.0;
+/// Menu bar width before it has been measured once.
+const MENUS_ESTIMATE: f32 = 420.0;
+
+/// Horizontal spans of the title bar parts, as `(left, right)` offsets from
+/// the bar's left edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BarLayout {
+    menus: (f32, f32),
+    /// Menus folded into one ☰ button.
+    collapsed: bool,
+    title: Option<(f32, f32)>,
+    switch: (f32, f32),
+    controls: (f32, f32),
+}
+
+/// Lays the title bar out right to left: window controls at the far edge,
+/// the mode switch beside them, then the menus and title share the rest. In
+/// narrow bars the title shrinks first, then the menus fold into ☰.
+fn bar_layout(width: f32, menus: f32, title: f32, switch: f32) -> BarLayout {
+    let width = width.max(0.0);
+    let controls = ((width - CONTROLS_WIDTH).max(0.0), width);
+    let switch_right = (controls.0 - SWITCH_GAP).max(0.0);
+    let switch = ((switch_right - switch).max(0.0), switch_right);
+    let free_right = (switch.0 - SWITCH_GAP).max(ICON_WIDTH);
+    let collapsed = ICON_WIDTH + menus > free_right;
+    let menus_right = (ICON_WIDTH
+        + if collapsed {
+            COLLAPSED_MENUS_WIDTH
+        } else {
+            menus
+        })
+    .min(free_right);
+    let room = free_right - menus_right;
+    let title = if room < MIN_TITLE_WIDTH {
+        None
+    } else {
+        let centered = (width - title) / 2.0;
+        Some(
+            if centered >= menus_right && centered + title <= free_right {
+                (centered, centered + title)
+            } else if title <= room {
+                let left = menus_right + (room - title) / 2.0;
+                (left, left + title)
+            } else {
+                (menus_right, free_right)
+            },
+        )
+    };
+    BarLayout {
+        menus: (ICON_WIDTH, menus_right),
+        collapsed,
+        title,
+        switch,
+        controls,
+    }
+}
+
+fn menu_style(ui: &mut Ui) {
     ui.style_mut().spacing.button_padding = egui::vec2(10.0, 4.0);
     ui.style_mut()
         .text_styles
         .insert(egui::TextStyle::Button, theme::regular(12.0));
+}
 
-    egui::MenuBar::new().ui(ui, |ui| {
-        ui.menu_button("File", |ui| {
-            ui.set_min_width(220.0);
-            if menu_item(ui, icon::FILE_PLUS, "New", "Ctrl+N", true) {
-                actions::new_document(state);
-            }
-            if menu_item(ui, icon::FOLDER_OPEN, "Open...", "Ctrl+O", true) {
-                actions::open(state);
-            }
-            recent_menu(ui, state);
-            ui.separator();
-            if menu_item(ui, icon::FLOPPY_DISK, "Save", "Ctrl+S", true) {
-                actions::save(state);
-            }
-            if menu_item(
-                ui,
-                icon::FLOPPY_DISK_BACK,
-                "Save As...",
-                "Ctrl+Shift+S",
-                true,
-            ) {
-                actions::save_as(state);
-            }
-            ui.separator();
-            ui.menu_button(
-                icon_label(ui, icon::DOWNLOAD_SIMPLE, "Import", None),
-                |ui| {
-                    ui.set_min_width(240.0);
-                    for format in FileFormat::IMPORTS {
-                        let label = format!("{} (.{})...", format.label(), format.extension());
-                        let hint = if format == FileFormat::Mtl {
-                            "Replaces the palette and materials of the active document"
-                        } else {
-                            "Opens in a new tab"
-                        };
-                        if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
-                            actions::import(state, format);
-                        }
-                        ui.label(egui::RichText::new(hint).size(10.0).color(theme::TEXT_DIM));
-                    }
-                },
-            );
-            ui.menu_button(icon_label(ui, icon::EXPORT, "Export", None), |ui| {
-                ui.set_min_width(260.0);
-                for format in FileFormat::EXPORTS {
+/// The top-level menus, laid out in the menu bar or, when the bar is narrow,
+/// as submenus of the ☰ button.
+fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
+    ui.menu_button("File", |ui| {
+        ui.set_min_width(220.0);
+        if menu_item(ui, icon::FILE_PLUS, "New", "Ctrl+N", true) {
+            actions::new_document(state);
+        }
+        if menu_item(ui, icon::FOLDER_OPEN, "Open...", "Ctrl+O", true) {
+            actions::open(state);
+        }
+        recent_menu(ui, state);
+        ui.separator();
+        if menu_item(ui, icon::FLOPPY_DISK, "Save", "Ctrl+S", true) {
+            actions::save(state);
+        }
+        if menu_item(
+            ui,
+            icon::FLOPPY_DISK_BACK,
+            "Save As...",
+            "Ctrl+Shift+S",
+            true,
+        ) {
+            actions::save_as(state);
+        }
+        ui.separator();
+        ui.menu_button(
+            icon_label(ui, icon::DOWNLOAD_SIMPLE, "Import", None),
+            |ui| {
+                ui.set_min_width(240.0);
+                for format in FileFormat::IMPORTS {
                     let label = format!("{} (.{})...", format.label(), format.extension());
-                    if menu_item(
-                        ui,
-                        icon::FILE_ARROW_UP,
-                        &label,
-                        "",
-                        state.can_export(format),
-                    ) {
-                        actions::export(state, format);
+                    let hint = if format == FileFormat::Mtl {
+                        "Replaces the palette and materials of the active document"
+                    } else {
+                        "Opens in a new tab"
+                    };
+                    if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
+                        actions::import(state, format);
                     }
-                    ui.label(
-                        egui::RichText::new(format.export_note())
-                            .size(10.0)
-                            .color(theme::TEXT_DIM),
-                    );
+                    ui.label(egui::RichText::new(hint).size(10.0).color(theme::TEXT_DIM));
                 }
-            });
-            ui.separator();
-            // Goes through the app's close request, which asks about
-            // unsaved documents first.
-            if menu_item(ui, icon::SIGN_OUT, "Exit", "Alt+F4", true) {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+            },
+        );
+        ui.menu_button(icon_label(ui, icon::EXPORT, "Export", None), |ui| {
+            ui.set_min_width(260.0);
+            for format in FileFormat::EXPORTS {
+                let label = format!("{} (.{})...", format.label(), format.extension());
+                if menu_item(
+                    ui,
+                    icon::FILE_ARROW_UP,
+                    &label,
+                    "",
+                    state.can_export(format),
+                ) {
+                    actions::export(state, format);
+                }
+                ui.label(
+                    egui::RichText::new(format.export_note())
+                        .size(10.0)
+                        .color(theme::TEXT_DIM),
+                );
+            }
+        });
+        ui.separator();
+        // Goes through the app's close request, which asks about
+        // unsaved documents first.
+        if menu_item(ui, icon::SIGN_OUT, "Exit", "Alt+F4", true) {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        }
+    });
+
+    ui.menu_button("Edit", |ui| edit_menu(ui, state));
+    ui.menu_button("Selection", |ui| selection_menu(ui, state));
+    ui.menu_button("Layer", |ui| layer_menu(ui, state));
+    ui.menu_button("Model", |ui| model_menu(ui, state));
+
+    ui.menu_button("View", |ui| {
+        ui.set_min_width(220.0);
+
+        if menu_item(ui, icon::CUBE_FOCUS, "Zen Mode", "Ctrl+Shift+F", true) {
+            ui_state.zen_mode = !ui_state.zen_mode;
+        }
+        slice_menu(ui, state);
+        show_menu(ui, state);
+        ui.separator();
+
+        // Standard views: each family of targets is its own submenu.
+        ui.menu_button(icon_label(ui, icon::SQUARE, "Faces", None), |ui| {
+            ui.set_min_width(160.0);
+            for face in rizxel_app::ViewFace::ALL {
+                if menu_item(ui, icon::SQUARE, face.label(), "", true) {
+                    state.snap_view(rizxel_app::ViewTarget::Face(face));
+                }
             }
         });
 
-        ui.menu_button("Edit", |ui| edit_menu(ui, state));
-        ui.menu_button("Selection", |ui| selection_menu(ui, state));
-        ui.menu_button("Layer", |ui| layer_menu(ui, state));
-        ui.menu_button("Model", |ui| model_menu(ui, state));
-
-        ui.menu_button("View", |ui| {
-            ui.set_min_width(220.0);
-
-            if menu_item(ui, icon::CUBE_FOCUS, "Zen Mode", "Ctrl+Shift+F", true) {
-                ui_state.zen_mode = !ui_state.zen_mode;
+        ui.menu_button(icon_label(ui, icon::LINE_SEGMENT, "Edges", None), |ui| {
+            ui.set_min_width(160.0);
+            for edge in rizxel_app::ViewEdge::ALL {
+                if menu_item(ui, icon::LINE_SEGMENT, edge.label(), "", true) {
+                    state.snap_view(rizxel_app::ViewTarget::Edge(edge));
+                }
             }
-            slice_menu(ui, state);
-            show_menu(ui, state);
-            ui.separator();
-
-            // Standard views: each family of targets is its own submenu.
-            ui.menu_button(icon_label(ui, icon::SQUARE, "Faces", None), |ui| {
-                ui.set_min_width(160.0);
-                for face in rizxel_app::ViewFace::ALL {
-                    if menu_item(ui, icon::SQUARE, face.label(), "", true) {
-                        state.snap_view(rizxel_app::ViewTarget::Face(face));
-                    }
-                }
-            });
-
-            ui.menu_button(icon_label(ui, icon::LINE_SEGMENT, "Edges", None), |ui| {
-                ui.set_min_width(160.0);
-                for edge in rizxel_app::ViewEdge::ALL {
-                    if menu_item(ui, icon::LINE_SEGMENT, edge.label(), "", true) {
-                        state.snap_view(rizxel_app::ViewTarget::Edge(edge));
-                    }
-                }
-            });
-
-            ui.menu_button(icon_label(ui, icon::CUBE, "Corners", None), |ui| {
-                ui.set_min_width(160.0);
-                for corner in rizxel_app::ViewCorner::ALL {
-                    if menu_item(ui, icon::CUBE, corner.label(), "", true) {
-                        state.snap_view(rizxel_app::ViewTarget::Corner(corner));
-                    }
-                }
-            });
-
-            ui.separator();
-            camera_items(ui, state);
-
-            ui.separator();
-            let refs = state.doc().map_or((0, false), |d| {
-                let r = &d.data.references;
-                (r.len(), r.iter().any(|r| r.visible))
-            });
-            if menu_item(
-                ui,
-                check_glyph(refs.1),
-                "Reference Images",
-                "Alt+R",
-                refs.0 > 0,
-            ) {
-                state.toggle_all_references();
-            }
-            panels_menu(ui, dock);
         });
 
-        ui.menu_button("Help", |ui| {
-            ui.set_min_width(200.0);
-            if menu_item(ui, icon::KEYBOARD, "Keyboard Shortcuts", "", true) {
-                ui_state.show_shortcuts = true;
-            }
-            if menu_item(ui, icon::INFO, "About Rizxel", "", true) {
-                ui_state.show_about = true;
+        ui.menu_button(icon_label(ui, icon::CUBE, "Corners", None), |ui| {
+            ui.set_min_width(160.0);
+            for corner in rizxel_app::ViewCorner::ALL {
+                if menu_item(ui, icon::CUBE, corner.label(), "", true) {
+                    state.snap_view(rizxel_app::ViewTarget::Corner(corner));
+                }
             }
         });
+
+        ui.separator();
+        camera_items(ui, state);
+
+        ui.separator();
+        let refs = state.doc().map_or((0, false), |d| {
+            let r = &d.data.references;
+            (r.len(), r.iter().any(|r| r.visible))
+        });
+        if menu_item(
+            ui,
+            check_glyph(refs.1),
+            "Reference Images",
+            "Alt+R",
+            refs.0 > 0,
+        ) {
+            state.toggle_all_references();
+        }
+        panels_menu(ui, dock);
+    });
+
+    ui.menu_button("Help", |ui| {
+        ui.set_min_width(200.0);
+        if menu_item(ui, icon::KEYBOARD, "Keyboard Shortcuts", "", true) {
+            ui_state.show_shortcuts = true;
+        }
+        if menu_item(ui, icon::INFO, "About Rizxel", "", true) {
+            ui_state.show_about = true;
+        }
     });
 }
 
@@ -1046,5 +1174,57 @@ fn shortcut_rows(ui: &mut Ui) {
         ui.label(egui::RichText::new(tool.shortcut().to_string()).color(theme::TEXT_STRONG));
         ui.label(format!("{} tool", tool.label()));
         ui.end_row();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SWITCH: f32 = 120.0;
+
+    #[test]
+    fn mode_switch_never_overlaps_window_controls() {
+        for width in (640..=3840).step_by(16) {
+            let width = width as f32;
+            for menus in [300.0, 420.0, 600.0] {
+                let l = bar_layout(width, menus, 260.0, SWITCH);
+                assert_eq!(l.controls, (width - CONTROLS_WIDTH, width));
+                assert!(l.switch.1 + SWITCH_GAP <= l.controls.0, "{width}");
+                assert!((l.switch.1 - l.switch.0 - SWITCH).abs() < 1e-3, "{width}");
+                assert!(l.menus.1 <= l.switch.0, "{width}");
+                if let Some((left, right)) = l.title {
+                    assert!(left >= l.menus.1 && right <= l.switch.0, "{width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn title_shrinks_before_menus_collapse() {
+        let wide = bar_layout(1920.0, 420.0, 260.0, SWITCH);
+        assert!(!wide.collapsed);
+        let (left, right) = wide.title.unwrap();
+        assert!(
+            ((left + right) / 2.0 - 960.0).abs() < 1e-3,
+            "centered on the bar"
+        );
+
+        // Not enough room to center it: it moves into the free space, then
+        // gets narrower than its text.
+        let moved = bar_layout(1000.0, 420.0, 260.0, SWITCH);
+        let (left, right) = moved.title.unwrap();
+        assert!(left >= moved.menus.1 && (right - left - 260.0).abs() < 1e-3);
+        let snug = bar_layout(960.0, 420.0, 260.0, SWITCH);
+        assert!(!snug.collapsed);
+        let (left, right) = snug.title.unwrap();
+        assert!(right - left < 260.0);
+
+        let narrow = bar_layout(640.0, 420.0, 260.0, SWITCH);
+        assert!(narrow.collapsed);
+        assert_eq!(
+            narrow.menus,
+            (ICON_WIDTH, ICON_WIDTH + COLLAPSED_MENUS_WIDTH)
+        );
     }
 }
