@@ -54,6 +54,11 @@ The **Phase** column names the plan that closes the gap (see
 | The Model / Render switch hides with the Tool Options panel | Phase 10d, `193871f` (now in the title bar) |
 | Palette, Layers and Bound Model can't form tab groups | Phase 10d, `56e4bba` (tab groups instead of the stack) |
 | Tab titles hug their labels; crowded strips hide tabs in a "…" menu | Phase 10d, `4d52dfb` (Fill widths, scrolling strips) |
+| No glTF, PLY or Qubicle (`.qb`, `.qef`, `.qbt`) support | Phase 11, `a6625a0`, `68f07cf` |
+| No Export Slices | Phase 11, `40bd3da` |
+| OBJ export loads slowly in other tools | Phase 11, `40bd3da` (Fast load layout, the new default) |
+| No heightmap import, and `voxelize` has no UI | Phase 11, `3701e78` (Heightmap import, Voxelizer dialog) |
+| No mesh export options (scale, pivot, per-layer files) | Phase 11, `5e825eb` |
 
 ## Known bugs
 
@@ -75,16 +80,17 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No glTF, PLY or Qubicle (`.qb`, `.qef`, `.qbt`) support | Medium | 11 | glTF is the common format for game and web pipelines; `.qb` is the main Qubicle format. |
 | No image output: PNG render, photo-realistic render, turntables, sprite sheets | Medium | 11b | |
-| No Export Slices | Low | 11 | |
-| OBJ export loads slowly in other tools | Medium | 11 | The MagicaVoxel layout mixes v/vt/vn indices and colors through a palette PNG, so loaders must rebuild vertices and decode the texture. A fast-load layout (one index per corner, `Kd` colors) becomes the default. |
-| No heightmap import, and `voxelize` has no UI | Medium | 11 | |
-| No mesh export options (scale, pivot, per-layer files) | Medium | 11 | |
+| glTF and the Fast load OBJ aren't checked in Blender or Godot | Medium | 12 | Neither is installed on the development machine; both open in Windows 3D Viewer. OBJ load times of the two layouts weren't compared. |
+| Fast load `Kd` colors look darker in some viewers | Low | — | `Kd` is written as linear RGB, like BrickLink Studio and as Blender reads it; Windows 3D Viewer reads it as sRGB. Rizxel's importer restores the exact colors. |
+| Qubicle files aren't checked in Qubicle | Medium | 12 | `.qb`, `.qbt` and `.qef` round-trip in Rizxel and follow the published layouts, but Qubicle itself wasn't available. `.qbt` and `.qef` handedness is assumed right-handed. |
+| No glTF import | Low | post | glTF is export only. |
+| Qubicle exports leave out hidden layers; pivots and scales are ignored on import | Low | post | Qubicle files have no hidden flag. Matrix pivots and local/global scales have no Rizxel equivalent. |
+| The Voxelizer preview runs on the UI thread | Low | 12 | Each setting change voxelizes the whole mesh; very large meshes stall the dialog. Open… and drag and drop skip the dialog. |
 | MagicaVoxel `MATL`, cameras and animation frames are dropped | Medium | post | |
 | `.vox` export bakes linked clones | Low | — | Done on purpose, to avoid bounds growing on re-import. |
 | Goxel previews, cameras, lights and image layers are dropped | Low | post | |
-| STL has no color | Low | — | It's a limit of the format. PLY (Phase 11) carries color. |
+| STL has no color | Low | — | It's a limit of the format. PLY carries color. |
 
 ## Editing tools
 

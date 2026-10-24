@@ -298,3 +298,25 @@ Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementa
 - No new document operations, so the undo tests are unchanged; 489 tests (402 Rizxel,
   87 craft-ui).
 
+## Phase 11 — Pipeline and export
+
+Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementation_plan.md)
+
+**Delivered** (branch `claude/phase11-pipeline-export-6102dc`, not released yet)
+- `format_gltf.rs`: hand-written glTF 2.0 / GLB with one node per visible layer, group
+  nodes, clone instancing (`ExportLayer::instance_of`), vertex colors or the palette
+  texture and per-layer PBR materials; `mesh_export::Pivot` shared by every mesh
+  export (`a6625a0`).
+- `qubicle.rs` with `format_qb.rs`, `format_qbt.rs` (zlib via `flate2`) and
+  `format_qef.rs`, plus `format_ply.rs` (binary export, ASCII/binary import); new
+  `FileFormat` entries and byte-equal re-export tests (`68f07cf`).
+- `ObjLayout::{FastLoad, MagicaVoxel}` with `build_obj` / `write_obj`; Fast load is the
+  default, its linear `Kd` marked in the header so imports restore exact colors;
+  `slices.rs` for Export Slices (`40bd3da`).
+- `heightmap.rs`, `image_io::decode_fitted`, quarter-turn mesh orientation and
+  `preview_mesh`; `AppState::{load_mesh, import_mesh, import_heightmap}` and the Voxelizer
+  and Heightmap dialogs in `rizxel-ui/src/panels/export.rs` (`3701e78`).
+- The mesh export options dialog and Export Slices dialog; STL takes scale and pivot;
+  per-layer files (`5e825eb`).
+- 534 tests (447 Rizxel, 87 craft-ui). Blender, Godot and Qubicle weren't available for
+  manual checks; the GLB and Fast load OBJ open in Windows 3D Viewer.
