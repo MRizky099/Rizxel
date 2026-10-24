@@ -1,8 +1,28 @@
 //! Wavefront OBJ export and import.
 //!
-//! ## Export (MagicaVoxel layout)
+//! [`write_obj`] writes one of two layouts ([`ObjLayout`]).
 //!
-//! [`write_obj_set`] writes `name.obj`, `name.mtl` and `name.png` in the same
+//! ## Export (Fast load layout, optional)
+//!
+//! Follows BrickLink Studio's OBJ export, where every corner can be copied
+//! straight into a vertex buffer (Blender 5.2 still imports the MagicaVoxel
+//! layout faster, so this is not the default):
+//!
+//! - Every quad corner is its own vertex with a position, a texcoord and a
+//!   normal, all at the same index, so faces read `f 1/1/1 2/2/2 3/3/3`
+//!   and loaders copy them straight into vertex buffers.
+//! - Faces are grouped by palette color (and layer material) with
+//!   `usemtl color_<index>`; the `.mtl` gives each group a plain linear
+//!   `Kd`, plus `Ke` for emission, `d` for opacity and `Pr`/`Pm`. No
+//!   texture is needed. Texcoords still point into the palette strip, so
+//!   the MagicaVoxel `.png` can be applied by hand.
+//! - The second header line ([`FAST_LOAD_MARK`]) tells the importer that
+//!   `Kd` is linear.
+//! - Files are about 3–5× the size of the MagicaVoxel layout.
+//!
+//! ## Export (MagicaVoxel layout, the default)
+//!
+//! Writes `name.obj`, `name.mtl` and `name.png` in the same
 //! layout as MagicaVoxel's OBJ export (reference: MagicaVoxel's own
 //! `chr_knight.obj` export of its `chr_knight.vox` sample):
 //!
@@ -49,18 +69,79 @@ use std::path::{Path, PathBuf};
 
 use glam::{IVec3, Vec2, Vec3};
 use rizxel_engine::{greedy_quads, Mesh, Triangle};
-use rizxel_math::{BoundSize, Palette, Rgba8, Voxel, VoxelVolume};
+use rizxel_math::{BoundSize, Material, Palette, Rgba8, Voxel, VoxelVolume, EMPTY_VOXEL};
 
 use crate::format_mtl::{
     fmt_g, read_mtl, write_palette_mtl, MtlMaterial, EXPORT_HEADER, PALETTE_MATERIAL,
 };
-use crate::interchange::{to_zup, zup_size};
+use crate::interchange::{to_zup, zup_size, ExportScene};
+use crate::mesh_export::{linear_to_srgb, srgb_to_linear, Pivot};
 use crate::png_io::{encode_rgba, RgbaImage};
 use crate::RzxlError;
 
 pub const OBJ_EXTENSION: &str = "obj";
 /// MagicaVoxel's default OBJ scale (`config.txt`, `io_obj.scale`).
 pub const DEFAULT_OBJ_SCALE: f32 = 0.1;
+/// Second line of Fast load OBJ files: their `Kd` values are linear.
+pub const FAST_LOAD_MARK: &str = "# layout: fast load (per-corner vertices, linear Kd)";
+
+/// How an OBJ export is laid out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjLayout {
+    /// MagicaVoxel's layout: shared vertices, six normals, palette PNG.
+    #[default]
+    MagicaVoxel,
+    /// Per-corner vertices, one material per color, no texture.
+    FastLoad,
+}
+
+impl ObjLayout {
+    pub const ALL: [ObjLayout; 2] = [ObjLayout::MagicaVoxel, ObjLayout::FastLoad];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            ObjLayout::FastLoad => "Fast load",
+            ObjLayout::MagicaVoxel => "MagicaVoxel",
+        }
+    }
+
+    pub const fn note(self) -> &'static str {
+        match self {
+            ObjLayout::FastLoad => "one index per corner, a color per material, no texture",
+            ObjLayout::MagicaVoxel => "shared vertices and a palette PNG; smallest files",
+        }
+    }
+}
+
+/// OBJ export settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjOptions {
+    pub layout: ObjLayout,
+    /// Units per voxel.
+    pub scale: f32,
+    /// Rizxel point placed at the origin (see [`Pivot`]).
+    pub origin: Vec3,
+}
+
+impl ObjOptions {
+    /// Defaults for `bounds`: MagicaVoxel layout, scale 0.1, bottom-center
+    /// pivot.
+    pub fn new(bounds: BoundSize) -> Self {
+        Self {
+            layout: ObjLayout::default(),
+            scale: DEFAULT_OBJ_SCALE,
+            origin: Pivot::default().origin(bounds),
+        }
+    }
+}
+
+fn valid_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        DEFAULT_OBJ_SCALE
+    }
+}
 
 // ------------------------------------------------------------ generic mesh
 
@@ -128,8 +209,6 @@ pub fn write_obj_file(mesh: &Mesh, path: &Path) -> io::Result<()> {
 /// Exposed faces of a model in the Z-up (MagicaVoxel) frame, grouped by
 /// direction in the order −X, +X, −Y, +Y, −Z, +Z.
 pub(crate) struct ZupFaces {
-    /// Z-up model size.
-    pub size: IVec3,
     pub groups: Vec<FaceGroup>,
 }
 
@@ -186,7 +265,7 @@ pub(crate) fn zup_faces(volume: &VoxelVolume, bounds: BoundSize) -> ZupFaces {
             });
         }
     }
-    ZupFaces { size, groups }
+    ZupFaces { groups }
 }
 
 // ------------------------------------------------ MagicaVoxel-style OBJ
@@ -210,8 +289,9 @@ pub fn palette_texture(palette: &Palette) -> Result<Vec<u8>, RzxlError> {
     encode_rgba(256, 1, &pixels)
 }
 
-/// Builds the OBJ/MTL/PNG triple for `volume` (the merged visible layers).
-/// `stem` names the companion files (`stem.mtl`, `stem.png`).
+/// Builds the MagicaVoxel-layout OBJ/MTL/PNG triple for `volume` (the
+/// merged visible layers), placed like MagicaVoxel. `stem` names the
+/// companion files (`stem.mtl`, `stem.png`).
 pub fn build_obj_export(
     volume: &VoxelVolume,
     bounds: BoundSize,
@@ -219,19 +299,43 @@ pub fn build_obj_export(
     stem: &str,
     scale: f32,
 ) -> Result<ObjExport, RzxlError> {
+    build_magica_obj(
+        volume,
+        bounds,
+        palette,
+        stem,
+        scale,
+        Pivot::BottomCenter.origin(bounds),
+    )
+}
+
+fn build_magica_obj(
+    volume: &VoxelVolume,
+    bounds: BoundSize,
+    palette: &Palette,
+    stem: &str,
+    scale: f32,
+    origin: Vec3,
+) -> Result<ObjExport, RzxlError> {
     if volume.is_empty() {
         return Err(RzxlError::Invalid(
             "nothing to export: the visible layers contain no voxels".into(),
         ));
     }
     let faces = zup_faces(volume, bounds);
-    let half = IVec3::new(faces.size.x / 2, faces.size.y / 2, 0);
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
+    let scale = valid_scale(scale);
+    let origin = if origin.is_finite() {
+        origin
     } else {
-        DEFAULT_OBJ_SCALE
+        Vec3::ZERO
     };
-    let coord = |c: i32| fmt_g(c as f32 * scale + 0.0);
+    let depth = bounds.z() as i32;
+    // Z-up corner (x, y, z) is Rizxel corner (x, z, depth - y).
+    let position = |g: IVec3| {
+        let r = IVec3::new(g.x, g.z, depth - g.y).as_vec3() - origin;
+        let c = |v: f32| fmt_g(v * scale + 0.0);
+        format!("v {} {} {}", c(r.x), c(r.y), c(r.z))
+    };
 
     let mut used: Vec<Voxel> = faces
         .groups
@@ -274,8 +378,7 @@ pub fn build_obj_export(
     line("# verts");
     for g in &faces.groups {
         for p in &g.vertices {
-            let l = *p - half;
-            line(&format!("v {} {} {}", coord(l.x), coord(l.z), coord(-l.y)));
+            line(&position(*p));
         }
     }
     line("");
@@ -304,8 +407,230 @@ pub fn build_obj_export(
     })
 }
 
-/// Writes `path` (`.obj`) plus `.mtl` and `.png` with the same stem.
-/// Returns the number of triangles.
+/// Builds the Fast load OBJ and MTL for the visible layers of `scene`.
+fn build_fast_obj(
+    scene: &ExportScene,
+    stem: &str,
+    options: &ObjOptions,
+) -> Result<ObjExport, RzxlError> {
+    let bounds = scene.bounds;
+    let scale = valid_scale(options.scale);
+    let origin = if options.origin.is_finite() {
+        options.origin
+    } else {
+        Vec3::ZERO
+    };
+    // Merged colors plus the material of the layer that set each voxel.
+    let mut colors = VoxelVolume::new(bounds);
+    let mut slots = VoxelVolume::new(bounds);
+    let mut materials: Vec<(Option<Material>, f32)> = vec![(None, 1.0)];
+    for l in scene.layers.iter().filter(|l| l.visible) {
+        let key = (l.material.clone(), l.opacity.clamp(0.0, 1.0));
+        let slot = match materials.iter().position(|m| *m == key) {
+            Some(i) => i,
+            None if materials.len() < 255 => {
+                materials.push(key);
+                materials.len() - 1
+            }
+            None => 0,
+        };
+        for (p, v) in l.volume.iter() {
+            colors.set(p, v);
+            slots.set(p, slot as Voxel + 1);
+        }
+    }
+    if colors.is_empty() {
+        return Err(RzxlError::Invalid(
+            "nothing to export: the visible layers contain no voxels".into(),
+        ));
+    }
+    // Greedy quads over (color, material) keys; with more than 255 keys
+    // the material falls back to each color's first one.
+    let mut keys: Vec<(Voxel, u8)> = colors
+        .iter()
+        .map(|(p, v)| (v, slots.get(p).saturating_sub(1)))
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.len() > 255 {
+        keys.dedup_by_key(|k| k.0);
+    }
+    let id_of: HashMap<(Voxel, u8), Voxel> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, &k)| (k, i as Voxel + 1))
+        .collect();
+    let first_of: HashMap<Voxel, Voxel> = keys
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(i, &(c, _))| (c, i as Voxel + 1))
+        .collect();
+    let mut keyed = VoxelVolume::new(bounds);
+    for (p, v) in colors.iter() {
+        let k = (v, slots.get(p).saturating_sub(1));
+        let id = id_of.get(&k).or_else(|| first_of.get(&v)).copied();
+        keyed.set(p, id.unwrap_or(EMPTY_VOXEL));
+    }
+    let mut quads = greedy_quads(&keyed);
+    quads.sort_by_key(|q| q.value);
+
+    let name_of = |id: Voxel| {
+        let (color, slot) = keys[id as usize - 1];
+        if slot == 0 {
+            format!("color_{color}")
+        } else {
+            format!("color_{color}_m{slot}")
+        }
+    };
+    let mut s = String::new();
+    let mut line = |l: &str| {
+        s.push_str(l);
+        s.push_str("\r\n");
+    };
+    line(EXPORT_HEADER);
+    line(FAST_LOAD_MARK);
+    line("");
+    line(&format!("mtllib {stem}.mtl"));
+    line(&format!("o {stem}"));
+    line("");
+    let corner = |p: IVec3| (p.as_vec3() - origin) * scale;
+    for q in &quads {
+        for p in q.corners() {
+            let v = corner(p);
+            line(&format!(
+                "v {} {} {}",
+                fmt_g(v.x + 0.0),
+                fmt_g(v.y + 0.0),
+                fmt_g(v.z + 0.0)
+            ));
+        }
+    }
+    for q in &quads {
+        let (color, _) = keys[q.value as usize - 1];
+        let u = fmt_g((color as f32 - 0.5) / 256.0);
+        for _ in 0..4 {
+            line(&format!("vt {u} 0.5"));
+        }
+    }
+    for q in &quads {
+        let mut n = IVec3::ZERO;
+        n[q.axis] = if q.positive { 1 } else { -1 };
+        for _ in 0..4 {
+            line(&format!("vn {} {} {}", n.x, n.y, n.z));
+        }
+    }
+    let mut current = None;
+    let mut triangles = 0;
+    for (i, q) in quads.iter().enumerate() {
+        if current != Some(q.value) {
+            current = Some(q.value);
+            line("");
+            line(&format!("usemtl {}", name_of(q.value)));
+        }
+        let b = i * 4 + 1;
+        let [a, bb, c, d] = [b, b + 1, b + 2, b + 3];
+        let tris = if q.abc_is_ccw() {
+            [[a, bb, c], [c, bb, d]]
+        } else {
+            [[c, bb, a], [d, bb, c]]
+        };
+        for t in tris {
+            line(&format!(
+                "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}",
+                t[0], t[1], t[2]
+            ));
+            triangles += 1;
+        }
+    }
+
+    // One material per used key.
+    let mut m = String::new();
+    let mut mline = |l: &str| {
+        m.push_str(l);
+        m.push_str("\r\n");
+    };
+    mline(EXPORT_HEADER);
+    mline("# Kd is linear RGB");
+    let default = Material::default();
+    for (id, &(color, slot)) in keys.iter().enumerate() {
+        let (mat, opacity) = &materials[slot as usize];
+        let mat = mat.as_ref().unwrap_or(&default);
+        let c = scene.palette.get(color as usize).unwrap_or(Rgba8::WHITE);
+        let kd = [c.r, c.g, c.b]
+            .iter()
+            .zip(mat.tint)
+            .map(|(&v, t)| format!("{:.6}", srgb_to_linear(v) * t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        mline("");
+        mline(&format!("newmtl {}", name_of(id as Voxel + 1)));
+        mline(&format!("Kd {kd}"));
+        if mat.emission.iter().any(|&e| e > 0.0) {
+            let [r, g, b] = mat.emission;
+            mline(&format!("Ke {r:.6} {g:.6} {b:.6}"));
+        }
+        let d = (mat.tint[3] * opacity).clamp(0.0, 1.0);
+        if d < 1.0 {
+            mline(&format!("d {d:.6}"));
+        }
+        mline(&format!("Pr {:.6}", mat.roughness));
+        mline(&format!("Pm {:.6}", mat.metallic));
+    }
+    Ok(ObjExport {
+        obj: s,
+        mtl: m,
+        png: Vec::new(),
+        triangles,
+    })
+}
+
+/// Builds the OBJ export of the visible layers of `scene` in the chosen
+/// layout. `png` is empty for the Fast load layout.
+pub fn build_obj(
+    scene: &ExportScene,
+    stem: &str,
+    options: &ObjOptions,
+) -> Result<ObjExport, RzxlError> {
+    match options.layout {
+        ObjLayout::FastLoad => build_fast_obj(scene, stem, options),
+        ObjLayout::MagicaVoxel => build_magica_obj(
+            &scene.merged_visible(),
+            scene.bounds,
+            &scene.palette,
+            stem,
+            options.scale,
+            options.origin,
+        ),
+    }
+}
+
+/// Writes `path` (`.obj`) plus `.mtl` (and `.png` for the MagicaVoxel
+/// layout) with the same stem.
+pub fn write_obj(
+    path: &Path,
+    scene: &ExportScene,
+    options: &ObjOptions,
+) -> Result<ObjExport, RzxlError> {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "model".to_owned());
+    let export = build_obj(scene, &stem, options)?;
+    let sibling = |ext: &str| path.with_file_name(format!("{stem}.{ext}"));
+    std::fs::write(path, export.obj.as_bytes())?;
+    std::fs::write(
+        sibling(crate::format_mtl::MTL_EXTENSION),
+        export.mtl.as_bytes(),
+    )?;
+    if !export.png.is_empty() {
+        std::fs::write(sibling("png"), &export.png)?;
+    }
+    Ok(export)
+}
+
+/// Writes `path` (`.obj`) plus `.mtl` and `.png` with the same stem, in the
+/// MagicaVoxel layout. Returns the number of triangles.
 pub fn write_obj_set(
     path: &Path,
     volume: &VoxelVolume,
@@ -356,9 +681,13 @@ pub fn read_obj(text: &str, load: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Ob
     let mut palette: Option<Palette> = None;
     let mut current: Option<String> = None;
     let mut triangles: Vec<Triangle> = Vec::new();
+    let mut linear_kd = false;
 
     for (n, raw) in text.lines().enumerate() {
         let line = raw.trim();
+        if line == FAST_LOAD_MARK {
+            linear_kd = true;
+        }
         let mut it = line.split_whitespace();
         let Some(key) = it.next() else { continue };
         match key {
@@ -389,7 +718,10 @@ pub fn read_obj(text: &str, load: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Ob
             "mtllib" => {
                 let name = line[6..].trim();
                 if let Some(bytes) = load(name) {
-                    for m in read_mtl(&String::from_utf8_lossy(&bytes)) {
+                    for mut m in read_mtl(&String::from_utf8_lossy(&bytes)) {
+                        if linear_kd {
+                            m.kd = m.kd.map(|k| k.map(linear_to_srgb));
+                        }
                         materials.insert(m.name.clone(), m);
                     }
                 }
@@ -489,7 +821,6 @@ pub fn sibling_loader(obj_path: &Path) -> impl Fn(&str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rizxel_math::Rgba8;
 
     #[test]
     fn generic_cube_has_8_vertices_and_12_faces() {
@@ -629,6 +960,177 @@ mod tests {
         assert!(read_obj("# nothing\n", &|_| None).is_err());
     }
 
+    fn fast_scene() -> ExportScene {
+        let bounds = BoundSize::new(9, 7, 6);
+        let mut a = VoxelVolume::new(bounds);
+        for x in 0..6 {
+            a.set(IVec3::new(x, 0, 1), 9);
+            a.set(IVec3::new(x, 1, 1), if x < 3 { 40 } else { 9 });
+        }
+        a.set(IVec3::new(2, 2, 1), 1);
+        let mut b = VoxelVolume::new(bounds);
+        b.set(IVec3::new(7, 5, 4), 40);
+        let mut layers = vec![
+            crate::interchange::ExportLayer::new("Body", true, a),
+            crate::interchange::ExportLayer::new("Glow", true, b),
+        ];
+        layers[1].material = Some(Material {
+            emission: [1.0, 0.25, 0.0],
+            ..Material::new("Lamp")
+        });
+        layers[1].opacity = 0.5;
+        ExportScene {
+            name: "t".into(),
+            bounds,
+            palette: Palette::default(),
+            layers,
+            groups: Vec::new(),
+        }
+    }
+
+    fn fast(bounds: BoundSize) -> ObjOptions {
+        ObjOptions {
+            layout: ObjLayout::FastLoad,
+            ..ObjOptions::new(bounds)
+        }
+    }
+
+    fn mtl_loader(e: &ObjExport) -> impl Fn(&str) -> Option<Vec<u8>> {
+        let (mtl, png) = (e.mtl.clone(), e.png.clone());
+        move |name: &str| match name {
+            "m.mtl" => Some(mtl.clone().into_bytes()),
+            "m.png" => (!png.is_empty()).then(|| png.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn fast_layout_uses_one_index_per_corner() {
+        let s = fast_scene();
+        let e = build_obj(&s, "m", &fast(s.bounds)).unwrap();
+        assert!(e.png.is_empty(), "no texture");
+        let lines: Vec<&str> = e.obj.split("\r\n").collect();
+        assert_eq!(lines[0], EXPORT_HEADER);
+        assert_eq!(lines[1], FAST_LOAD_MARK);
+        let count = |p: &str| lines.iter().filter(|l| l.starts_with(p)).count();
+        let verts = count("v ");
+        assert_eq!(verts, count("vt "));
+        assert_eq!(verts, count("vn "));
+        assert_eq!(verts % 4, 0);
+        for f in lines.iter().filter(|l| l.starts_with("f ")) {
+            for corner in f[2..].split(' ') {
+                let parts: Vec<&str> = corner.split('/').collect();
+                assert_eq!(parts.len(), 3, "{f}");
+                assert!(parts.iter().all(|p| *p == parts[0]), "{f}");
+                assert!(parts[0].parse::<usize>().unwrap() <= verts);
+            }
+        }
+        assert_eq!(count("f "), e.triangles);
+    }
+
+    #[test]
+    fn fast_layout_groups_faces_by_color_and_material() {
+        let s = fast_scene();
+        let e = build_obj(&s, "m", &fast(s.bounds)).unwrap();
+        let groups: Vec<&str> = e
+            .obj
+            .split("\r\n")
+            .filter_map(|l| l.strip_prefix("usemtl "))
+            .collect();
+        // Colors 1, 9 and 40 in the body, 40 again with the lamp material.
+        assert_eq!(groups, ["color_1", "color_9", "color_40", "color_40_m1"]);
+        let mtl = read_mtl(&e.mtl);
+        let names: Vec<&str> = mtl.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, groups);
+        let lamp = &mtl[3];
+        assert_eq!(lamp.ke, Some([1.0, 0.25, 0.0]));
+        assert_eq!(lamp.opacity, Some(0.5));
+        assert!(mtl.iter().all(|m| m.map_kd.is_none()));
+        // Kd is linear: palette color 9 comes back through the importer.
+        let c9 = s.palette.get(9).unwrap();
+        let kd = mtl[1].kd.unwrap();
+        assert!((kd[0] - srgb_to_linear(c9.r)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn both_layouts_cover_the_same_surface_and_import_the_same_voxels() {
+        let s = fast_scene();
+        let mut voxels = Vec::new();
+        let mut surfaces = Vec::new();
+        for layout in ObjLayout::ALL {
+            let options = ObjOptions {
+                layout,
+                ..ObjOptions::new(s.bounds)
+            };
+            let e = build_obj(&s, "m", &options).unwrap();
+            let mesh = read_obj(&e.obj, &mtl_loader(&e)).unwrap();
+            let tris: Vec<[Vec3; 3]> = mesh.triangles.iter().map(|t| t.p).collect();
+            surfaces.push(crate::test_samples::surface_cells(&tris, 10.0));
+            let (p, info) = crate::mesh_import::project_from_mesh(
+                mesh.triangles,
+                crate::UpAxis::Y,
+                mesh.palette,
+                rizxel_engine::VoxelizeOptions::default(),
+                "m",
+            )
+            .unwrap();
+            assert!(info.exact, "{layout:?}");
+            let v = crate::volume_from_runs(p.bounds, &p.layers[0].voxels).unwrap();
+            let mut cells: Vec<(IVec3, Rgba8)> = v
+                .iter()
+                .map(|(q, c)| {
+                    let k = p.palette.get(c as usize).unwrap();
+                    (q, Rgba8::rgb(k.r, k.g, k.b))
+                })
+                .collect();
+            cells.sort_by_key(|(q, _)| (q.z, q.y, q.x));
+            voxels.push(cells);
+        }
+        assert_eq!(surfaces[0], surfaces[1]);
+        assert_eq!(voxels[0], voxels[1]);
+        let expected: usize = s.merged_visible().voxel_count();
+        assert_eq!(voxels[0].len(), expected);
+        // Colors are the palette's own.
+        let c40 = s.palette.get(40).unwrap();
+        assert!(voxels[0].contains(&(
+            IVec3::new(7, 5, 4) - IVec3::new(0, 0, 1),
+            Rgba8::rgb(c40.r, c40.g, c40.b)
+        )));
+    }
+
+    #[test]
+    fn magicavoxel_layout_through_build_obj_matches_the_old_writer() {
+        let s = fast_scene();
+        let options = ObjOptions {
+            layout: ObjLayout::MagicaVoxel,
+            ..ObjOptions::new(s.bounds)
+        };
+        let new = build_obj(&s, "m", &options).unwrap();
+        let old = build_obj_export(&s.merged_visible(), s.bounds, &s.palette, "m", 0.1).unwrap();
+        assert_eq!(new, old);
+        // Other pivots move every vertex by the same amount.
+        let corner = ObjOptions {
+            origin: Pivot::Corner.origin(s.bounds),
+            ..options
+        };
+        let moved = build_obj(&s, "m", &corner).unwrap();
+        let first = |e: &ObjExport| -> Vec3 {
+            let l = e.obj.split("\r\n").find(|l| l.starts_with("v ")).unwrap();
+            let f: Vec<f32> = l[2..].split(' ').map(|x| x.parse().unwrap()).collect();
+            Vec3::new(f[0], f[1], f[2])
+        };
+        let shift = first(&moved) - first(&new);
+        let o = Pivot::BottomCenter.origin(s.bounds) * 0.1;
+        assert!((shift - o).abs().max_element() < 1e-5, "{shift} {o}");
+    }
+
+    #[test]
+    fn fast_layout_refuses_empty_scenes() {
+        let mut s = fast_scene();
+        s.layers.iter_mut().for_each(|l| l.visible = false);
+        assert!(build_obj(&s, "m", &fast(s.bounds)).is_err());
+    }
+
     #[test]
     fn matches_magicavoxel_reference_when_present() {
         // The knight imported from MagicaVoxel and exported again lands on
@@ -665,38 +1167,14 @@ mod tests {
         assert_eq!(section(&ours.obj, "vn "), section(&reference, "vn "));
         assert_eq!(section(&ours.obj, "vt "), section(&reference, "vt "));
         // Same covered surface: rasterize both meshes' faces into unit cells.
-        let cells = |text: &str| -> std::collections::BTreeSet<(i64, i64, i64, i64, u32)> {
-            let mesh = read_obj(text, &|_| None).unwrap();
-            let mut out = std::collections::BTreeSet::new();
-            for t in &mesh.triangles {
-                let q = |v: Vec3| (v * 10.0).round();
-                let [a, b, c] = t.p.map(q);
-                let n = (b - a).cross(c - a).normalize();
-                let lo = a.min(b).min(c);
-                let hi = a.max(b).max(c);
-                for x in lo.x as i64..(hi.x as i64).max(lo.x as i64 + 1) {
-                    for y in lo.y as i64..(hi.y as i64).max(lo.y as i64 + 1) {
-                        for z in lo.z as i64..(hi.z as i64).max(lo.z as i64 + 1) {
-                            // Cell center projected onto the face plane must lie in the triangle.
-                            let mut p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
-                            for k in 0..3 {
-                                if n[k].abs() > 0.5 {
-                                    p[k] = a[k];
-                                }
-                            }
-                            let inside = [(a, b), (b, c), (c, a)]
-                                .iter()
-                                .all(|(u, v)| (*v - *u).cross(p - *u).dot(n) >= -1e-4);
-                            if inside {
-                                let dir = n.abs().max_position() as i64 * 2
-                                    + (n.max_element() > 0.5) as i64;
-                                out.insert((x, y, z, dir, 0));
-                            }
-                        }
-                    }
-                }
-            }
-            out
+        let cells = |text: &str| {
+            let tris: Vec<[Vec3; 3]> = read_obj(text, &|_| None)
+                .unwrap()
+                .triangles
+                .iter()
+                .map(|t| t.p)
+                .collect();
+            crate::test_samples::surface_cells(&tris, 10.0)
         };
         assert_eq!(cells(&ours.obj), cells(&reference));
         assert!(ours.triangles <= section(&reference, "f ").len());

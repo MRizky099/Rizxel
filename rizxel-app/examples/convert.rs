@@ -1,28 +1,161 @@
 //! Converts between the formats Rizxel imports and exports, headless:
 //!
 //! ```text
-//! cargo run -p rizxel-app --example convert -- input.vox output.obj
+//! cargo run -p rizxel-app --example convert -- input.vox output.glb
+//! cargo run -p rizxel-app --example convert -- --obj-layout fast --pivot corner input.vox output.obj
 //! ```
 //!
-//! Inputs: `.rzxl`, `.vox`, `.gox`, `.obj`, `.stl`. Outputs: `.rzxl`,
-//! `.vox`, `.gox`, `.obj` (+ `.mtl` + `.png`), `.stl`, `.mtl` (+ `.png`).
+//! Inputs: `.rzxl`, `.vox`, `.gox`, `.qb`, `.qbt`, `.qef`, `.obj`, `.stl`,
+//! `.ply`. Outputs: `.rzxl`, `.vox`, `.gox`, `.qb`, `.qbt`, `.qef`, `.obj`
+//! (+ `.mtl` + `.png`), `.stl`, `.ply`, `.mtl` (+ `.png`), `.glb`, `.gltf`
+//! (+ `.bin`).
+//!
+//! Mesh options (OBJ, STL, PLY, glTF):
+//! - `--scale <units per voxel>` (default: the format's own)
+//! - `--pivot bottom-center|center|corner`
+//! - `--gltf-colors vertex|texture`
+//! - `--obj-layout magicavoxel|fast` (default magicavoxel)
+//! - `--per-layer` writes one file per visible layer (OBJ, STL, PLY)
+//!
+//! Export Slices: `--slices x|y|z [--slice-scale N] input outdir` writes
+//! one PNG per slice into the folder `outdir`.
+//!
+//! Imports: `--heightmap MAX` reads a PNG/JPEG input as a heightmap with
+//! columns up to MAX voxels (`--color IMAGE` colors them); `--resolution N` voxelizes OBJ/STL/PLY meshes
+//! to N voxels on the longest side instead of detecting their grid;
+//! `--turn x|y|z` turns a mesh a quarter turn about that axis (repeatable).
 
 use std::path::PathBuf;
 
-use rizxel_app::{AppState, FileFormat};
+use rizxel_app::{
+    AppState, ExportOptions, FileFormat, GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis,
+    VoxelizerSettings,
+};
+
+fn fail(msg: impl std::fmt::Display) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(2);
+}
 
 fn main() {
-    let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    let [input, output] = args.as_slice() else {
-        eprintln!("usage: convert <input> <output>");
-        std::process::exit(2);
+    let mut options = ExportOptions::default();
+    let mut slices: Option<SliceAxis> = None;
+    let mut slice_scale = 1u32;
+    let mut heightmap: Option<u32> = None;
+    let mut color: Option<PathBuf> = None;
+    let mut voxelizer = VoxelizerSettings::default();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        let flag = arg.to_string_lossy().into_owned();
+        if !flag.starts_with("--") {
+            paths.push(PathBuf::from(arg));
+            continue;
+        }
+        if flag == "--per-layer" {
+            options.per_layer = true;
+            continue;
+        }
+        let raw = args
+            .next()
+            .unwrap_or_else(|| fail(format!("{flag} needs a value")));
+        if flag == "--color" {
+            color = Some(PathBuf::from(raw));
+            continue;
+        }
+        let value = raw.to_string_lossy().to_ascii_lowercase();
+        match flag.as_str() {
+            "--scale" => {
+                options.scale = Some(
+                    value
+                        .parse()
+                        .ok()
+                        .filter(|s: &f32| s.is_finite() && *s > 0.0)
+                        .unwrap_or_else(|| fail("--scale needs a positive number")),
+                )
+            }
+            "--pivot" => {
+                options.pivot = match value.as_str() {
+                    "bottom-center" => Pivot::BottomCenter,
+                    "center" => Pivot::Center,
+                    "corner" => Pivot::Corner,
+                    _ => fail("--pivot is bottom-center, center or corner"),
+                }
+            }
+            "--gltf-colors" => {
+                options.gltf_colors = match value.as_str() {
+                    "vertex" => GltfColors::Vertex,
+                    "texture" => GltfColors::Texture,
+                    _ => fail("--gltf-colors is vertex or texture"),
+                }
+            }
+            "--heightmap" => {
+                heightmap = Some(
+                    value
+                        .parse()
+                        .unwrap_or_else(|_| fail("--heightmap needs a height in voxels")),
+                )
+            }
+            "--resolution" => {
+                voxelizer.voxelize.detect_grid = false;
+                voxelizer.voxelize.resolution = value
+                    .parse()
+                    .unwrap_or_else(|_| fail("--resolution needs a whole number"));
+            }
+            "--turn" => {
+                let axis = match value.as_str() {
+                    "x" => 0,
+                    "y" => 1,
+                    "z" => 2,
+                    _ => fail("--turn is x, y or z"),
+                };
+                voxelizer.turns[axis] = (voxelizer.turns[axis] + 1) % 4;
+            }
+            "--slices" => {
+                slices = Some(match value.as_str() {
+                    "x" => SliceAxis::X,
+                    "y" => SliceAxis::Y,
+                    "z" => SliceAxis::Z,
+                    _ => fail("--slices is x, y or z"),
+                })
+            }
+            "--slice-scale" => {
+                slice_scale = value
+                    .parse()
+                    .unwrap_or_else(|_| fail("--slice-scale needs a whole number"))
+            }
+            "--obj-layout" => {
+                options.obj_layout = match value.as_str() {
+                    "fast" | "fast-load" => ObjLayout::FastLoad,
+                    "magicavoxel" | "magica" => ObjLayout::MagicaVoxel,
+                    _ => fail("--obj-layout is fast or magicavoxel"),
+                }
+            }
+            _ => fail(format!("unknown option {flag}")),
+        }
+    }
+    let [input, output] = paths.as_slice() else {
+        fail("usage: convert [options] <input> <output>");
     };
-    let Some(format) = FileFormat::from_path(output) else {
-        eprintln!("unsupported output type: {}", output.display());
-        std::process::exit(2);
-    };
+    let format = FileFormat::from_path(output);
+    if slices.is_none() && format.is_none() {
+        fail(format!("unsupported output type: {}", output.display()));
+    }
     let mut state = AppState::default();
-    match state.import(input) {
+    let is_mesh = matches!(
+        FileFormat::from_path(input),
+        Some(FileFormat::Obj | FileFormat::Stl | FileFormat::Ply)
+    );
+    let imported = match heightmap {
+        Some(max_height) => {
+            state.import_heightmap(input, color.as_deref(), HeightmapOptions { max_height })
+        }
+        None if is_mesh && voxelizer != VoxelizerSettings::default() => state
+            .load_mesh(input)
+            .and_then(|mesh| state.import_mesh(&mesh, &voxelizer)),
+        None => state.import(input),
+    };
+    match imported {
         Ok(msg) => println!("{msg}"),
         Err(e) => {
             eprintln!("import failed: {e}");
@@ -40,7 +173,12 @@ fn main() {
             doc.data.palette.len()
         );
     }
-    match state.export_active(output, format) {
+    let result = match (slices, format) {
+        (Some(axis), _) => state.export_slices(output, axis, slice_scale),
+        (None, Some(format)) => state.export_active_with(output, format, &options),
+        (None, None) => unreachable!(),
+    };
+    match result {
         Ok(msg) => println!("{msg}"),
         Err(e) => {
             eprintln!("export failed: {e}");

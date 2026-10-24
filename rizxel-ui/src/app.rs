@@ -90,7 +90,9 @@ impl RizxelApp {
     /// e.g. Ctrl+Z edits text instead of the document, and while a modal
     /// prompt is open.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let modal = self.state.closing().is_some() || !self.ui.recovery.is_empty();
+        let modal = self.state.closing().is_some()
+            || !self.ui.recovery.is_empty()
+            || self.ui.dialogs.is_open();
         if ctx.egui_wants_keyboard_input() || modal {
             return;
         }
@@ -347,6 +349,7 @@ impl eframe::App for RizxelApp {
 
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);
+        panels::export::show(&ctx, state, &mut ui_state.dialogs);
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }

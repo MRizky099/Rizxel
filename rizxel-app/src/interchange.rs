@@ -4,9 +4,14 @@
 //! |---|---|---|
 //! | MagicaVoxel `.vox` | new tab: layers, groups, linked clones, palette | one model per layer, names, hidden flags, palette |
 //! | Goxel `.gox` | new tab: layers, groups, clones, shapes, materials | same, natively where Goxel can |
-//! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` + palette `.png` in MagicaVoxel's layout |
+//! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` + palette `.png` (MagicaVoxel layout), or `.obj` + `.mtl` (Fast load) |
 //! | `.mtl` | palette and materials of the active document | `.mtl` + palette `.png` |
 //! | STL `.stl` | new tab: voxelized, one color | binary STL, Z-up, 1 voxel = 1 mm |
+//! | glTF `.glb` / `.gltf` | — | one node per visible layer, groups, instanced clones |
+//! | Qubicle `.qb` | new tab: one layer per matrix | one matrix per visible layer |
+//! | Qubicle `.qef` | new tab: one layer, palette order kept | merged visible layers |
+//! | Qubicle `.qbt` | new tab: matrices, models/compounds as groups | matrices, groups as compounds |
+//! | Stanford `.ply` | new tab: voxelized like STL, vertex colors | binary, Z-up, vertex colors |
 //! | PNG / JPEG | reference image in the active document | — |
 
 use std::path::Path;
@@ -29,25 +34,145 @@ pub enum FileFormat {
     Obj,
     Mtl,
     Stl,
+    Glb,
+    Gltf,
+    Qb,
+    Qef,
+    Qbt,
+    Ply,
+}
+
+/// Settings for mesh exports, set in the export dialog (or `convert`
+/// flags). Formats ignore the settings they do not use.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ExportOptions {
+    /// Units per voxel; `None` uses the format's default (OBJ and glTF 0.1,
+    /// STL 1 mm).
+    pub scale: Option<f32>,
+    pub pivot: rizxel_io::Pivot,
+    pub gltf_colors: rizxel_io::GltfColors,
+    pub obj_layout: rizxel_io::ObjLayout,
+    /// One file per visible layer (OBJ, STL, PLY; glTF has nodes).
+    pub per_layer: bool,
+}
+
+/// A mesh read for the Voxelizer dialog.
+#[derive(Debug, Clone)]
+pub struct PendingMesh {
+    pub path: std::path::PathBuf,
+    pub triangles: Vec<rizxel_engine::Triangle>,
+    pub up: rizxel_io::UpAxis,
+    /// The 256×1 palette texture, for voxel-editor OBJ exports.
+    pub palette: Option<rizxel_math::Palette>,
+}
+
+/// Voxelizer dialog settings.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct VoxelizerSettings {
+    pub voxelize: VoxelizeOptions,
+    /// Quarter turns about X, Y and Z.
+    pub turns: rizxel_io::QuarterTurns,
+}
+
+/// What the Voxelizer would make with some settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoxelizerPreview {
+    pub size: glam::UVec3,
+    pub voxels: usize,
+    pub exact: bool,
+}
+
+impl PendingMesh {
+    /// Voxelizes without building a document (the dialog's live count).
+    pub fn preview(&self, settings: &VoxelizerSettings) -> Result<VoxelizerPreview, RzxlError> {
+        let (size, voxels, exact) =
+            rizxel_io::preview_mesh(&self.triangles, self.up, settings.turns, settings.voxelize)?;
+        Ok(VoxelizerPreview {
+            size,
+            voxels,
+            exact,
+        })
+    }
+}
+
+impl ExportOptions {
+    /// The scale used for `format`.
+    pub fn scale_for(&self, format: FileFormat) -> f32 {
+        self.scale
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or_else(|| format.default_scale())
+    }
 }
 
 impl FileFormat {
     /// Formats offered under File ▸ Import.
-    pub const IMPORTS: [FileFormat; 5] = [
+    pub const IMPORTS: [FileFormat; 9] = [
         FileFormat::Vox,
         FileFormat::Gox,
+        FileFormat::Qb,
+        FileFormat::Qbt,
+        FileFormat::Qef,
         FileFormat::Obj,
         FileFormat::Stl,
+        FileFormat::Ply,
         FileFormat::Mtl,
     ];
     /// Formats offered under File ▸ Export.
-    pub const EXPORTS: [FileFormat; 5] = [
+    pub const EXPORTS: [FileFormat; 11] = [
+        FileFormat::Glb,
+        FileFormat::Gltf,
         FileFormat::Obj,
         FileFormat::Vox,
         FileFormat::Gox,
+        FileFormat::Qb,
+        FileFormat::Qbt,
+        FileFormat::Qef,
         FileFormat::Stl,
+        FileFormat::Ply,
         FileFormat::Mtl,
     ];
+
+    /// Every format, for extension lookup.
+    pub const ALL: [FileFormat; 12] = [
+        FileFormat::Rzxl,
+        FileFormat::Vox,
+        FileFormat::Gox,
+        FileFormat::Obj,
+        FileFormat::Mtl,
+        FileFormat::Stl,
+        FileFormat::Glb,
+        FileFormat::Gltf,
+        FileFormat::Qb,
+        FileFormat::Qef,
+        FileFormat::Qbt,
+        FileFormat::Ply,
+    ];
+
+    /// True for formats that bake the model into a triangle mesh.
+    pub const fn is_mesh(self) -> bool {
+        matches!(
+            self,
+            FileFormat::Obj
+                | FileFormat::Stl
+                | FileFormat::Glb
+                | FileFormat::Gltf
+                | FileFormat::Ply
+        )
+    }
+
+    /// True for mesh formats that can write one file per layer.
+    pub const fn allows_per_layer(self) -> bool {
+        matches!(self, FileFormat::Obj | FileFormat::Stl | FileFormat::Ply)
+    }
+
+    /// Default units per voxel of a mesh export.
+    pub const fn default_scale(self) -> f32 {
+        match self {
+            FileFormat::Stl => rizxel_io::DEFAULT_STL_SCALE,
+            FileFormat::Glb | FileFormat::Gltf => rizxel_io::DEFAULT_GLTF_SCALE,
+            _ => rizxel_io::DEFAULT_OBJ_SCALE,
+        }
+    }
 
     pub const fn extension(self) -> &'static str {
         match self {
@@ -57,6 +182,12 @@ impl FileFormat {
             FileFormat::Obj => rizxel_io::OBJ_EXTENSION,
             FileFormat::Mtl => rizxel_io::MTL_EXTENSION,
             FileFormat::Stl => rizxel_io::STL_EXTENSION,
+            FileFormat::Glb => rizxel_io::GLB_EXTENSION,
+            FileFormat::Gltf => rizxel_io::GLTF_EXTENSION,
+            FileFormat::Qb => rizxel_io::QB_EXTENSION,
+            FileFormat::Qef => rizxel_io::QEF_EXTENSION,
+            FileFormat::Qbt => rizxel_io::QBT_EXTENSION,
+            FileFormat::Ply => rizxel_io::PLY_EXTENSION,
         }
     }
 
@@ -69,17 +200,29 @@ impl FileFormat {
             FileFormat::Obj => "Wavefront OBJ",
             FileFormat::Mtl => "Material Library (MTL)",
             FileFormat::Stl => "STL",
+            FileFormat::Glb => "glTF Binary",
+            FileFormat::Gltf => "glTF",
+            FileFormat::Qb => "Qubicle Binary",
+            FileFormat::Qef => "Qubicle Exchange",
+            FileFormat::Qbt => "Qubicle Binary Tree",
+            FileFormat::Ply => "Stanford PLY",
         }
     }
 
     /// What an export writes, for menus and tooltips.
     pub const fn export_note(self) -> &'static str {
         match self {
-            FileFormat::Obj => "OBJ + MTL + palette PNG (MagicaVoxel layout, scale 0.1)",
+            FileFormat::Obj => "OBJ + MTL, MagicaVoxel or Fast load layout, scale 0.1",
             FileFormat::Mtl => "MTL + palette PNG",
             FileFormat::Vox => "one model per layer, groups kept",
             FileFormat::Gox => "layers, groups, clones, shapes, materials",
             FileFormat::Stl => "binary, Z-up, 1 voxel = 1 mm",
+            FileFormat::Glb => "one file: a node per layer, 1 voxel = 0.1 m",
+            FileFormat::Gltf => ".gltf + .bin: a node per layer, 1 voxel = 0.1 m",
+            FileFormat::Qb => "one matrix per visible layer",
+            FileFormat::Qef => "one matrix, palette order kept",
+            FileFormat::Qbt => "matrices, groups as compounds",
+            FileFormat::Ply => "binary, Z-up, vertex colors, scale 0.1",
             FileFormat::Rzxl => "",
         }
     }
@@ -87,17 +230,147 @@ impl FileFormat {
     /// Format of `path` by its extension (case-insensitive).
     pub fn from_path(path: &Path) -> Option<FileFormat> {
         let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-        [
-            FileFormat::Rzxl,
-            FileFormat::Vox,
-            FileFormat::Gox,
-            FileFormat::Obj,
-            FileFormat::Mtl,
-            FileFormat::Stl,
-        ]
-        .into_iter()
-        .find(|f| f.extension() == ext)
+        FileFormat::ALL.into_iter().find(|f| f.extension() == ext)
     }
+}
+
+/// Writes the visible layers of `scene` as the mesh `format`. Returns the
+/// detail for the status message.
+fn export_mesh(
+    path: &Path,
+    format: FileFormat,
+    scene: &rizxel_io::ExportScene,
+    options: &ExportOptions,
+) -> Result<String, RzxlError> {
+    let scale = options.scale_for(format);
+    let origin = match format {
+        FileFormat::Stl | FileFormat::Ply => options.pivot.origin_zup(scene.bounds),
+        _ => options.pivot.origin(scene.bounds),
+    };
+    Ok(match format {
+        FileFormat::Obj => {
+            let obj = rizxel_io::ObjOptions {
+                layout: options.obj_layout,
+                scale,
+                origin,
+            };
+            let e = rizxel_io::write_obj(path, scene, &obj)?;
+            let files = if e.png.is_empty() {
+                ".mtl"
+            } else {
+                ".mtl and .png"
+            };
+            format!(
+                "{} triangles, {} layout, with {files}",
+                e.triangles,
+                options.obj_layout.label()
+            )
+        }
+        FileFormat::Stl => {
+            let bytes =
+                rizxel_io::write_stl_with(&scene.merged_visible(), scene.bounds, scale, origin)?;
+            let tris = (bytes.len() - 84) / 50;
+            std::fs::write(path, bytes)?;
+            format!("{tris} triangles")
+        }
+        FileFormat::Ply => {
+            let bytes =
+                rizxel_io::write_ply(&scene.merged_visible(), &scene.palette, scale, origin)?;
+            std::fs::write(path, bytes)?;
+            "binary, Z-up".to_owned()
+        }
+        FileFormat::Glb | FileFormat::Gltf => {
+            let gltf = rizxel_io::GltfOptions {
+                scale,
+                colors: options.gltf_colors,
+                origin,
+            };
+            let e = rizxel_io::write_gltf_file(path, scene, &gltf)?;
+            let bin = if format == FileFormat::Gltf {
+                ", with .bin"
+            } else {
+                ""
+            };
+            format!("{} nodes, {} triangles{bin}", e.mesh_nodes, e.triangles)
+        }
+        _ => {
+            return Err(RzxlError::Invalid(format!(
+                "{} is not a mesh format",
+                format.label()
+            )))
+        }
+    })
+}
+
+/// File-name-safe version of a layer name.
+fn safe_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let s = s.trim_matches('_').to_owned();
+    if s.is_empty() {
+        "layer".to_owned()
+    } else {
+        s
+    }
+}
+
+/// *Per-layer files*: one `stem_layer.ext` per visible layer with voxels,
+/// all placed in the same frame so they line up when loaded together.
+fn export_per_layer(
+    path: &Path,
+    format: FileFormat,
+    scene: &rizxel_io::ExportScene,
+    options: &ExportOptions,
+) -> Result<String, RzxlError> {
+    let base = stem(path);
+    let ext = format.extension();
+    let mut used: Vec<String> = Vec::new();
+    let mut written = 0;
+    for (i, layer) in scene.layers.iter().enumerate() {
+        if !layer.visible || layer.volume.is_empty() {
+            continue;
+        }
+        let mut name = format!("{base}_{}", safe_name(&layer.name));
+        if used.contains(&name) {
+            name = format!("{name}_{}", i + 1);
+        }
+        used.push(name.clone());
+        let single = rizxel_io::ExportScene {
+            layers: vec![rizxel_io::ExportLayer {
+                group: None,
+                instance_of: None,
+                ..layer.clone()
+            }],
+            groups: Vec::new(),
+            ..scene.clone()
+        };
+        export_mesh(
+            &path.with_file_name(format!("{name}.{ext}")),
+            format,
+            &single,
+            options,
+        )?;
+        written += 1;
+    }
+    if written == 0 {
+        return Err(RzxlError::Invalid(
+            "nothing to export: the visible layers contain no voxels".into(),
+        ));
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    Ok(format!(
+        "Exported {written} {} files ({base}_*.{ext}) to {}",
+        format.label(),
+        dir.display()
+    ))
 }
 
 fn read_limited(path: &Path) -> Result<Vec<u8>, RzxlError> {
@@ -228,6 +501,11 @@ impl AppState {
                 project
             };
         let project = match format {
+            FileFormat::Glb | FileFormat::Gltf => {
+                return Err(RzxlError::Invalid(
+                    "glTF files can be exported but not imported".into(),
+                ))
+            }
             FileFormat::Rzxl => {
                 self.open(path)?;
                 return Ok(format!("Opened {}", path.display()));
@@ -272,7 +550,34 @@ impl AppState {
                     &name,
                 )?)
             }
+            FileFormat::Ply => {
+                let tris = rizxel_io::read_ply(&read_limited(path)?, rizxel_io::uncolored())?;
+                voxelized(rizxel_io::project_from_mesh(
+                    tris,
+                    rizxel_io::UpAxis::Z,
+                    None,
+                    VoxelizeOptions::default(),
+                    &name,
+                )?)
+            }
+            FileFormat::Qb => rizxel_io::read_qb(&read_limited(path)?, &name)?,
+            FileFormat::Qbt => rizxel_io::read_qbt(&read_limited(path)?, &name)?,
+            FileFormat::Qef => {
+                let text = String::from_utf8_lossy(&read_limited(path)?).into_owned();
+                rizxel_io::read_qef(&text, &name)?
+            }
         };
+        self.open_imported(project, path, &mesh_note)
+    }
+
+    /// Opens an imported project in a new tab (replacing a pristine untitled
+    /// one) and returns the status message.
+    fn open_imported(
+        &mut self,
+        project: rizxel_io::ProjectFile,
+        path: &Path,
+        note: &str,
+    ) -> Result<String, RzxlError> {
         let mut doc = Document::from_project(project, None)?;
         if self.structure.fit_on_import {
             // An undo step of its own, so the original placement is one Ctrl+Z away.
@@ -281,7 +586,7 @@ impl AppState {
         doc.mark_unsaved();
         self.remember_recent(path);
         let summary = format!(
-            "Imported {} ({} voxels, {} layers{mesh_note})",
+            "Imported {} ({} voxels, {} layers{note})",
             path.display(),
             doc.visible_voxel_count(),
             doc.data.layers.len()
@@ -301,13 +606,101 @@ impl AppState {
         Ok(summary)
     }
 
+    /// Reads an OBJ, STL or PLY file for the Voxelizer dialog, without
+    /// voxelizing it yet.
+    pub fn load_mesh(&self, path: &Path) -> Result<PendingMesh, RzxlError> {
+        let format = FileFormat::from_path(path);
+        let (triangles, up, palette) = match format {
+            Some(FileFormat::Obj) => {
+                let text = String::from_utf8_lossy(&read_limited(path)?).into_owned();
+                let mesh = rizxel_io::read_obj(&text, &rizxel_io::sibling_loader(path))?;
+                (mesh.triangles, rizxel_io::UpAxis::Y, mesh.palette)
+            }
+            Some(FileFormat::Stl) => (
+                rizxel_io::read_stl(&read_limited(path)?, rizxel_io::uncolored())?,
+                rizxel_io::UpAxis::Z,
+                None,
+            ),
+            Some(FileFormat::Ply) => (
+                rizxel_io::read_ply(&read_limited(path)?, rizxel_io::uncolored())?,
+                rizxel_io::UpAxis::Z,
+                None,
+            ),
+            _ => {
+                return Err(RzxlError::Invalid(format!(
+                    "not a mesh file (OBJ, STL or PLY): {}",
+                    path.display()
+                )))
+            }
+        };
+        Ok(PendingMesh {
+            path: path.to_path_buf(),
+            triangles,
+            up,
+            palette,
+        })
+    }
+
+    /// Voxelizes a mesh loaded with [`Self::load_mesh`] into a new tab.
+    pub fn import_mesh(
+        &mut self,
+        mesh: &PendingMesh,
+        settings: &VoxelizerSettings,
+    ) -> Result<String, RzxlError> {
+        let (project, info) = rizxel_io::project_from_mesh_turned(
+            mesh.triangles.clone(),
+            mesh.up,
+            settings.turns,
+            mesh.palette.clone(),
+            settings.voxelize,
+            &stem(&mesh.path),
+        )?;
+        let note = if info.exact {
+            ", exact: the mesh's own voxel grid".to_owned()
+        } else {
+            format!(
+                ", voxelized to {} voxels on the longest side",
+                settings.voxelize.resolution
+            )
+        };
+        self.open_imported(project, &mesh.path, &note)
+    }
+
+    /// *Import ▸ Heightmap*: the grayscale PNG or JPEG `path` (scaled down to
+    /// 256 per side) becomes a terrain in a new tab, colored from
+    /// `color` when given.
+    pub fn import_heightmap(
+        &mut self,
+        path: &Path,
+        color: Option<&Path>,
+        options: rizxel_io::HeightmapOptions,
+    ) -> Result<String, RzxlError> {
+        let side = rizxel_math::BoundSize::MAX;
+        let height = rizxel_io::decode_fitted(&read_limited(path)?, side)?;
+        let color = match color {
+            Some(c) => Some(rizxel_io::decode_fitted(&read_limited(c)?, 1024)?),
+            None => None,
+        };
+        let project =
+            rizxel_io::project_from_heightmap(&height, color.as_ref(), options, &stem(path))?;
+        let note = format!(", heightmap {}×{}", height.width, height.height);
+        self.open_imported(project, path, &note)
+    }
+
     /// True when the active document can be exported as `format`.
     pub fn can_export(&self, format: FileFormat) -> bool {
         let Some(doc) = self.doc() else {
             return false;
         };
         match format {
-            FileFormat::Obj | FileFormat::Stl => doc.visible_voxel_count() > 0,
+            FileFormat::Obj
+            | FileFormat::Stl
+            | FileFormat::Glb
+            | FileFormat::Gltf
+            | FileFormat::Ply
+            | FileFormat::Qb
+            | FileFormat::Qef
+            | FileFormat::Qbt => doc.visible_voxel_count() > 0,
             // Cheap check (menus ask every frame); hidden layers count too.
             FileFormat::Vox => {
                 doc.visible_voxel_count() > 0
@@ -321,23 +714,32 @@ impl AppState {
         }
     }
 
-    /// Exports the active document to `path`. OBJ and MTL also write their
-    /// companion files next to it. Returns a status message.
+    /// Exports the active document to `path` with the default settings.
+    /// OBJ, MTL and `.gltf` also write their companion files next to it.
+    /// Returns a status message.
     pub fn export_active(&self, path: &Path, format: FileFormat) -> Result<String, RzxlError> {
+        self.export_active_with(path, format, &ExportOptions::default())
+    }
+
+    /// [`Self::export_active`] with explicit mesh settings.
+    pub fn export_active_with(
+        &self,
+        path: &Path,
+        format: FileFormat,
+        options: &ExportOptions,
+    ) -> Result<String, RzxlError> {
         let doc = self
             .doc()
             .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
-        let detail = match format {
-            FileFormat::Obj => {
-                let tris = rizxel_io::write_obj_set(
-                    path,
-                    &doc.merged_visible_volume(),
-                    doc.data.bounds,
-                    &doc.data.palette,
-                    rizxel_io::DEFAULT_OBJ_SCALE,
-                )?;
-                format!("{tris} triangles, with .mtl and .png")
+        if format.is_mesh() {
+            let scene = doc.export_scene();
+            if options.per_layer && format.allows_per_layer() {
+                return export_per_layer(path, format, &scene, options);
             }
+            let detail = export_mesh(path, format, &scene, options)?;
+            return Ok(format!("Exported {} ({detail})", path.display()));
+        }
+        let detail = match format {
             FileFormat::Mtl => {
                 let stem = stem(path);
                 let png = rizxel_io::format_obj::palette_texture(&doc.data.palette)?;
@@ -356,16 +758,30 @@ impl AppState {
                 std::fs::write(path, rizxel_io::write_gox(&doc.to_project())?)?;
                 format!("{} layers", doc.data.layers.len())
             }
-            FileFormat::Stl => {
-                let bytes = rizxel_io::write_stl(
-                    &doc.merged_visible_volume(),
-                    doc.data.bounds,
-                    rizxel_io::DEFAULT_STL_SCALE,
-                )?;
-                let tris = (bytes.len() - 84) / 50;
+            FileFormat::Qb | FileFormat::Qbt => {
+                let scene = doc.export_scene();
+                let bytes = if format == FileFormat::Qb {
+                    rizxel_io::write_qb(&scene)?
+                } else {
+                    rizxel_io::write_qbt(&scene)?
+                };
                 std::fs::write(path, bytes)?;
-                format!("{tris} triangles")
+                let n = scene
+                    .layers
+                    .iter()
+                    .filter(|l| l.visible && !l.volume.is_empty())
+                    .count();
+                format!("{n} matrices")
             }
+            FileFormat::Qef => {
+                std::fs::write(path, rizxel_io::write_qef(&doc.export_scene())?)?;
+                "one matrix".to_owned()
+            }
+            FileFormat::Obj
+            | FileFormat::Stl
+            | FileFormat::Ply
+            | FileFormat::Glb
+            | FileFormat::Gltf => unreachable!("mesh formats return above"),
             FileFormat::Rzxl => {
                 rizxel_io::save_rzxl(path, &doc.to_project())?;
                 "project copy".to_owned()
@@ -374,24 +790,51 @@ impl AppState {
         Ok(format!("Exported {} ({detail})", path.display()))
     }
 
+    /// *Export Slices*: one PNG per slice of the visible layers along
+    /// `axis`, `scale` pixels per voxel, into the folder `dir` (created when
+    /// missing). Returns a status message.
+    pub fn export_slices(
+        &self,
+        dir: &Path,
+        axis: rizxel_io::SliceAxis,
+        scale: u32,
+    ) -> Result<String, RzxlError> {
+        let doc = self
+            .doc()
+            .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
+        let slices = rizxel_io::export_slices(
+            &doc.merged_visible_volume(),
+            &doc.data.palette,
+            axis,
+            scale,
+            &doc.name,
+        )?;
+        std::fs::create_dir_all(dir)?;
+        for s in &slices {
+            std::fs::write(dir.join(&s.file_name), &s.png)?;
+        }
+        Ok(format!(
+            "Exported {} {} slices to {}",
+            slices.len(),
+            axis.label(),
+            dir.display()
+        ))
+    }
+
     /// True when the active document has visible voxels to export as OBJ.
     pub fn can_export_obj(&self) -> bool {
         self.can_export(FileFormat::Obj)
     }
 
-    /// Exports the visible layers of the active document as OBJ + MTL +
-    /// palette PNG (MagicaVoxel layout). Returns the number of triangles.
+    /// Exports the visible layers of the active document as OBJ + MTL in
+    /// the default (MagicaVoxel) layout. Returns the number of triangles.
     pub fn export_active_obj(&self, path: &Path) -> Result<usize, RzxlError> {
         let doc = self
             .doc()
             .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
-        rizxel_io::write_obj_set(
-            path,
-            &doc.merged_visible_volume(),
-            doc.data.bounds,
-            &doc.data.palette,
-            rizxel_io::DEFAULT_OBJ_SCALE,
-        )
+        let scene = doc.export_scene();
+        let options = rizxel_io::ObjOptions::new(scene.bounds);
+        Ok(rizxel_io::write_obj(path, &scene, &options)?.triangles)
     }
 }
 
@@ -433,7 +876,12 @@ mod tests {
             FileFormat::Gox,
             FileFormat::Obj,
             FileFormat::Stl,
+            FileFormat::Qb,
+            FileFormat::Qbt,
+            FileFormat::Qef,
+            FileFormat::Ply,
         ] {
+            // (glTF has no importer; see `gltf_export_writes_nodes_per_layer`.)
             let path = d.join(format!("model.{}", format.extension()));
             assert!(src.can_export(format), "{format:?}");
             let msg = src.export_active(&path, format).unwrap();
@@ -460,14 +908,170 @@ mod tests {
                 }
                 // Mesh formats carry the visible surface only; the solid
                 // block and its clone come back as the same voxels.
-                FileFormat::Obj | FileFormat::Stl => {
+                FileFormat::Obj | FileFormat::Stl | FileFormat::Ply => {
                     assert_eq!(doc.visible_voxel_count(), visible, "{format:?}");
+                }
+                // Qubicle files carry the visible layers (clones baked).
+                FileFormat::Qb | FileFormat::Qbt => {
+                    assert_eq!(doc.visible_voxel_count(), visible, "{format:?}");
+                    assert!(doc.data.layers.iter().all(|l| l.visible));
+                    assert_eq!(doc.data.layers.len(), 2, "{format:?}: block + clone");
+                }
+                FileFormat::Qef => {
+                    assert_eq!(doc.visible_voxel_count(), visible);
+                    assert_eq!(doc.data.layers.len(), 1);
                 }
                 _ => unreachable!(),
             }
         }
-        // OBJ export wrote its companions.
+        // The default MagicaVoxel layout writes its .mtl and palette .png.
         assert!(d.join("model.mtl").exists() && d.join("model.png").exists());
+        let fast = ExportOptions {
+            obj_layout: rizxel_io::ObjLayout::FastLoad,
+            ..ExportOptions::default()
+        };
+        let path = d.join("fast.obj");
+        let msg = src
+            .export_active_with(&path, FileFormat::Obj, &fast)
+            .unwrap();
+        assert!(msg.contains("Fast load layout"), "{msg}");
+        assert!(d.join("fast.mtl").exists() && !d.join("fast.png").exists());
+        let mut dst = AppState::default();
+        dst.import(&path).unwrap();
+        assert_eq!(dst.doc().unwrap().visible_voxel_count(), visible);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn gltf_export_writes_nodes_per_layer() {
+        let d = dir().join("gltf");
+        std::fs::create_dir_all(&d).unwrap();
+        let src = sample_state();
+        for format in [FileFormat::Glb, FileFormat::Gltf] {
+            let path = d.join(format!("model.{}", format.extension()));
+            assert!(src.can_export(format));
+            let msg = src.export_active(&path, format).unwrap();
+            // The block and its linked clone; the hidden layer is skipped.
+            assert!(msg.contains("2 nodes"), "{msg}");
+        }
+        assert!(d.join("model.bin").exists());
+        let mut dst = AppState::default();
+        assert!(dst.import(&d.join("model.glb")).is_err(), "export only");
+        let glb = std::fs::read(d.join("model.glb")).unwrap();
+        assert_eq!(&glb[..4], b"glTF");
+        let text = std::fs::read_to_string(d.join("model.gltf")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            json["meshes"].as_array().unwrap().len(),
+            1,
+            "clone instanced"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn voxelizer_and_heightmap_imports_open_new_tabs() {
+        let d = dir().join("voxelizer");
+        std::fs::create_dir_all(&d).unwrap();
+        let src = sample_state();
+        let stl = d.join("m.stl");
+        src.export_active(&stl, FileFormat::Stl).unwrap();
+        let mut s = AppState::default();
+        let mesh = s.load_mesh(&stl).unwrap();
+        let exact = VoxelizerSettings::default();
+        let p = mesh.preview(&exact).unwrap();
+        assert!(p.exact);
+        assert_eq!(p.voxels, src.doc().unwrap().visible_voxel_count());
+        let coarse = VoxelizerSettings {
+            voxelize: VoxelizeOptions {
+                detect_grid: false,
+                resolution: 4,
+            },
+            turns: [0, 1, 0],
+        };
+        let q = mesh.preview(&coarse).unwrap();
+        assert!(!q.exact && q.size.max_element() == 4);
+        let msg = s.import_mesh(&mesh, &coarse).unwrap();
+        assert!(msg.contains("voxelized to 4"), "{msg}");
+        assert!(s.load_mesh(&d.join("m.vox")).is_err());
+
+        // Heightmap: a 2×1 PNG, black and white.
+        let png =
+            rizxel_io::png_io::encode_rgba(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255]).unwrap();
+        let hm = d.join("terrain.png");
+        std::fs::write(&hm, png).unwrap();
+        let msg = s
+            .import_heightmap(&hm, None, rizxel_io::HeightmapOptions { max_height: 6 })
+            .unwrap();
+        assert!(msg.contains("6 voxels"), "{msg}");
+        assert_eq!(s.doc().unwrap().data.bounds.y(), 6);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn mesh_options_apply_to_every_mesh_format() {
+        let d = dir().join("options");
+        std::fs::create_dir_all(&d).unwrap();
+        let src = sample_state();
+        // Per-layer files: the block and its clone (the hidden layer is out).
+        for format in [FileFormat::Obj, FileFormat::Stl, FileFormat::Ply] {
+            let options = ExportOptions {
+                per_layer: true,
+                ..ExportOptions::default()
+            };
+            let path = d.join(format!("parts.{}", format.extension()));
+            let msg = src.export_active_with(&path, format, &options).unwrap();
+            assert!(msg.contains("Exported 2"), "{msg}");
+            let files: Vec<_> = std::fs::read_dir(&d)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .is_some_and(|x| x == format.extension())
+                })
+                .collect();
+            assert_eq!(files.len(), 2, "{format:?}");
+        }
+        // Scale and pivot reach STL: corner pivot, 2 units per voxel.
+        let options = ExportOptions {
+            scale: Some(2.0),
+            pivot: rizxel_io::Pivot::Corner,
+            ..ExportOptions::default()
+        };
+        let path = d.join("big.stl");
+        src.export_active_with(&path, FileFormat::Stl, &options)
+            .unwrap();
+        let tris =
+            rizxel_io::read_stl(&std::fs::read(&path).unwrap(), rizxel_io::uncolored()).unwrap();
+        let lo = tris
+            .iter()
+            .flat_map(|t| t.p)
+            .fold(glam::Vec3::splat(f32::MAX), |a, b| a.min(b));
+        let hi = tris
+            .iter()
+            .flat_map(|t| t.p)
+            .fold(glam::Vec3::splat(f32::MIN), |a, b| a.max(b));
+        assert!(
+            lo.min_element() >= -1e-4,
+            "corner pivot: all positive, {lo}"
+        );
+        // The 4×3 block is 8 units wide on X.
+        assert!(hi.x >= 8.0, "{hi}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn slices_are_written_into_a_folder() {
+        let d = dir().join("slices");
+        let s = sample_state();
+        let msg = s.export_slices(&d, rizxel_io::SliceAxis::Y, 2).unwrap();
+        let height = s.doc().unwrap().data.bounds.y() as usize;
+        assert!(msg.contains(&format!("{height} Y slices")), "{msg}");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), height);
+        assert!(AppState::default()
+            .export_slices(&d, rizxel_io::SliceAxis::Y, 1)
+            .is_err());
         std::fs::remove_dir_all(&d).ok();
     }
 
