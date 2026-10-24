@@ -14,6 +14,7 @@ pub mod interchange;
 pub mod layer_tree;
 pub mod paths;
 pub mod recent;
+pub mod render_presets;
 pub mod selection;
 pub mod transform_session;
 
@@ -48,6 +49,7 @@ pub use interchange::{
 pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
+pub use render_presets::{UserPreset, UserPresets};
 pub use rizxel_engine::Mesh;
 pub use rizxel_engine::VoxelizeOptions;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
@@ -585,7 +587,39 @@ pub struct AppState {
     /// Favorite colors `0`–`9`: palette indices, shared by every document
     /// and kept in the app settings (not in files).
     pub favorites: Favorites,
+    /// Render-mode preview state (render bar). View state: not saved.
+    pub render_view: RenderView,
+    /// Render setting presets saved by the user (app data folder).
+    pub render_presets: UserPresets,
     untitled_counter: u32,
+}
+
+/// Render-mode preview state shown in the render bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderView {
+    /// The path-traced preview stops adding samples.
+    pub paused: bool,
+    /// Preview with the path tracer (else the raster renderer).
+    pub path_traced: bool,
+    /// Path-traced preview resolution relative to the viewport.
+    pub scale: f32,
+    /// Samples the preview has accumulated (set by the viewport).
+    pub samples_done: u32,
+    /// The GPU can run the path tracer (compute shaders with storage
+    /// buffers; not the GL backend). Set by the UI at startup.
+    pub path_tracing: bool,
+}
+
+impl Default for RenderView {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            path_traced: true,
+            scale: 1.0,
+            samples_done: 0,
+            path_tracing: true,
+        }
+    }
 }
 
 /// Settings of the structure operations, shown in their menus.
@@ -631,6 +665,8 @@ impl Default for AppState {
             clipboard: None,
             structure: StructureOptions::default(),
             favorites: Favorites::default(),
+            render_view: RenderView::default(),
+            render_presets: UserPresets::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -645,6 +681,7 @@ impl AppState {
         if let Some(p) = &paths {
             state.recent = RecentFiles::load(&p.recent_file());
             state.favorites = Favorites::load(&p.favorites_file());
+            state.render_presets = UserPresets::load(&p.render_presets_file());
         }
         state.paths = paths;
         state
@@ -1354,6 +1391,65 @@ impl AppState {
         self.run_op(op.label(), |d| {
             d.boolean(other, op).map(|n| format!("{n} voxels changed"))
         });
+    }
+
+    // ------------------------------------------------------------ render
+
+    /// Switches between Model and Render mode, ending any tool drag.
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        if mode != self.view_mode {
+            self.cancel_active_edit();
+            self.view_mode = mode;
+        }
+    }
+
+    /// Model ↔ Render (`F5`).
+    pub fn toggle_view_mode(&mut self) {
+        self.set_view_mode(match self.view_mode {
+            ViewMode::Model => ViewMode::Render,
+            ViewMode::Render => ViewMode::Model,
+        });
+    }
+
+    /// Saves the active document's render settings as user preset `name`.
+    pub fn save_render_preset(&mut self, name: &str) -> bool {
+        let Some(settings) = self.doc().map(|d| d.data.render.clone()) else {
+            return false;
+        };
+        if !self.render_presets.store(name, &settings) {
+            return false;
+        }
+        self.write_render_presets();
+        self.status_message = Some(format!("Saved render preset \"{}\"", name.trim()));
+        true
+    }
+
+    pub fn delete_render_preset(&mut self, name: &str) {
+        if self.render_presets.remove(name) {
+            self.write_render_presets();
+        }
+    }
+
+    /// Applies user preset `name` to the active document (one undo step).
+    pub fn apply_user_render_preset(&mut self, name: &str) -> bool {
+        let presets = self.render_presets.clone();
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        let Some(settings) = presets.apply(name, &doc.data.render) else {
+            return false;
+        };
+        doc.labeled(format!("Render Preset \"{name}\""), |d| {
+            d.set_render(settings, false)
+        })
+    }
+
+    fn write_render_presets(&self) {
+        if let Some(p) = &self.paths {
+            if let Err(e) = self.render_presets.save(&p.render_presets_file()) {
+                log::warn!("render presets: {e}");
+            }
+        }
     }
 
     // ------------------------------------------------------------ palette

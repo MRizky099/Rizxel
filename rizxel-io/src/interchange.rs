@@ -168,6 +168,7 @@ pub fn build_project(
         layers,
         bounds,
         references: Vec::new(),
+        render: Default::default(),
     };
     project.validate()?;
     Ok(project)

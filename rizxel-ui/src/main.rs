@@ -3,17 +3,7 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod actions;
-mod app;
-mod dock;
-mod icons;
-mod panels;
-mod render;
-mod resize;
-mod theme;
-mod tool_input;
-mod viewport;
-mod widgets;
+use rizxel_ui::app;
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

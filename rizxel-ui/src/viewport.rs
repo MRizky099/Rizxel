@@ -374,17 +374,23 @@ pub fn show(
         .into_iter()
         .chain(slider.map(|(r, _)| r))
         .collect();
-    let preview = tools.update(
-        &tool_input::Frame {
-            ui,
-            response: &response,
-            proj: &proj,
-            bmin,
-            blocked: &blocked,
-            pixels_per_point: ppp,
-        },
-        state,
-    );
+    let render_mode = state.view_mode == ViewMode::Render;
+    let preview = if render_mode {
+        render_pick(ui, &response, &proj, bmin, &blocked, state);
+        tool_input::Preview::default()
+    } else {
+        tools.update(
+            &tool_input::Frame {
+                ui,
+                response: &response,
+                proj: &proj,
+                bmin,
+                blocked: &blocked,
+                pixels_per_point: ppp,
+            },
+            state,
+        )
+    };
     // Tool edits may have changed the document this frame.
     let voxels = state.doc().map(|d| meshes.get(d, ghosts)).or(voxels);
     // Keep frames coming while background tiles arrive.
@@ -409,7 +415,7 @@ pub fn show(
         frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
         frame.voxels = Some(meshes.opaque);
     }
-    if let Some(doc) = state.doc() {
+    if let Some(doc) = state.doc().filter(|_| !render_mode) {
         frame.references = meshes.references(doc, bmin);
     }
     match target_format {
@@ -464,6 +470,54 @@ pub fn show(
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
+}
+
+/// Render mode has no editing tools: a click on the model sets the depth
+/// of field focus there (when the lens has an aperture) and `Alt`+click
+/// makes the clicked voxel's layer active, so its material opens in the
+/// Render panel.
+fn render_pick(
+    ui: &Ui,
+    response: &egui::Response,
+    proj: &Projection,
+    bmin: Vec3,
+    blocked: &[Rect],
+    state: &mut AppState,
+) {
+    if !response.clicked_by(egui::PointerButton::Primary) {
+        return;
+    }
+    let Some(pos) = response.interact_pointer_pos() else {
+        return;
+    };
+    if blocked.iter().any(|r| r.contains(pos)) {
+        return;
+    }
+    let (origin, dir) = proj.world_ray(pos);
+    let ray = rizxel_engine::Ray::new(origin - bmin, dir);
+    let Some(doc) = state.doc_mut() else { return };
+    let area = VoxelBox::from_bounds(doc.data.bounds);
+    let hit = doc.with_visible_geometry(|vols| {
+        rizxel_engine::raycast::raycast_grid(&ray, &area, |p| {
+            vols.iter().any(|v| v.get(p) != rizxel_math::EMPTY_VOXEL)
+        })
+    });
+    let Some(hit) = hit else { return };
+    if ui.input(|i| i.modifiers.alt) {
+        if let Some(layer) = doc.layer_at(hit.voxel) {
+            doc.active_layer = layer;
+            let name = doc.data.layers[layer].name.clone();
+            state.status_message = Some(format!("Layer \"{name}\" is active"));
+        }
+        return;
+    }
+    if doc.data.render.camera.aperture > 0.0 {
+        // Distance along the view direction, which is what the lens uses.
+        let world = origin + dir * hit.t;
+        let mut s = doc.data.render.clone();
+        s.camera.focus_distance = (world - proj.eye()).dot(proj.forward).max(0.1);
+        doc.labeled("Focus", |d| d.set_render(s, false));
+    }
 }
 
 /// Translucent layers ordered farthest first by the depth of their box

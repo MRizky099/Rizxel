@@ -18,8 +18,8 @@ use rizxel_engine::{
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
     BoundSize, ImageData, LayerId, LayerKind, Material, Palette, RefPlane, ReferenceId,
-    ReferenceImage, Rgba8, ShapeKind, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
-    MAX_PALETTE_COLORS,
+    ReferenceImage, RenderPreset, RenderSettings, Rgba8, ShapeKind, Voxel, VoxelBox, VoxelVolume,
+    EMPTY_VOXEL, FIRST_COLOR_INDEX, MAX_PALETTE_COLORS,
 };
 
 use crate::box_select::{BoxSelect, LastBox};
@@ -106,6 +106,8 @@ pub struct DocData {
     pub materials: Vec<Material>,
     /// Reference images, in draw order.
     pub references: Vec<ReferenceImage>,
+    /// Render-mode settings (saved in the file, edited in Render mode).
+    pub render: RenderSettings,
 }
 
 impl DocData {
@@ -503,6 +505,7 @@ impl Document {
                 bounds,
                 materials: Vec::new(),
                 references: Vec::new(),
+                render: RenderSettings::default(),
             },
             active_layer: 0,
             active_reference: 0,
@@ -587,6 +590,18 @@ impl Document {
             })
             .unwrap_or_default();
         f(&layers)
+    }
+
+    /// Topmost effectively visible layer with a voxel at `p` (the one the
+    /// viewport shows there).
+    pub fn layer_at(&self, p: IVec3) -> Option<usize> {
+        self.with_visible_layers(|layers| {
+            layers
+                .iter()
+                .rev()
+                .find(|(_, v)| v.get(p) != EMPTY_VOXEL)
+                .map(|(i, _)| *i)
+        })
     }
 
     /// Opacity a layer is drawn with: its own times every enclosing
@@ -2614,6 +2629,81 @@ impl Document {
         Some(index as u32)
     }
 
+    /// Number of layers that use material `index`.
+    pub fn material_users(&self, index: u32) -> usize {
+        self.data
+            .layers
+            .iter()
+            .filter(|l| l.props.material == Some(index))
+            .count()
+    }
+
+    /// Gives layer `layer` its own copy of its material (named
+    /// "<name> copy"), so editing it no longer changes the other layers.
+    /// A layer on the default material gets a fresh one. One undo step;
+    /// returns the new material index.
+    pub fn make_material_unique(&mut self, layer: usize) -> Option<u32> {
+        let props = self.data.layers.get(layer)?.props.clone();
+        if self.data.materials.len() >= rizxel_io::MAX_MATERIALS {
+            return None;
+        }
+        let copy = match props
+            .material
+            .and_then(|m| self.data.materials.get(m as usize))
+        {
+            Some(m) => Material {
+                name: format!("{} copy", m.name),
+                ..m.clone()
+            },
+            None => Material::new(format!("Material {}", self.data.materials.len() + 1)),
+        };
+        let index = self.data.materials.len() as u32;
+        let mut materials = self.data.materials.clone();
+        materials.push(copy);
+        let edits = vec![
+            Edit::SetMaterials {
+                old: self.data.materials.clone(),
+                new: materials,
+            },
+            Edit::SetLayerProps {
+                index: layer,
+                old: props.clone(),
+                new: LayerProps {
+                    material: Some(index),
+                    ..props
+                },
+            },
+        ];
+        self.label_next("Make Material Unique");
+        self.apply(Edit::Batch(edits), false);
+        Some(index)
+    }
+
+    /// Replaces the render settings (`merge` folds slider drags into one
+    /// undo step). Values are clamped into range first.
+    pub fn set_render(&mut self, new: RenderSettings, merge: bool) -> bool {
+        let new = new.sanitized();
+        if new == self.data.render {
+            return false;
+        }
+        self.apply(
+            Edit::SetRender {
+                old: Box::new(self.data.render.clone()),
+                new: Box::new(new),
+            },
+            merge,
+        );
+        true
+    }
+
+    /// Applies a built-in render preset as one undo step.
+    pub fn apply_render_preset(&mut self, preset: RenderPreset) -> bool {
+        let new = preset.apply(&self.data.render);
+        self.labeled(format!("Render Preset \"{}\"", preset.label()), |d| {
+            d.set_render(new, false)
+        })
+    }
+
     /// The active layer can be deleted unless it is the last layer or linked
     /// clones still point at it.
     pub fn can_delete_active_layer(&self) -> bool {
@@ -3490,6 +3580,7 @@ impl Document {
             active_layer: self.active_layer,
             bounds: self.data.bounds,
             references: self.data.references.clone(),
+            render: self.data.render.clone(),
         }
     }
 
@@ -3536,6 +3627,7 @@ impl Document {
         doc.data.palette = project.palette;
         doc.data.materials = project.materials;
         doc.data.references = project.references;
+        doc.data.render = project.render.sanitized();
         doc.active_layer = active;
         doc.selected_color = project.selected_color;
         doc.path = path;

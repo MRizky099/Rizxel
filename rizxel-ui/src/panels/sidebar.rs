@@ -176,8 +176,9 @@ fn favorites_row(ui: &mut Ui, state: &mut AppState) {
 
 /// Layers dock panel.
 pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+    let render = state.view_mode == rizxel_app::ViewMode::Render;
     if let Some(doc) = state.doc_mut() {
-        layers_section(ui, doc, ui_state);
+        layers_section(ui, doc, ui_state, render);
     }
 }
 
@@ -410,8 +411,9 @@ struct RowInfo {
 }
 
 /// Goxel-style layer panel: toolbar, reorderable tree (top layer first),
-/// then whole-document layer operations.
-fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
+/// then whole-document layer operations. In Render mode each row shows its
+/// material, and the material is edited in the Render panel.
+fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, render: bool) {
     let mut action = None;
     egui::Frame::NONE.inner_margin(8).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
@@ -437,13 +439,13 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
                 locked_by_group: tree.ancestors(i).any(|a| doc.data.layers[a].locked),
                 has_children: tree.has_children(i),
             };
-            if let Some(a) = layer_row(ui, doc, i, &info, ui_state) {
+            if let Some(a) = layer_row(ui, doc, i, &info, ui_state, render) {
                 action = Some(a);
             }
         }
 
         ui.add_space(6.0);
-        layer_properties(ui, doc);
+        layer_properties(ui, doc, render);
         ui.add_space(6.0);
         layer_operations(ui, doc, ui_state);
     });
@@ -579,7 +581,7 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
 
 /// Opacity of the active layer. One undo step per drag; the viewport
 /// updates the same frame without re-meshing.
-fn layer_properties(ui: &mut Ui, doc: &mut Document) {
+fn layer_properties(ui: &mut Ui, doc: &mut Document, render: bool) {
     let index = doc.active_layer;
     let Some(props) = doc.data.layers.get(index).map(|l| l.props.clone()) else {
         return;
@@ -601,7 +603,9 @@ fn layer_properties(ui: &mut Ui, doc: &mut Document) {
             doc.set_layer_props(index, new, !response.drag_started());
         }
     });
-    layer_material(ui, doc, index);
+    if !render {
+        layer_material(ui, doc, index);
+    }
 }
 
 /// Material of the active layer: pick one, add one, and edit the picked
@@ -762,6 +766,7 @@ fn layer_row(
     i: usize,
     info: &RowInfo,
     ui_state: &mut UiState,
+    render: bool,
 ) -> Option<LayerAction> {
     let layer = &doc.data.layers[i];
     let (visible, locked) = (layer.visible, layer.locked);
@@ -855,11 +860,30 @@ fn layer_row(
         action = Some(LayerAction::ToggleLocked(i));
     }
 
-    // Voxel count (voxel layers), right-aligned before the lock.
+    // Voxel count (voxel layers), right-aligned before the lock. Render
+    // mode shows the layer's material and its swatch instead.
     let count_text = if group.is_some() {
         String::new()
+    } else if render {
+        doc.layer_material(i)
+            .map_or_else(|| "Default".to_owned(), |m| m.name.clone())
     } else {
         voxels.to_string()
+    };
+    if render && group.is_none() {
+        let swatch = Rect::from_center_size(
+            lock_rect.left_center() - egui::vec2(10.0, 0.0),
+            egui::vec2(10.0, 10.0),
+        );
+        let fill = super::render::material_swatch(doc.layer_material(i));
+        ui.painter().circle_filled(swatch.center(), 5.0, fill);
+        ui.painter()
+            .circle_stroke(swatch.center(), 5.0, Stroke::new(1.0, theme::BORDER));
+    }
+    let lock_rect = if render && group.is_none() {
+        lock_rect.translate(egui::vec2(-16.0, 0.0))
+    } else {
+        lock_rect
     };
     let count_galley =
         ui.painter()

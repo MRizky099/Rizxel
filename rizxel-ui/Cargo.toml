@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "rizxel_ui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rizxel"
 path = "src/main.rs"

@@ -20,8 +20,8 @@ pub struct RizxelApp {
     tools: ToolInput,
     /// Framebuffer format of the wgpu surface; `None` if wgpu is unavailable.
     target_format: Option<wgpu::TextureFormat>,
-    /// Dockable panel layout of the editor workspace.
-    dock: dock::Workspace,
+    /// Dockable panel layouts, one per view mode.
+    docks: dock::Workspaces,
     /// Every document is answered for: the next close request is let through.
     quitting: bool,
 }
@@ -52,7 +52,7 @@ impl RizxelApp {
             meshes: viewport::MeshCache::default(),
             tools: ToolInput::default(),
             target_format,
-            dock: dock::Workspace::default(),
+            docks: dock::Workspaces::default(),
             quitting: false,
         }
     }
@@ -180,6 +180,9 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD, Key::N)) {
             actions::new_document(&mut self.state);
         }
+        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::F5)) {
+            self.state.toggle_view_mode();
+        }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::F)) {
             self.ui.zen_mode = !self.ui.zen_mode;
         }
@@ -291,7 +294,7 @@ impl eframe::App for RizxelApp {
         let meshes = &mut self.meshes;
         let tools = &mut self.tools;
         let target_format = self.target_format;
-        let dock = &mut self.dock;
+        let dock = self.docks.get_mut(state.view_mode);
         let flat = |fill| Frame::NONE.fill(fill);
 
         // Panel order matters: outermost first, central panel last.
@@ -340,6 +343,7 @@ impl eframe::App for RizxelApp {
                 dock::Panel::References => scroll_panel(ui, panel, |ui| {
                     panels::references::show(ui, state, ui_state)
                 }),
+                dock::Panel::Render => panels::render::show(ui, state, ui_state),
             });
             if let Some(error) = error {
                 log::warn!("{error}");
