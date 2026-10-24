@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.4.0` plus Phases 10, 10b and 10c on their branches, 396 tests) and a
+Gaps between the current build (`v0.4.0` plus Phases 10, 10b, 10c and 10d on their branches, 489 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -51,6 +51,9 @@ The **Phase** column names the plan that closes the gap (see
 | No direct "selection to new layer" | Phase 10c, `05f3aa5` (`Ctrl+J` / `Ctrl+Shift+J`) |
 | No line or curve tool, and no pixel-perfect option | Phase 10c, `3336579` (Line tool, Pixel perfect / Solid) |
 | No free rotation or resize of a selection or layer | Phase 10c, `2d3c6dc` (Transform tool) |
+| The Model / Render switch hides with the Tool Options panel | Phase 10d, `193871f` (now in the title bar) |
+| Palette, Layers and Bound Model can't form tab groups | Phase 10d, `56e4bba` (tab groups instead of the stack) |
+| Tab titles hug their labels; crowded strips hide tabs in a "…" menu | Phase 10d, `4d52dfb` (Fill widths, scrolling strips) |
 
 ## Known bugs
 
@@ -108,6 +111,8 @@ No open bugs are known. Fixed bugs move to the table above.
 | View toggles and the projection aren't remembered | Low | 12 | Floor grid, voxel grid, bounds, ghosts, AO and Auto Ortho reset on every start; Phase 12 stores them in settings. |
 | The undo history is capped at 512 steps | Low | 12 | The History panel (Phase 10) lists them; the limit becomes configurable in Phase 12. |
 | No localization | Low | post | The UI is English only. |
+| Tab strips can't be scrolled by dragging | Low | post | Dragging a tab moves it to another group, so strips scroll by wheel, arrows, or a dragged tab held near an end. |
+| A collapsed group only collapses when it sits above or below another group | Low | post | Groups beside the viewport or floating have nothing to give the space to. |
 
 ## Rendering and performance
 
@@ -127,6 +132,7 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
+| `craft-ui` is a vendored copy | Low | post | `vendor/craft-ui` is upstream `ae2f796` plus the Fill / Scroll tab-strip patch (Phase 10d). Send the patch upstream, then go back to a git rev; the steps are in `vendor/craft-ui/README.md`. |
 | No release packaging | Medium | 12 | There are no installers or signed binaries, and only Windows has an embedded icon resource. |
 | UI behaviour isn't tested | Medium | 12 | Tests cover the engine, I/O and app layers. Viewport and panel interactions aren't automated. |
 | No user documentation or tutorial | Medium | 13 | The docs are for developers only. |

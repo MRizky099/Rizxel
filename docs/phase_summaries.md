@@ -281,3 +281,20 @@ Plan: [`rizxel_phase10c_implementation_plan.md`](plan/rizxel_phase10c_implementa
 - The randomized undo-all / redo-all test covers box selection, to-new-layer, lines and
   curves and transforms; 396 tests.
 
+## Phase 10d — Workspace: docking tabs and mode switch
+
+Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementation_plan.md)
+
+**Delivered** (on top of Phase 10c, part of M4 / 0.5.0)
+- The *Model / Render* switch sits in the title bar next to the window controls; the
+  title bar is laid out by `bar_layout`, which shrinks the title, then folds the menus
+  into ☰ (`193871f`).
+- The inspector is two tab groups in a vertical split instead of a `Node::Stack`, so any
+  panel can join a strip as a sub-tab or split beside a group; a double-click on a tab
+  collapses its group to the strip (`56e4bba`).
+- `craft-ui` vendored at `ae2f796` (`b8409fb`), then `TabSizing::Fill` and
+  `TabOverflow::Scroll` with `tabs::fill` / `tabs::scroll`, turned on in `dock.rs`
+  (`4d52dfb`). The change is also kept as a patch for upstream.
+- No new document operations, so the undo tests are unchanged; 489 tests (402 Rizxel,
+  87 craft-ui).
+

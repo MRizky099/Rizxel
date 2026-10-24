@@ -5,6 +5,24 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 10d: Workspace, docking tabs and mode switch (2026-10-24)
+
+- **Model / Render switch in the title bar**, left of the window controls. It no longer
+  sits in the Tool Options bar, so hiding or moving panels can't hide it, and it stays
+  in Zen mode. In narrow windows the title shrinks first, then the menus fold into one
+  ☰ menu.
+- **Tab groups for every panel.** The right side is now two tab groups: *Color Palette*
+  with *References*, and *Layers* with *Bound Model* and *History*. Drop any panel on a
+  group's tab strip to add it as a sub-tab, or on an edge to place it beside the group.
+  A double-click on a tab collapses its group to the strip and back.
+- **Stretched tabs:** tab titles share their strip's full width.
+- **Scrolling tab strips:** when a group's tabs don't fit, the strip scrolls with the
+  mouse wheel or the ‹ › arrows at its ends instead of hiding tabs in a "…" menu. The
+  active tab scrolls into view; a dragged tab held near an end scrolls the strip.
+- `craft-ui` is vendored in `vendor/craft-ui` (from `storytold/craft-libs` at `ae2f796`)
+  with the opt-in `TabSizing::Fill` and `TabOverflow::Scroll` styles; the change is kept
+  as a patch for upstream.
+
 ### Phase 10c: Box select, lines and curves, Transform tool (2026-10-24)
 
 - **Box selection** (Selection tool, *Box* mode, default): a click or drag places a blue
