@@ -19,6 +19,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 9 | Visual fidelity and 0.4.0 | ✅ Done | `v0.4.0` |
 | 10 | Editing power | ✅ Done (branch) | `a179e73`..`7d60c3e` |
 | 10b | Layer hierarchy and reference images | ✅ Done (branch) | `af5b8a3`..`59eaac7` |
+| 10c | Box select, lines and curves, Transform tool | ✅ Done (branch) | `8d556ac`..`2d3c6dc` |
 
 ---
 
@@ -257,4 +258,26 @@ M4 / 0.5.0)
   filters), the References dock panel, `Alt+R` and file drop (`2f3d424`).
 - The randomized undo-all / redo-all test covers the group and reference operations;
   366 tests.
+
+## Phase 10c — Box select, lines and curves, Transform tool
+
+Plan: [`rizxel_phase10c_implementation_plan.md`](plan/rizxel_phase10c_implementation_plan.md)
+
+**Delivered** (on top of Phase 10b, part of M4 / 0.5.0)
+- Selection tool *Box* mode: an open blue box with face arrows, face drags and typed
+  position / size, a live preview, Apply as one undo step (mask mode from the modifiers
+  held), Esc to cancel, a dimmed box that can be re-opened, and Slice Mode clamping.
+  Engine helpers `resize_face`, `move_box`, `fit_box`, tile-limited `select_box`; the
+  session lives in `rizxel-app/src/box_select.rs` (`8d556ac`).
+- *Selection ▸ To New Layer* (Cut / Copy) in one undo step; clone and shape sources are
+  baked on Cut (`05f3aa5`).
+- Line tool with Line, Polyline and Curve modes, draggable points and ghost previews;
+  `tools/line.rs` with `bezier_path` and the Pixel perfect and Solid filters, also used
+  by size-1 Brush strokes; `Ctrl`+click lines in the Brush (`3336579`).
+- Transform tool: rings, face arrows, corner cubes and typed rotation, scale or size,
+  move and pivot; `transform_cells` (inverse nearest neighbour), `scale_cells` and
+  `apply_transform` (exact at 90° and whole scales); the session in
+  `rizxel-app/src/transform_session.rs` (`2d3c6dc`).
+- The randomized undo-all / redo-all test covers box selection, to-new-layer, lines and
+  curves and transforms; 396 tests.
 

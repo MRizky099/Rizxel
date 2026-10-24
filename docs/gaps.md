@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.4.0` plus Phases 10 and 10b on their branches, 366 tests) and a
+Gaps between the current build (`v0.4.0` plus Phases 10, 10b and 10c on their branches, 396 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -47,6 +47,10 @@ The **Phase** column names the plan that closes the gap (see
 | No reference images | Phase 10b, `beb30be`, `2f3d424` (References panel, `.rzxl` v4) |
 | The Layers panel can't create or show groups; locks aren't inherited | Phase 10b, `af5b8a3`, `cfa405c` |
 | `.vox` export flattens groups | Phase 10b, `a57e589` |
+| The selection box can't be adjusted | Phase 10c, `8d556ac` (Box mode: handles, typed position and size) |
+| No direct "selection to new layer" | Phase 10c, `05f3aa5` (`Ctrl+J` / `Ctrl+Shift+J`) |
+| No line or curve tool, and no pixel-perfect option | Phase 10c, `3336579` (Line tool, Pixel perfect / Solid) |
+| No free rotation or resize of a selection or layer | Phase 10c, `2d3c6dc` (Transform tool) |
 
 ## Known bugs
 
@@ -83,9 +87,9 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No free rotation or resize of a selection or layer | Medium | 10c | Phase 8 added 90° rotate, flip and one-shot mirror; the Transform tool (free angles, scaling, gizmo) comes in Phase 10c. |
-| No line or curve tool, and no pixel-perfect option | Medium | 10c | Brush only interpolates between drag samples. The next Slice Mode workflow. |
-| The selection box can't be adjusted | Medium | 10c | The Selection drag selects on release; there are no handles and no typed position or size. |
+| Transform drag modifiers (`Shift` / `Ctrl` snapping, `Alt` per-axis corners) and Brush `Ctrl`+click lines are untested by hand | Low | 12 | Injected modifier clicks don't arrive in manual tests; typed values and plain drags were checked. |
+| Undo with an open box selection or transform only closes it | Low | post | Same as a floating paste; the next Undo undoes the last step. |
+| No shear, smooth (filtered) resampling or multi-layer transforms | Low | post | The Transform tool resamples by nearest neighbour, on one layer. |
 | Gradient and Remap need `Shift+click` to mark a swatch | Low | 12 | There is no other way to pick the second color yet. |
 | Brush pyramids and cones always point up | Low | post | The Shape tool points them away from the pressed face; Brush stamps have no face direction. |
 | Favorite colors use `Ctrl+digit`, not plain digits | Low | 12 | Plain `5` already toggles the projection, and egui can't tell the numpad from the main digits. Configurable shortcuts come with Phase 12. |
