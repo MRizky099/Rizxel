@@ -56,7 +56,7 @@ The **Phase** column names the plan that closes the gap (see
 | Tab titles hug their labels; crowded strips hide tabs in a "…" menu | Phase 10d, `4d52dfb` (Fill widths, scrolling strips) |
 | No glTF, PLY or Qubicle (`.qb`, `.qef`, `.qbt`) support | Phase 11, `a6625a0`, `68f07cf` |
 | No Export Slices | Phase 11, `40bd3da` |
-| OBJ export loads slowly in other tools | Phase 11, `40bd3da` (Fast load layout, the new default) |
+| OBJ export has only MagicaVoxel's layout | Phase 11, `40bd3da` (Fast load layout as an option) |
 | No heightmap import, and `voxelize` has no UI | Phase 11, `3701e78` (Heightmap import, Voxelizer dialog) |
 | No mesh export options (scale, pivot, per-layer files) | Phase 11, `5e825eb` |
 | Qubicle files aren't checked in Qubicle | Phase 11 fixes: checked in Qubicle 3.1; `.qb` orientation flag, `.qbt` face mask and groups corrected |
@@ -83,7 +83,7 @@ No open bugs are known. Fixed bugs move to the table above.
 |---|---|---|---|
 | No image output: PNG render, photo-realistic render, turntables, sprite sheets | Medium | 11b | |
 | glTF isn't checked in Godot | Low | 12 | Blender 5.2 imports the glTF (vertex colors and palette texture), both OBJ layouts, PLY and STL with matching colors; Godot wasn't available. |
-| The Fast load OBJ doesn't load faster in Blender | Medium | 11 | Blender 5.2 imports a 489k-triangle terrain in 1.38 s as Fast load and 0.99 s in the MagicaVoxel layout (best of three; PLY 0.40 s, GLB 4.4 s). Fast load has 38% more vertices and one material per color. It is still the default; whether it should be is open. |
+| The Fast load OBJ doesn't load faster in Blender | Low | — | Blender 5.2 imports a 489k-triangle terrain in 1.38 s as Fast load and 0.99 s in the MagicaVoxel layout (best of three; PLY 0.40 s, GLB 4.4 s). Fast load has 38% more vertices and one material per color, so MagicaVoxel's layout stays the default; other loaders weren't timed. |
 | Fast load `Kd` colors look darker in some viewers | Low | — | `Kd` is written as linear RGB, like BrickLink Studio and as Blender reads it; Windows 3D Viewer reads it as sRGB. Rizxel's importer restores the exact colors. |
 | No glTF import | Low | post | glTF is export only. |
 | Qubicle exports leave out hidden layers and `.qbt` group names; pivots and scales are ignored on import | Low | post | Qubicle files have no hidden flag. `.qbt` groups are written as nested models, which have no name (compounds are drawn from their own merged matrix, placed by rules that depend on pivot and size). Matrix pivots and local/global scales have no Rizxel equivalent. |

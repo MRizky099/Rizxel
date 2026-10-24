@@ -16,10 +16,10 @@ All notable changes to Rizxel are documented here. Format follows
   groups) and `.qef` (palette order kept). Files Rizxel writes re-export byte for byte.
 - **PLY:** binary export with vertex colors (Z-up), and PLY import (ASCII or binary)
   through the voxelizer.
-- **Fast load OBJ**, the new default layout: one index per face corner, a normal per
+- **Fast load OBJ** layout, as an option: one index per face corner, a normal per
   vertex, faces grouped by color with plain `Kd` materials (plus `Ke`, `d`, `Pr`, `Pm`)
-  and no texture, like BrickLink Studio's export. The MagicaVoxel layout stays
-  selectable and unchanged.
+  and no texture, like BrickLink Studio's export. The MagicaVoxel layout stays the
+  default and unchanged: it imports faster in Blender 5.2.
 - **Mesh export options** dialog for OBJ, STL, PLY and glTF: scale, pivot (bottom center,
   center, corner), OBJ layout, glTF colors and one file per visible layer.
 - **Export Slices:** one PNG per voxel slice along X, Y or Z, 1–16 pixels per voxel.

@@ -4,7 +4,7 @@
 //! |---|---|---|
 //! | MagicaVoxel `.vox` | new tab: layers, groups, linked clones, palette | one model per layer, names, hidden flags, palette |
 //! | Goxel `.gox` | new tab: layers, groups, clones, shapes, materials | same, natively where Goxel can |
-//! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` (Fast load), or + palette `.png` (MagicaVoxel layout) |
+//! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` + palette `.png` (MagicaVoxel layout), or `.obj` + `.mtl` (Fast load) |
 //! | `.mtl` | palette and materials of the active document | `.mtl` + palette `.png` |
 //! | STL `.stl` | new tab: voxelized, one color | binary STL, Z-up, 1 voxel = 1 mm |
 //! | glTF `.glb` / `.gltf` | — | one node per visible layer, groups, instanced clones |
@@ -212,7 +212,7 @@ impl FileFormat {
     /// What an export writes, for menus and tooltips.
     pub const fn export_note(self) -> &'static str {
         match self {
-            FileFormat::Obj => "OBJ + MTL, Fast load or MagicaVoxel layout, scale 0.1",
+            FileFormat::Obj => "OBJ + MTL, MagicaVoxel or Fast load layout, scale 0.1",
             FileFormat::Mtl => "MTL + palette PNG",
             FileFormat::Vox => "one model per layer, groups kept",
             FileFormat::Gox => "layers, groups, clones, shapes, materials",
@@ -827,7 +827,7 @@ impl AppState {
     }
 
     /// Exports the visible layers of the active document as OBJ + MTL in
-    /// the default (Fast load) layout. Returns the number of triangles.
+    /// the default (MagicaVoxel) layout. Returns the number of triangles.
     pub fn export_active_obj(&self, path: &Path) -> Result<usize, RzxlError> {
         let doc = self
             .doc()
@@ -924,18 +924,18 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        // The default Fast load OBJ needs only its .mtl.
-        assert!(d.join("model.mtl").exists() && !d.join("model.png").exists());
-        let magica = ExportOptions {
-            obj_layout: rizxel_io::ObjLayout::MagicaVoxel,
+        // The default MagicaVoxel layout writes its .mtl and palette .png.
+        assert!(d.join("model.mtl").exists() && d.join("model.png").exists());
+        let fast = ExportOptions {
+            obj_layout: rizxel_io::ObjLayout::FastLoad,
             ..ExportOptions::default()
         };
-        let path = d.join("magica.obj");
+        let path = d.join("fast.obj");
         let msg = src
-            .export_active_with(&path, FileFormat::Obj, &magica)
+            .export_active_with(&path, FileFormat::Obj, &fast)
             .unwrap();
-        assert!(msg.contains("MagicaVoxel layout"), "{msg}");
-        assert!(d.join("magica.png").exists());
+        assert!(msg.contains("Fast load layout"), "{msg}");
+        assert!(d.join("fast.mtl").exists() && !d.join("fast.png").exists());
         let mut dst = AppState::default();
         dst.import(&path).unwrap();
         assert_eq!(dst.doc().unwrap().visible_voxel_count(), visible);

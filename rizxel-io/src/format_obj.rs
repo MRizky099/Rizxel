@@ -2,9 +2,11 @@
 //!
 //! [`write_obj`] writes one of two layouts ([`ObjLayout`]).
 //!
-//! ## Export (Fast load layout, the default)
+//! ## Export (Fast load layout, optional)
 //!
-//! Follows BrickLink Studio's OBJ export, which 3D apps load quickly:
+//! Follows BrickLink Studio's OBJ export, where every corner can be copied
+//! straight into a vertex buffer (Blender 5.2 still imports the MagicaVoxel
+//! layout faster, so this is not the default):
 //!
 //! - Every quad corner is its own vertex with a position, a texcoord and a
 //!   normal, all at the same index, so faces read `f 1/1/1 2/2/2 3/3/3`
@@ -18,7 +20,7 @@
 //!   `Kd` is linear.
 //! - Files are about 3–5× the size of the MagicaVoxel layout.
 //!
-//! ## Export (MagicaVoxel layout)
+//! ## Export (MagicaVoxel layout, the default)
 //!
 //! Writes `name.obj`, `name.mtl` and `name.png` in the same
 //! layout as MagicaVoxel's OBJ export (reference: MagicaVoxel's own
@@ -86,15 +88,15 @@ pub const FAST_LOAD_MARK: &str = "# layout: fast load (per-corner vertices, line
 /// How an OBJ export is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjLayout {
-    /// Per-corner vertices, one material per color, no texture.
-    #[default]
-    FastLoad,
     /// MagicaVoxel's layout: shared vertices, six normals, palette PNG.
+    #[default]
     MagicaVoxel,
+    /// Per-corner vertices, one material per color, no texture.
+    FastLoad,
 }
 
 impl ObjLayout {
-    pub const ALL: [ObjLayout; 2] = [ObjLayout::FastLoad, ObjLayout::MagicaVoxel];
+    pub const ALL: [ObjLayout; 2] = [ObjLayout::MagicaVoxel, ObjLayout::FastLoad];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -122,7 +124,8 @@ pub struct ObjOptions {
 }
 
 impl ObjOptions {
-    /// Defaults for `bounds`: Fast load, scale 0.1, bottom-center pivot.
+    /// Defaults for `bounds`: MagicaVoxel layout, scale 0.1, bottom-center
+    /// pivot.
     pub fn new(bounds: BoundSize) -> Self {
         Self {
             layout: ObjLayout::default(),
@@ -985,6 +988,13 @@ mod tests {
         }
     }
 
+    fn fast(bounds: BoundSize) -> ObjOptions {
+        ObjOptions {
+            layout: ObjLayout::FastLoad,
+            ..ObjOptions::new(bounds)
+        }
+    }
+
     fn mtl_loader(e: &ObjExport) -> impl Fn(&str) -> Option<Vec<u8>> {
         let (mtl, png) = (e.mtl.clone(), e.png.clone());
         move |name: &str| match name {
@@ -997,7 +1007,7 @@ mod tests {
     #[test]
     fn fast_layout_uses_one_index_per_corner() {
         let s = fast_scene();
-        let e = build_obj(&s, "m", &ObjOptions::new(s.bounds)).unwrap();
+        let e = build_obj(&s, "m", &fast(s.bounds)).unwrap();
         assert!(e.png.is_empty(), "no texture");
         let lines: Vec<&str> = e.obj.split("\r\n").collect();
         assert_eq!(lines[0], EXPORT_HEADER);
@@ -1021,7 +1031,7 @@ mod tests {
     #[test]
     fn fast_layout_groups_faces_by_color_and_material() {
         let s = fast_scene();
-        let e = build_obj(&s, "m", &ObjOptions::new(s.bounds)).unwrap();
+        let e = build_obj(&s, "m", &fast(s.bounds)).unwrap();
         let groups: Vec<&str> = e
             .obj
             .split("\r\n")
@@ -1118,7 +1128,7 @@ mod tests {
     fn fast_layout_refuses_empty_scenes() {
         let mut s = fast_scene();
         s.layers.iter_mut().for_each(|l| l.visible = false);
-        assert!(build_obj(&s, "m", &ObjOptions::new(s.bounds)).is_err());
+        assert!(build_obj(&s, "m", &fast(s.bounds)).is_err());
     }
 
     #[test]

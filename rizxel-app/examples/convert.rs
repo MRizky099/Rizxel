@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run -p rizxel-app --example convert -- input.vox output.glb
-//! cargo run -p rizxel-app --example convert -- --scale 1 --pivot corner input.vox output.obj
+//! cargo run -p rizxel-app --example convert -- --obj-layout fast --pivot corner input.vox output.obj
 //! ```
 //!
 //! Inputs: `.rzxl`, `.vox`, `.gox`, `.qb`, `.qbt`, `.qef`, `.obj`, `.stl`,
@@ -14,7 +14,7 @@
 //! - `--scale <units per voxel>` (default: the format's own)
 //! - `--pivot bottom-center|center|corner`
 //! - `--gltf-colors vertex|texture`
-//! - `--obj-layout fast|magicavoxel` (default fast)
+//! - `--obj-layout magicavoxel|fast` (default magicavoxel)
 //! - `--per-layer` writes one file per visible layer (OBJ, STL, PLY)
 //!
 //! Export Slices: `--slices x|y|z [--slice-scale N] input outdir` writes

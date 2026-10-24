@@ -5,8 +5,8 @@
 //! - [`format_vox`]: MagicaVoxel `.vox` import/export.
 //! - [`format_gox`]: Goxel `.gox` import/export.
 //! - [`format_gltf`]: glTF 2.0 `.glb` / `.gltf` export.
-//! - [`format_obj`] / [`format_mtl`]: Wavefront OBJ + MTL export (Fast load
-//!   or MagicaVoxel layout) and OBJ import.
+//! - [`format_obj`] / [`format_mtl`]: Wavefront OBJ + MTL export (MagicaVoxel
+//!   or Fast load layout) and OBJ import.
 //! - [`format_ply`]: Stanford `.ply` export and import.
 //! - [`format_qb`]: Qubicle Binary `.qb` import/export.
 //! - [`format_qbt`]: Qubicle Binary Tree `.qbt` import/export.

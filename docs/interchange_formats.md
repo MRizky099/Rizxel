@@ -7,7 +7,7 @@ These formats are supported for exchange with other tools:
 |---|---|---|
 | MagicaVoxel `.vox` | New tab. Each shape instance becomes a layer; groups, hidden flags and the palette come along; repeated instances of a model become linked clones. | One model per layer (shapes, clones and crops baked in), with layer names, hidden flags and the palette. Groups become named, nested group nodes. |
 | Goxel `.gox` | New tab. Layers, groups, opacity, lock, materials, shape layers, and clones that move by whole voxels; other clones are baked. True colors are reduced to the palette. | Groups, shapes, linked clones and materials are written natively; crops are baked in. The bounds become the image box. |
-| Wavefront `.obj` | New tab. Voxel-editor exports (Rizxel, MagicaVoxel, Qubicle, …) import losslessly on their own grid. Other meshes are scaled to 64 voxels on the longest side. Colors come from vertex colors, the `map_Kd` texture or `Kd`. | `.obj` + `.mtl` in the Fast load layout (default), or + palette `.png` in MagicaVoxel's layout (below). |
+| Wavefront `.obj` | New tab. Voxel-editor exports (Rizxel, MagicaVoxel, Qubicle, …) import losslessly on their own grid. Other meshes are scaled to 64 voxels on the longest side. Colors come from vertex colors, the `map_Kd` texture or `Kd`. | `.obj` + `.mtl` + palette `.png` in MagicaVoxel's layout (default), or `.obj` + `.mtl` in the Fast load layout (below). |
 | `.mtl` | Replaces the active document's palette and materials (undoable). A 256×1 palette texture maps one to one; otherwise the `Kd` colors are used in file order. | `.mtl` + palette `.png`. |
 | STL `.stl` | New tab. Binary or ASCII, Z-up, voxelized like OBJ, in one color. | Binary, Z-up, centered on X/Y, 1 voxel = 1 mm. |
 | Qubicle `.qb` | New tab. One layer per matrix at its position; RGBA or BGRA, RLE or raw, either Z orientation. True colors are reduced to the palette. | One RLE matrix per visible layer, cut to its voxels, at its position. |
@@ -22,12 +22,12 @@ Code: `rizxel-io/src/format_{vox,gox,obj,mtl,stl,gltf,qb,qef,qbt,ply}.rs`, `qubi
 
 ```text
 cargo run -p rizxel-app --example convert -- input.vox output.obj
-cargo run -p rizxel-app --example convert -- --obj-layout magicavoxel --pivot corner input.qb output.obj
+cargo run -p rizxel-app --example convert -- --obj-layout fast --pivot corner input.qb output.obj
 cargo run -p rizxel-app --example convert -- --slices y --slice-scale 4 input.vox slices/
 ```
 
 `convert` takes every format in the table by extension, plus `--scale`,
-`--pivot bottom-center|center|corner`, `--obj-layout fast|magicavoxel`,
+`--pivot bottom-center|center|corner`, `--obj-layout magicavoxel|fast`,
 `--gltf-colors vertex|texture`, `--per-layer`, `--slices x|y|z`,
 `--slice-scale N`, `--heightmap MAX` (with `--color IMAGE`), `--resolution N` and
 `--turn x|y|z`.
@@ -41,7 +41,7 @@ save dialog. Settings are kept for the session.
 |---|---|---|
 | Scale | all | units per voxel; defaults OBJ 0.1, PLY 0.1, glTF 0.1 m, STL 1 mm |
 | Pivot | all | *Bottom center* (default: X and Z centered with integer halves, standing on the floor, MagicaVoxel's placement), *Center* (center of the bounds), *Corner* (minimum corner in the file's frame, all coordinates positive) |
-| Layout | OBJ | *Fast load* (default) or *MagicaVoxel* |
+| Layout | OBJ | *MagicaVoxel* (default) or *Fast load* |
 | Colors | glTF | *Vertex colors* (default) or *Palette texture* |
 | Files | OBJ, STL, PLY | *One file per visible layer*: `name_<layer>.ext`, all in the same frame so they line up |
 
@@ -56,24 +56,27 @@ mirror. OBJ is Y-up like Rizxel.
 
 ## OBJ export layouts
 
-The export dialog (and `convert --obj-layout fast|magicavoxel`) picks one
+The export dialog (and `convert --obj-layout magicavoxel|fast`) picks one
 of two layouts. Both use the same merged quads and placement, so they
 cover exactly the same surface and import back to the same voxels.
 
-| | Fast load (default) | MagicaVoxel |
+| | Fast load | MagicaVoxel (default) |
 |---|---|---|
 | Vertices | 4 per quad, one shared index per corner: `f 1/1/1 2/2/2 3/3/3` | shared per normal group |
 | Normals | one per vertex | the six axis normals |
 | Colors | one `usemtl color_<index>` group per color (and layer material), plain `Kd` | one `palette` material, 256×1 PNG |
 | Files | `.obj` + `.mtl` | `.obj` + `.mtl` + `.png` |
 | Size | about 3–5× larger | smallest |
-| Use | Blender, game engines, viewers | MagicaVoxel parity |
+| Use | loaders that read faces without rebuilding vertices | MagicaVoxel parity; loads faster in Blender 5.2 |
 
 ### Fast load
 
-Follows BrickLink Studio's OBJ export (`Kaki_Naga.obj`), which loads
-quickly because loaders can copy every corner straight into a vertex
-buffer: no v/vt/vn combinations to rebuild and no texture to decode.
+Follows BrickLink Studio's OBJ export (`Kaki_Naga.obj`): loaders can copy
+every corner straight into a vertex buffer, with no v/vt/vn combinations
+to rebuild and no texture to decode. It is not the default because
+Blender 5.2 imports the MagicaVoxel layout faster (0.99 s against 1.38 s
+for a 489k-triangle model): Fast load has about 38% more vertices and one
+material per color.
 
 ```text
 # Rizxel @ MRizky099

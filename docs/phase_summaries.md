@@ -310,8 +310,9 @@ Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementati
 - `qubicle.rs` with `format_qb.rs`, `format_qbt.rs` (zlib via `flate2`) and
   `format_qef.rs`, plus `format_ply.rs` (binary export, ASCII/binary import); new
   `FileFormat` entries and byte-equal re-export tests (`68f07cf`).
-- `ObjLayout::{FastLoad, MagicaVoxel}` with `build_obj` / `write_obj`; Fast load is the
-  default, its linear `Kd` marked in the header so imports restore exact colors;
+- `ObjLayout::{MagicaVoxel, FastLoad}` with `build_obj` / `write_obj`; the MagicaVoxel
+  layout stays the default (it imports faster in Blender 5.2), Fast load's linear `Kd`
+  is marked in the header so imports restore exact colors;
   `slices.rs` for Export Slices (`40bd3da`).
 - `heightmap.rs`, `image_io::decode_fitted`, quarter-turn mesh orientation and
   `preview_mesh`; `AppState::{load_mesh, import_mesh, import_heightmap}` and the Voxelizer
