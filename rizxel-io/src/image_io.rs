@@ -42,6 +42,26 @@ fn decode(bytes: &[u8], max_side: u32) -> Result<DynamicImage, RzxlError> {
     reader(bytes, max_side)?.decode().map_err(image_error)
 }
 
+/// Decodes PNG or JPEG bytes to RGBA8, scaled down (keeping the aspect
+/// ratio) so neither side exceeds `max_side`. Heightmap import uses it.
+pub fn decode_fitted(bytes: &[u8], max_side: u32) -> Result<RgbaImage, RzxlError> {
+    let mut image = decode(bytes, MAX_IMPORT_SIDE)?;
+    let (w, h) = (image.width(), image.height());
+    let max_side = max_side.max(1);
+    if w.max(h) > max_side {
+        let k = max_side as f64 / w.max(h) as f64;
+        let nw = ((w as f64 * k).round() as u32).clamp(1, max_side);
+        let nh = ((h as f64 * k).round() as u32).clamp(1, max_side);
+        image = image.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
+    }
+    let image = image.into_rgba8();
+    Ok(RgbaImage {
+        width: image.width(),
+        height: image.height(),
+        pixels: image.into_raw(),
+    })
+}
+
 /// Decodes an embedded reference image to RGBA8 (the renderer's texture).
 pub fn decode_reference(data: &ImageData) -> Result<RgbaImage, RzxlError> {
     let image = decode(data.bytes(), MAX_REFERENCE_SIDE)?.into_rgba8();

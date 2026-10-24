@@ -621,8 +621,10 @@ enum SceneItem {
 }
 
 /// Writes the transform / shape / group chunks below the scene root.
+/// Chunks are collected by node id and written in id order afterwards:
+/// MagicaVoxel shows an empty scene when a group comes after its children.
 struct SceneWriter<'a> {
-    w: &'a mut Writer,
+    nodes: &'a mut Vec<(i32, Vec<u8>)>,
     scene: &'a ExportScene,
     layers: &'a [KeptLayer<'a>],
     items: &'a HashMap<Option<usize>, Vec<(usize, SceneItem)>>,
@@ -634,6 +636,13 @@ struct SceneWriter<'a> {
 }
 
 impl SceneWriter<'_> {
+    /// Adds the chunk of node `id`.
+    fn node(&mut self, id: i32, tag: &[u8; 4], body: impl FnOnce(&mut Writer)) {
+        let mut w = Writer { out: Vec::new() };
+        w.chunk(tag, body);
+        self.nodes.push((id, w.out));
+    }
+
     /// Writes the children of `parent` and returns their transform ids.
     fn children(&mut self, parent: Option<usize>, depth: usize) -> Result<Vec<i32>, RzxlError> {
         if depth > MAX_SCENE_DEPTH / 2 {
@@ -659,7 +668,7 @@ impl SceneWriter<'_> {
                 SceneItem::Model(_) => vec![("_t", self.translation.clone())],
                 SceneItem::Group(_) => Vec::new(),
             };
-            self.w.chunk(b"nTRN", |c| {
+            self.node(id, b"nTRN", |c| {
                 c.i32(id);
                 c.dict(&attrs);
                 c.i32(id + 1);
@@ -669,7 +678,7 @@ impl SceneWriter<'_> {
                 c.dict(&frame);
             });
             match item {
-                SceneItem::Model(k) => self.w.chunk(b"nSHP", |c| {
+                SceneItem::Model(k) => self.node(id + 1, b"nSHP", |c| {
                     c.i32(id + 1);
                     c.dict(&[]);
                     c.i32(1);
@@ -681,7 +690,7 @@ impl SceneWriter<'_> {
                         return Err(invalid("cyclic groups"));
                     }
                     let kids = self.children(Some(g), depth + 1)?;
-                    self.w.chunk(b"nGRP", |c| {
+                    self.node(id + 1, b"nGRP", |c| {
                         c.i32(id + 1);
                         c.dict(&[]);
                         c.i32(kids.len() as i32);
@@ -769,8 +778,9 @@ pub fn write_vox(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
     for list in items.values_mut() {
         list.sort_by_key(|&(key, _)| key);
     }
+    let mut nodes: Vec<(i32, Vec<u8>)> = Vec::new();
     let mut scene_writer = SceneWriter {
-        w: &mut w,
+        nodes: &mut nodes,
         scene,
         layers: &layers,
         items: &items,
@@ -787,6 +797,10 @@ pub fn write_vox(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
             c.i32(*id);
         }
     });
+    nodes.sort_by_key(|(id, _)| *id);
+    for (_, bytes) in nodes {
+        w.out.extend_from_slice(&bytes);
+    }
     w.chunk(b"LAYR", |c| {
         c.i32(0);
         c.dict(&[]);
@@ -829,24 +843,9 @@ mod tests {
             bounds,
             palette: Palette::default(),
             layers: vec![
-                ExportLayer {
-                    name: "Body".into(),
-                    visible: true,
-                    volume: a,
-                    group: None,
-                },
-                ExportLayer {
-                    name: "Hat".into(),
-                    visible: false,
-                    volume: b,
-                    group: None,
-                },
-                ExportLayer {
-                    name: "Empty".into(),
-                    visible: true,
-                    volume: VoxelVolume::new(bounds),
-                    group: None,
-                },
+                ExportLayer::new("Body", true, a),
+                ExportLayer::new("Hat", false, b),
+                ExportLayer::new("Empty", true, VoxelVolume::new(bounds)),
             ],
             groups: Vec::new(),
         }
@@ -917,6 +916,25 @@ mod tests {
             "hidden groups hide their contents"
         );
         assert_eq!(p.layers.iter().filter(|l| !l.kind.is_group()).count(), 2);
+        // Scene nodes come in id order (MagicaVoxel shows nothing when a
+        // group follows its children).
+        let bytes = write_vox(&s).unwrap();
+        let mut ids = Vec::new();
+        let mut at = 20;
+        while at + 12 <= bytes.len() {
+            let tag = &bytes[at..at + 4];
+            let len = i32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            if [&b"nTRN"[..], b"nGRP", b"nSHP"].contains(&tag) {
+                ids.push(i32::from_le_bytes(
+                    bytes[at + 12..at + 16].try_into().unwrap(),
+                ));
+            }
+            at += 12 + len;
+        }
+        assert!(
+            ids.len() > 4 && ids.windows(2).all(|w| w[0] < w[1]),
+            "{ids:?}"
+        );
         // Cyclic group links are refused instead of looping.
         s.groups[1].parent = Some(0);
         assert!(

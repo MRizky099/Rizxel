@@ -5,6 +5,41 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 11: Pipeline and export (2026-10-24)
+
+- **glTF 2.0 export** (`.glb`, or `.gltf` + `.bin`): one node per visible layer, groups
+  as parent nodes, linked clones as instances of one mesh, vertex colors or the palette
+  texture, layer materials as PBR with emission. Y-up, 1 voxel = 0.1 m, placed like the
+  OBJ export.
+- **Qubicle formats:** `.qb` import and export (RGBA/BGRA, RLE or raw, both Z
+  orientations, visibility mask, one layer per matrix), `.qbt` (models and compounds as
+  groups) and `.qef` (palette order kept). Files Rizxel writes re-export byte for byte.
+- **PLY:** binary export with vertex colors (Z-up), and PLY import (ASCII or binary)
+  through the voxelizer.
+- **Fast load OBJ** layout, as an option: one index per face corner, a normal per
+  vertex, faces grouped by color with plain `Kd` materials (plus `Ke`, `d`, `Pr`, `Pm`)
+  and no texture, like BrickLink Studio's export. The MagicaVoxel layout stays the
+  default and unchanged: it imports faster in Blender 5.2.
+- **Mesh export options** dialog for OBJ, STL, PLY and glTF: scale, pivot (bottom center,
+  center, corner), OBJ layout, glTF colors and one file per visible layer.
+- **Export Slices:** one PNG per voxel slice along X, Y or Z, 1–16 pixels per voxel.
+- **Heightmap import:** a grayscale PNG or JPEG becomes voxel columns, with a max height
+  and an optional color image.
+- **Voxelizer dialog** for OBJ, STL and PLY imports: grid detection, target size, quarter
+  turns and a live voxel count.
+- The `convert` example handles every format plus `--scale`, `--pivot`, `--obj-layout`,
+  `--gltf-colors`, `--per-layer`, `--slices`, `--slice-scale`, `--heightmap` (with
+  `--color`), `--resolution` and `--turn`.
+
+### Fixed
+
+- `.vox` exports with groups opened as an empty scene in MagicaVoxel: scene nodes are now
+  written in id order.
+- Qubicle `.qb` files flagged left-handed (Qubicle's default) loaded mirrored front to
+  back, and Rizxel's own exports showed mirrored in Qubicle.
+- Qubicle `.qbt` exports showed missing faces (front and back mask bits were swapped) and
+  misplaced groups; groups are now nested models.
+
 ## [0.5.0] — 2026-10-24
 
 Milestone M4: editing power. Selection operations and Mask Mode, structure

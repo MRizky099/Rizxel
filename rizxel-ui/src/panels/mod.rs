@@ -1,5 +1,6 @@
 //! UI panels, one module per dockable region of the workspace.
 
+pub mod export;
 pub mod history;
 pub mod options;
 pub mod references;
@@ -30,4 +31,6 @@ pub struct UiState {
     pub reference_free_aspect: bool,
     /// References panel thumbnails.
     pub reference_thumbs: references::Thumbnails,
+    /// Import and export dialogs.
+    pub dialogs: export::Dialogs,
 }

@@ -298,3 +298,28 @@ Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementa
 - No new document operations, so the undo tests are unchanged; 489 tests (402 Rizxel,
   87 craft-ui).
 
+## Phase 11 — Pipeline and export
+
+Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementation_plan.md)
+
+**Delivered** (branch `claude/phase11-pipeline-export-6102dc`, not released yet)
+- `format_gltf.rs`: hand-written glTF 2.0 / GLB with one node per visible layer, group
+  nodes, clone instancing (`ExportLayer::instance_of`), vertex colors or the palette
+  texture and per-layer PBR materials; `mesh_export::Pivot` shared by every mesh
+  export (`a6625a0`).
+- `qubicle.rs` with `format_qb.rs`, `format_qbt.rs` (zlib via `flate2`) and
+  `format_qef.rs`, plus `format_ply.rs` (binary export, ASCII/binary import); new
+  `FileFormat` entries and byte-equal re-export tests (`68f07cf`).
+- `ObjLayout::{MagicaVoxel, FastLoad}` with `build_obj` / `write_obj`; the MagicaVoxel
+  layout stays the default (it imports faster in Blender 5.2), Fast load's linear `Kd`
+  is marked in the header so imports restore exact colors;
+  `slices.rs` for Export Slices (`40bd3da`).
+- `heightmap.rs`, `image_io::decode_fitted`, quarter-turn mesh orientation and
+  `preview_mesh`; `AppState::{load_mesh, import_mesh, import_heightmap}` and the Voxelizer
+  and Heightmap dialogs in `rizxel-ui/src/panels/export.rs` (`3701e78`).
+- The mesh export options dialog and Export Slices dialog; STL takes scale and pivot;
+  per-layer files (`5e825eb`).
+- Checked by hand in MagicaVoxel 0.99.7, Qubicle 3.1 (Demo) and Blender 5.2: fixes for
+  `.vox` node order, the `.qb` orientation flag, `.qbt` face mask bits and `.qbt` groups
+  (nested models). The `chr_knight` parity test ran against MagicaVoxel's own files.
+- 536 tests (449 Rizxel, 87 craft-ui). Godot wasn't available.
