@@ -50,6 +50,29 @@ pub struct ExportLayer {
     pub volume: VoxelVolume,
     /// Index into [`ExportScene::groups`] of the group holding the layer.
     pub group: Option<usize>,
+    /// Surface material (`None` = the default material).
+    pub material: Option<Material>,
+    /// Layer opacity, `0..=1`.
+    pub opacity: f32,
+    /// For a linked clone whose geometry is exactly layer `.0`'s geometry
+    /// moved by `.1` (no crops, nothing clipped at the bounds), so formats
+    /// with instancing (glTF) can share one mesh.
+    pub instance_of: Option<(usize, IVec3)>,
+}
+
+impl ExportLayer {
+    /// A plain layer: no group, default material, opaque, not a clone.
+    pub fn new(name: impl Into<String>, visible: bool, volume: VoxelVolume) -> Self {
+        Self {
+            name: name.into(),
+            visible,
+            volume,
+            group: None,
+            material: None,
+            opacity: 1.0,
+            instance_of: None,
+        }
+    }
 }
 
 /// A layer group of a scene being exported (`.vox` writes group nodes).

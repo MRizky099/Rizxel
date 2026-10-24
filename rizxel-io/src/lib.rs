@@ -4,6 +4,7 @@
 //! - [`format_rzxl`]: the native `.rzxl` project format (default save format).
 //! - [`format_vox`]: MagicaVoxel `.vox` import/export.
 //! - [`format_gox`]: Goxel `.gox` import/export.
+//! - [`format_gltf`]: glTF 2.0 `.glb` / `.gltf` export.
 //! - [`format_obj`] / [`format_mtl`]: Wavefront OBJ + MTL export in the
 //!   MagicaVoxel layout, and OBJ import.
 //! - [`format_stl`]: binary STL export, binary/ASCII STL import.
@@ -11,6 +12,7 @@
 //! - [`format_palette`]: GIMP `.gpl` and `.hex` palette files.
 //! - [`image_io`]: PNG and JPEG reference images.
 
+pub mod format_gltf;
 pub mod format_gox;
 pub mod format_mtl;
 pub mod format_obj;
@@ -20,11 +22,16 @@ pub mod format_stl;
 pub mod format_vox;
 pub mod image_io;
 pub mod interchange;
+pub mod mesh_export;
 pub mod mesh_import;
 pub mod png_io;
 #[cfg(test)]
 mod test_samples;
 
+pub use format_gltf::{
+    build_gltf, write_gltf_file, GltfColors, GltfExport, GltfOptions, DEFAULT_GLTF_SCALE,
+    GLB_EXTENSION, GLTF_EXTENSION,
+};
 pub use format_gox::{read_gox, write_gox, GOX_EXTENSION};
 pub use format_mtl::{palette_from_mtl, read_mtl, MtlMaterial, MTL_EXTENSION};
 pub use format_obj::{
@@ -47,4 +54,5 @@ pub use image_io::{
     check_reference, decode_reference, import_image, ImportedImage, MAX_REFERENCE_SIDE,
 };
 pub use interchange::{evaluate_layer, ExportGroup, ExportLayer, ExportScene};
+pub use mesh_export::Pivot;
 pub use mesh_import::{project_from_mesh, uncolored, MeshImportInfo, UpAxis};

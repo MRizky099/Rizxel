@@ -829,24 +829,9 @@ mod tests {
             bounds,
             palette: Palette::default(),
             layers: vec![
-                ExportLayer {
-                    name: "Body".into(),
-                    visible: true,
-                    volume: a,
-                    group: None,
-                },
-                ExportLayer {
-                    name: "Hat".into(),
-                    visible: false,
-                    volume: b,
-                    group: None,
-                },
-                ExportLayer {
-                    name: "Empty".into(),
-                    visible: true,
-                    volume: VoxelVolume::new(bounds),
-                    group: None,
-                },
+                ExportLayer::new("Body", true, a),
+                ExportLayer::new("Hat", false, b),
+                ExportLayer::new("Empty", true, VoxelVolume::new(bounds)),
             ],
             groups: Vec::new(),
         }

@@ -2487,8 +2487,10 @@ impl Document {
                 .parent
                 .and_then(|p| group_index.get(&p).copied())
         };
-        let mut layers = Vec::new();
+        let mut layers: Vec<rizxel_io::ExportLayer> = Vec::new();
         let mut groups = Vec::new();
+        // Document layer index -> export layer index, for clone links.
+        let mut export_index: HashMap<usize, usize> = HashMap::new();
         for (i, l) in self.data.layers.iter().enumerate() {
             if l.kind().is_group() {
                 groups.push(rizxel_io::ExportGroup {
@@ -2506,12 +2508,34 @@ impl Document {
                 Derived::Own => l.volume.clone(),
                 Derived::Owned(v) => v,
             };
+            export_index.insert(i, layers.len());
             layers.push(rizxel_io::ExportLayer {
                 name: l.name.clone(),
                 visible: self.data.effectively_visible(i),
                 volume: geometry,
                 group: group_of(i),
+                material: self.layer_material(i).cloned(),
+                opacity: l.props.opacity,
+                instance_of: None,
             });
+        }
+        // A clone shares its source's mesh when neither is cropped and the
+        // move clipped nothing at the bounds.
+        for (i, l) in self.data.layers.iter().enumerate() {
+            let LayerKind::Clone { source, offset } = l.props.kind else {
+                continue;
+            };
+            let (Some(&ci), Some(src)) = (export_index.get(&i), self.data.layer_index(source))
+            else {
+                continue;
+            };
+            let Some(&si) = export_index.get(&src) else {
+                continue;
+            };
+            let uncropped = l.props.crop.is_none() && self.data.layers[src].props.crop.is_none();
+            if uncropped && layers[ci].volume.voxel_count() == layers[si].volume.voxel_count() {
+                layers[ci].instance_of = Some((si, offset));
+            }
         }
         rizxel_io::ExportScene {
             name: self.name.clone(),

@@ -7,6 +7,7 @@
 //! | Wavefront `.obj` | new tab: voxelized, exact for voxel-editor exports | `.obj` + `.mtl` + palette `.png` in MagicaVoxel's layout |
 //! | `.mtl` | palette and materials of the active document | `.mtl` + palette `.png` |
 //! | STL `.stl` | new tab: voxelized, one color | binary STL, Z-up, 1 voxel = 1 mm |
+//! | glTF `.glb` / `.gltf` | — | one node per visible layer, groups, instanced clones |
 //! | PNG / JPEG | reference image in the active document | — |
 
 use std::path::Path;
@@ -29,6 +30,28 @@ pub enum FileFormat {
     Obj,
     Mtl,
     Stl,
+    Glb,
+    Gltf,
+}
+
+/// Settings for mesh exports, set in the export dialog (or `convert`
+/// flags). Formats ignore the settings they do not use.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ExportOptions {
+    /// Units per voxel; `None` uses the format's default (OBJ and glTF 0.1,
+    /// STL 1 mm).
+    pub scale: Option<f32>,
+    pub pivot: rizxel_io::Pivot,
+    pub gltf_colors: rizxel_io::GltfColors,
+}
+
+impl ExportOptions {
+    /// The scale used for `format`.
+    pub fn scale_for(&self, format: FileFormat) -> f32 {
+        self.scale
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or_else(|| format.default_scale())
+    }
 }
 
 impl FileFormat {
@@ -41,13 +64,44 @@ impl FileFormat {
         FileFormat::Mtl,
     ];
     /// Formats offered under File ▸ Export.
-    pub const EXPORTS: [FileFormat; 5] = [
+    pub const EXPORTS: [FileFormat; 7] = [
+        FileFormat::Glb,
+        FileFormat::Gltf,
         FileFormat::Obj,
         FileFormat::Vox,
         FileFormat::Gox,
         FileFormat::Stl,
         FileFormat::Mtl,
     ];
+
+    /// Every format, for extension lookup.
+    pub const ALL: [FileFormat; 8] = [
+        FileFormat::Rzxl,
+        FileFormat::Vox,
+        FileFormat::Gox,
+        FileFormat::Obj,
+        FileFormat::Mtl,
+        FileFormat::Stl,
+        FileFormat::Glb,
+        FileFormat::Gltf,
+    ];
+
+    /// True for formats that bake the model into a triangle mesh.
+    pub const fn is_mesh(self) -> bool {
+        matches!(
+            self,
+            FileFormat::Obj | FileFormat::Stl | FileFormat::Glb | FileFormat::Gltf
+        )
+    }
+
+    /// Default units per voxel of a mesh export.
+    pub const fn default_scale(self) -> f32 {
+        match self {
+            FileFormat::Stl => rizxel_io::DEFAULT_STL_SCALE,
+            FileFormat::Glb | FileFormat::Gltf => rizxel_io::DEFAULT_GLTF_SCALE,
+            _ => rizxel_io::DEFAULT_OBJ_SCALE,
+        }
+    }
 
     pub const fn extension(self) -> &'static str {
         match self {
@@ -57,6 +111,8 @@ impl FileFormat {
             FileFormat::Obj => rizxel_io::OBJ_EXTENSION,
             FileFormat::Mtl => rizxel_io::MTL_EXTENSION,
             FileFormat::Stl => rizxel_io::STL_EXTENSION,
+            FileFormat::Glb => rizxel_io::GLB_EXTENSION,
+            FileFormat::Gltf => rizxel_io::GLTF_EXTENSION,
         }
     }
 
@@ -69,6 +125,8 @@ impl FileFormat {
             FileFormat::Obj => "Wavefront OBJ",
             FileFormat::Mtl => "Material Library (MTL)",
             FileFormat::Stl => "STL",
+            FileFormat::Glb => "glTF Binary",
+            FileFormat::Gltf => "glTF",
         }
     }
 
@@ -80,6 +138,8 @@ impl FileFormat {
             FileFormat::Vox => "one model per layer, groups kept",
             FileFormat::Gox => "layers, groups, clones, shapes, materials",
             FileFormat::Stl => "binary, Z-up, 1 voxel = 1 mm",
+            FileFormat::Glb => "one file: a node per layer, 1 voxel = 0.1 m",
+            FileFormat::Gltf => ".gltf + .bin: a node per layer, 1 voxel = 0.1 m",
             FileFormat::Rzxl => "",
         }
     }
@@ -87,16 +147,7 @@ impl FileFormat {
     /// Format of `path` by its extension (case-insensitive).
     pub fn from_path(path: &Path) -> Option<FileFormat> {
         let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-        [
-            FileFormat::Rzxl,
-            FileFormat::Vox,
-            FileFormat::Gox,
-            FileFormat::Obj,
-            FileFormat::Mtl,
-            FileFormat::Stl,
-        ]
-        .into_iter()
-        .find(|f| f.extension() == ext)
+        FileFormat::ALL.into_iter().find(|f| f.extension() == ext)
     }
 }
 
@@ -228,6 +279,11 @@ impl AppState {
                 project
             };
         let project = match format {
+            FileFormat::Glb | FileFormat::Gltf => {
+                return Err(RzxlError::Invalid(
+                    "glTF files can be exported but not imported".into(),
+                ))
+            }
             FileFormat::Rzxl => {
                 self.open(path)?;
                 return Ok(format!("Opened {}", path.display()));
@@ -307,7 +363,9 @@ impl AppState {
             return false;
         };
         match format {
-            FileFormat::Obj | FileFormat::Stl => doc.visible_voxel_count() > 0,
+            FileFormat::Obj | FileFormat::Stl | FileFormat::Glb | FileFormat::Gltf => {
+                doc.visible_voxel_count() > 0
+            }
             // Cheap check (menus ask every frame); hidden layers count too.
             FileFormat::Vox => {
                 doc.visible_voxel_count() > 0
@@ -321,9 +379,20 @@ impl AppState {
         }
     }
 
-    /// Exports the active document to `path`. OBJ and MTL also write their
-    /// companion files next to it. Returns a status message.
+    /// Exports the active document to `path` with the default settings.
+    /// OBJ, MTL and `.gltf` also write their companion files next to it.
+    /// Returns a status message.
     pub fn export_active(&self, path: &Path, format: FileFormat) -> Result<String, RzxlError> {
+        self.export_active_with(path, format, &ExportOptions::default())
+    }
+
+    /// [`Self::export_active`] with explicit mesh settings.
+    pub fn export_active_with(
+        &self,
+        path: &Path,
+        format: FileFormat,
+        options: &ExportOptions,
+    ) -> Result<String, RzxlError> {
         let doc = self
             .doc()
             .ok_or_else(|| RzxlError::Invalid("no document is open".into()))?;
@@ -365,6 +434,21 @@ impl AppState {
                 let tris = (bytes.len() - 84) / 50;
                 std::fs::write(path, bytes)?;
                 format!("{tris} triangles")
+            }
+            FileFormat::Glb | FileFormat::Gltf => {
+                let scene = doc.export_scene();
+                let gltf = rizxel_io::GltfOptions {
+                    scale: options.scale_for(format),
+                    colors: options.gltf_colors,
+                    origin: options.pivot.origin(scene.bounds),
+                };
+                let e = rizxel_io::write_gltf_file(path, &scene, &gltf)?;
+                let bin = if format == FileFormat::Gltf {
+                    ", with .bin"
+                } else {
+                    ""
+                };
+                format!("{} nodes, {} triangles{bin}", e.mesh_nodes, e.triangles)
             }
             FileFormat::Rzxl => {
                 rizxel_io::save_rzxl(path, &doc.to_project())?;
@@ -434,6 +518,7 @@ mod tests {
             FileFormat::Obj,
             FileFormat::Stl,
         ] {
+            // (glTF has no importer; see `gltf_export_writes_nodes_per_layer`.)
             let path = d.join(format!("model.{}", format.extension()));
             assert!(src.can_export(format), "{format:?}");
             let msg = src.export_active(&path, format).unwrap();
@@ -468,6 +553,33 @@ mod tests {
         }
         // OBJ export wrote its companions.
         assert!(d.join("model.mtl").exists() && d.join("model.png").exists());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn gltf_export_writes_nodes_per_layer() {
+        let d = dir().join("gltf");
+        std::fs::create_dir_all(&d).unwrap();
+        let src = sample_state();
+        for format in [FileFormat::Glb, FileFormat::Gltf] {
+            let path = d.join(format!("model.{}", format.extension()));
+            assert!(src.can_export(format));
+            let msg = src.export_active(&path, format).unwrap();
+            // The block and its linked clone; the hidden layer is skipped.
+            assert!(msg.contains("2 nodes"), "{msg}");
+        }
+        assert!(d.join("model.bin").exists());
+        let mut dst = AppState::default();
+        assert!(dst.import(&d.join("model.glb")).is_err(), "export only");
+        let glb = std::fs::read(d.join("model.glb")).unwrap();
+        assert_eq!(&glb[..4], b"glTF");
+        let text = std::fs::read_to_string(d.join("model.gltf")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            json["meshes"].as_array().unwrap().len(),
+            1,
+            "clone instanced"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 

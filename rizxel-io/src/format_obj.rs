@@ -665,38 +665,14 @@ mod tests {
         assert_eq!(section(&ours.obj, "vn "), section(&reference, "vn "));
         assert_eq!(section(&ours.obj, "vt "), section(&reference, "vt "));
         // Same covered surface: rasterize both meshes' faces into unit cells.
-        let cells = |text: &str| -> std::collections::BTreeSet<(i64, i64, i64, i64, u32)> {
-            let mesh = read_obj(text, &|_| None).unwrap();
-            let mut out = std::collections::BTreeSet::new();
-            for t in &mesh.triangles {
-                let q = |v: Vec3| (v * 10.0).round();
-                let [a, b, c] = t.p.map(q);
-                let n = (b - a).cross(c - a).normalize();
-                let lo = a.min(b).min(c);
-                let hi = a.max(b).max(c);
-                for x in lo.x as i64..(hi.x as i64).max(lo.x as i64 + 1) {
-                    for y in lo.y as i64..(hi.y as i64).max(lo.y as i64 + 1) {
-                        for z in lo.z as i64..(hi.z as i64).max(lo.z as i64 + 1) {
-                            // Cell center projected onto the face plane must lie in the triangle.
-                            let mut p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
-                            for k in 0..3 {
-                                if n[k].abs() > 0.5 {
-                                    p[k] = a[k];
-                                }
-                            }
-                            let inside = [(a, b), (b, c), (c, a)]
-                                .iter()
-                                .all(|(u, v)| (*v - *u).cross(p - *u).dot(n) >= -1e-4);
-                            if inside {
-                                let dir = n.abs().max_position() as i64 * 2
-                                    + (n.max_element() > 0.5) as i64;
-                                out.insert((x, y, z, dir, 0));
-                            }
-                        }
-                    }
-                }
-            }
-            out
+        let cells = |text: &str| {
+            let tris: Vec<[Vec3; 3]> = read_obj(text, &|_| None)
+                .unwrap()
+                .triangles
+                .iter()
+                .map(|t| t.p)
+                .collect();
+            crate::test_samples::surface_cells(&tris, 10.0)
         };
         assert_eq!(cells(&ours.obj), cells(&reference));
         assert!(ours.triangles <= section(&reference, "f ").len());
