@@ -7,20 +7,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use glam::{IVec3, Vec3};
-use rizxel_engine::tools::{cells_box, mirror_changes, relocate_changes, slice_layers, Transform};
+use rizxel_engine::tools::{
+    boolean_changes, cells_box, connected_components, fill_hollows, hollow, hollow_advanced,
+    mirror_changes, relocate_changes, slice_layers, BooleanOp, Transform,
+};
 use rizxel_engine::{
     greedy_mesh, rasterize_shape, MaskMode, MaterialSlots, Mesh, MeshParams, SliceRequest,
     TileMeshCache, WorkPlane,
 };
 use rizxel_io::{LayerData, ProjectFile, RzxlError};
 use rizxel_math::{
-    BoundSize, LayerId, LayerKind, Material, Palette, Rgba8, ShapeKind, Voxel, VoxelBox,
-    VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
+    BoundSize, ImageData, LayerId, LayerKind, Material, Palette, RefPlane, ReferenceId,
+    ReferenceImage, Rgba8, ShapeKind, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL, FIRST_COLOR_INDEX,
+    MAX_PALETTE_COLORS,
 };
 
+use crate::box_select::{BoxSelect, LastBox};
 use crate::clipboard::Clipboard;
 use crate::history::{ClippedVoxel, Edit, History, VoxelChange};
+use crate::layer_tree::{canonical_order, LayerTree, Link};
 use crate::selection::Selection;
+use crate::transform_session::TransformSession;
 
 /// Layer properties other than name, visibility, lock and voxels. Changed as
 /// one undoable unit through [`Document::set_layer_props`].
@@ -97,6 +104,8 @@ pub struct DocData {
     pub bounds: BoundSize,
     /// Materials referenced by [`LayerProps::material`].
     pub materials: Vec<Material>,
+    /// Reference images, in draw order.
+    pub references: Vec<ReferenceImage>,
 }
 
 impl DocData {
@@ -125,6 +134,26 @@ impl DocData {
             }
         }
         false
+    }
+
+    /// Locked itself or inside a locked group.
+    pub fn effectively_locked(&self, index: usize) -> bool {
+        self.layers.get(index).is_some_and(|l| l.locked) || self.locked_by_group(index)
+    }
+
+    /// Inside a locked group (at any depth).
+    pub fn locked_by_group(&self, index: usize) -> bool {
+        self.tree().ancestors(index).any(|a| self.layers[a].locked)
+    }
+
+    /// Parent/child structure of the layer list.
+    pub fn tree(&self) -> LayerTree {
+        LayerTree::new(&self.layers)
+    }
+
+    /// The layer list keeps the tree rules (see [`crate::layer_tree`]).
+    pub fn structure_is_valid(&self) -> bool {
+        self.tree().is_valid()
     }
 
     /// Geometry a layer contributes before visibility: own voxels, the
@@ -166,6 +195,8 @@ impl DocData {
 pub enum EditBlock {
     NoLayer,
     Locked,
+    /// The layer is inside a locked group.
+    LockedGroup,
     Hidden,
     /// Groups, shapes and linked clones do not store voxels.
     NotVoxels,
@@ -176,10 +207,31 @@ impl EditBlock {
         match self {
             EditBlock::NoLayer => "No active layer",
             EditBlock::Locked => "The active layer is locked",
+            EditBlock::LockedGroup => "The active layer is inside a locked group",
             EditBlock::Hidden => "The active layer is hidden",
             EditBlock::NotVoxels => {
-                "The active layer has no editable voxels (group, shape or clone)"
+                "The active layer has no editable voxels (group, shape or clone): select a voxel layer"
             }
+        }
+    }
+}
+
+/// Where a dragged row lands in the Layers panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerDrop {
+    /// Right above row `i` (and its subtree), in the same group.
+    Above(usize),
+    /// Right below row `i`'s subtree, in the same group.
+    Below(usize),
+    /// Into group `i`, as its top child.
+    Into(usize),
+}
+
+impl LayerDrop {
+    /// The row the drop is relative to.
+    pub fn row(self) -> usize {
+        match self {
+            LayerDrop::Above(i) | LayerDrop::Below(i) | LayerDrop::Into(i) => i,
         }
     }
 }
@@ -192,6 +244,8 @@ pub enum TransformError {
     Empty,
     /// Some voxels would leave the bounds; nothing was changed.
     OutOfBounds,
+    /// Mask Mode protects the selection the transform would move.
+    Masked,
 }
 
 impl TransformError {
@@ -202,6 +256,74 @@ impl TransformError {
             TransformError::OutOfBounds => {
                 "The result would leave the bounds: enlarge them or move the voxels first"
             }
+            TransformError::Masked => MASKED_MESSAGE,
+        }
+    }
+}
+
+/// Why commands that act on the selection itself do nothing in Mask Mode.
+pub const MASKED_MESSAGE: &str = "Mask Mode protects the selection: turn it off (Shift+M) first";
+
+/// Core operation of *Model ▸ Core* ([`Document::core_op`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreOp {
+    FillHollows,
+    Hollow,
+    /// Hollow keeping a shell this many voxels thick.
+    HollowAdvanced(u32),
+}
+
+/// Order of *Palette ▸ Sort* ([`Document::sort_palette`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteSort {
+    /// Greys first (dark to light), then colors by hue, then lightness.
+    Hue,
+    /// Dark to light (Rec. 709 luma).
+    Luminance,
+}
+
+impl PaletteSort {
+    fn key(self, c: Rgba8) -> (f32, f32) {
+        let (r, g, b) = (c.r as f32, c.g as f32, c.b as f32);
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        match self {
+            PaletteSort::Luminance => (luma, 0.0),
+            PaletteSort::Hue => {
+                let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+                let delta = max - min;
+                if delta < 8.0 {
+                    return (-1.0, luma);
+                }
+                let hue = if max == r {
+                    ((g - b) / delta).rem_euclid(6.0)
+                } else if max == g {
+                    (b - r) / delta + 2.0
+                } else {
+                    (r - g) / delta + 4.0
+                };
+                (hue, luma)
+            }
+        }
+    }
+}
+
+/// Why a structure operation (Separate Parts, Fit Bounds, Core, Boolean)
+/// did nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpError {
+    Blocked(EditBlock),
+    /// Nothing to do, with the reason.
+    Nothing(&'static str),
+    /// The model is larger than the operation's cell limit.
+    TooLarge(usize),
+}
+
+impl OpError {
+    pub fn message(self) -> String {
+        match self {
+            OpError::Blocked(e) => e.message().to_owned(),
+            OpError::Nothing(why) => why.to_owned(),
+            OpError::TooLarge(limit) => format!("Too large (over {limit} cells): nothing changed"),
         }
     }
 }
@@ -313,6 +435,9 @@ pub struct Document {
     pub data: DocData,
     /// Index into `data.layers`. Not part of undo history.
     pub active_layer: usize,
+    /// Index into `data.references` (the References panel's selected row).
+    /// Not part of undo history.
+    pub active_reference: usize,
     /// Index into `data.palette`. Not part of undo history.
     pub selected_color: usize,
     /// Plane tool work plane / slice view. Not part of undo history.
@@ -325,6 +450,17 @@ pub struct Document {
     edits: u64,
     /// Paste in progress (see [`Document::begin_paste`]).
     paste: Option<FloatingPaste>,
+    /// Open box selection (see [`Document::begin_box_select`]). Not part
+    /// of history until applied.
+    pub(crate) box_select: Option<BoxSelect>,
+    /// Box of the last applied box selection.
+    pub(crate) last_box: Option<LastBox>,
+    /// Open Transform tool session (see [`Document::begin_transform`]);
+    /// its voxels are written inside the open transaction.
+    pub(crate) transform: Option<TransformSession>,
+    /// Mask Mode: tool writes skip the selected cells of their layer. Mirrors
+    /// `ToolOptions::mask_selection` (set by the app). Not part of history.
+    pub mask_selection: bool,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -366,8 +502,10 @@ impl Document {
                 layers,
                 bounds,
                 materials: Vec::new(),
+                references: Vec::new(),
             },
             active_layer: 0,
+            active_reference: 0,
             selected_color: Palette::DEFAULT_SELECTED,
             plane: WorkPlane::default(),
             history: History::default(),
@@ -375,6 +513,10 @@ impl Document {
             saved_revision: 0,
             edits: 0,
             paste: None,
+            box_select: None,
+            last_box: None,
+            transform: None,
+            mask_selection: false,
             geometry: RefCell::new(None),
             view_cache: RefCell::new(ViewCache::default()),
         }
@@ -720,6 +862,20 @@ impl Document {
         self.history.push(edit, merge);
         self.edits += 1;
         self.touch();
+        self.check_structure();
+    }
+
+    /// Debug builds check the layer tree rules after every change.
+    fn check_structure(&self) {
+        debug_assert!(
+            self.data.structure_is_valid(),
+            "layer tree rules broken: {:?}",
+            self.data
+                .layers
+                .iter()
+                .map(|l| (l.id, l.props.parent, l.kind().is_group()))
+                .collect::<Vec<_>>()
+        );
     }
 
     pub fn can_undo(&self) -> bool {
@@ -735,6 +891,9 @@ impl Document {
     /// While slicing, the slice moves back to the one the step was made on.
     /// A floating paste is cancelled instead (it is the step in progress).
     pub fn undo(&mut self) -> bool {
+        if self.cancel_box_select() || self.cancel_transform() {
+            return true;
+        }
         if self.paste.is_some() {
             self.cancel_paste();
             return true;
@@ -743,6 +902,7 @@ impl Document {
         if done {
             self.edits += 1;
             self.touch();
+            self.check_structure();
             if let Some(p) = self.history.undone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
             }
@@ -751,18 +911,57 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
-        if self.paste.is_some() {
+        if self.paste.is_some() || self.transform.is_some() {
             return false;
         }
         let done = self.history.redo(&mut self.data);
         if done {
             self.edits += 1;
             self.touch();
+            self.check_structure();
             if let Some(p) = self.history.redone_plane() {
                 self.plane.restore_slice(&p, self.data.bounds);
             }
         }
         done
+    }
+
+    /// Names the next undo step in the history list.
+    pub fn label_next(&mut self, label: impl Into<String>) {
+        self.history.label_next(label);
+    }
+
+    /// Runs `f`, naming the undo step it records `label` (nothing is named
+    /// when `f` records no step).
+    pub fn labeled<R>(&mut self, label: impl Into<String>, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.history.label_next(label);
+        let out = f(self);
+        self.history.forget_label();
+        out
+    }
+
+    /// The undo history list (oldest first) and how many of its steps are
+    /// done; the rest are undone and can be redone.
+    pub fn history_entries(&self) -> (Vec<String>, usize) {
+        (self.history.entries(), self.history.position())
+    }
+
+    /// Undoes or redoes until `position` steps are done (the History panel:
+    /// clicking an entry goes to the state right after it; 0 is the
+    /// start). Returns whether anything changed.
+    pub fn jump_to(&mut self, position: usize) -> bool {
+        self.cancel_box_select();
+        self.cancel_transform();
+        self.cancel_paste();
+        self.commit_edit();
+        let mut moved = false;
+        while self.history.position() > position && self.undo() {
+            moved = true;
+        }
+        while self.history.position() < position && self.redo() {
+            moved = true;
+        }
+        moved
     }
 
     /// Records the current slice with the next undo steps.
@@ -808,9 +1007,10 @@ impl Document {
             self.begin_edit();
         }
         let mut applied = Vec::with_capacity(changes.len());
+        let mask = self.mask_selection;
         if let Some(l) = self.data.layers.get_mut(layer) {
             for c in changes {
-                if !l.volume.in_bounds(c.pos) {
+                if !l.volume.in_bounds(c.pos) || (mask && l.selection.contains(c.pos)) {
                     continue;
                 }
                 let old = l.volume.set(c.pos, c.new);
@@ -845,6 +1045,7 @@ impl Document {
     /// changed nothing (no undo entry is recorded then).
     pub fn commit_edit(&mut self) -> bool {
         self.paste = None;
+        self.transform = None;
         if !self.is_editing() {
             return false;
         }
@@ -859,6 +1060,7 @@ impl Document {
     /// selection along). Returns `false` when nothing changed.
     pub fn commit_edit_with_selection(&mut self, layer: usize, selection: Selection) -> bool {
         self.paste = None;
+        self.transform = None;
         if !self.is_editing() {
             return false;
         }
@@ -884,6 +1086,7 @@ impl Document {
     /// floating paste disappears).
     pub fn cancel_edit(&mut self) {
         self.paste = None;
+        self.transform = None;
         if self.is_editing() {
             self.history.cancel_transaction(&mut self.data);
             self.touch();
@@ -899,6 +1102,8 @@ impl Document {
             Err(EditBlock::NotVoxels)
         } else if layer.locked {
             Err(EditBlock::Locked)
+        } else if self.data.locked_by_group(index) {
+            Err(EditBlock::LockedGroup)
         } else if !self.data.effectively_visible(index) {
             Err(EditBlock::Hidden)
         } else {
@@ -930,13 +1135,20 @@ impl Document {
             if !l.kind().stores_voxels() || !self.data.effectively_visible(i) {
                 continue;
             }
-            if l.locked {
+            if self.data.effectively_locked(i) {
                 outcome.locked_skipped += usize::from(!l.volume.is_empty());
                 continue;
             }
             targets.push((i, &l.volume));
         }
-        let per_layer = slice_layers(&targets, self.data.bounds, req, cap_color);
+        let mut per_layer = slice_layers(&targets, self.data.bounds, req, cap_color);
+        if self.mask_selection {
+            for (layer, changes) in &mut per_layer {
+                let selection = &self.data.layers[*layer].selection;
+                changes.retain(|c| !selection.contains(c.pos));
+            }
+            per_layer.retain(|(_, changes)| !changes.is_empty());
+        }
         if per_layer.is_empty() {
             return outcome;
         }
@@ -1044,13 +1256,57 @@ impl Document {
         self.set_selection(self.active_layer, Selection::default())
     }
 
+    /// *Selection ▸ Grow*: adds the active layer's voxels touching the
+    /// selection, `steps` cells deep.
+    pub fn grow_selection(&mut self, steps: u32) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let grown = l.selection.grown(&l.volume, steps);
+        self.set_selection(self.active_layer, grown)
+    }
+
+    /// *Selection ▸ Shrink*: peels `steps` cells off the selection's surface.
+    pub fn shrink_selection(&mut self, steps: u32) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let shrunk = l.selection.shrunk(steps);
+        self.set_selection(self.active_layer, shrunk)
+    }
+
+    /// *Selection ▸ By Color*: the active layer's voxels within `threshold`
+    /// of palette entry `color`, combined with the selection by `mode`.
+    pub fn select_by_color(&mut self, color: Voxel, threshold: u8, mode: MaskMode) -> bool {
+        let Some(l) = self.active_layer() else {
+            return false;
+        };
+        let cells = Selection::by_color(&l.volume, &self.data.palette, color, threshold);
+        self.select(cells.iter(), mode)
+    }
+
+    /// True while Mask Mode protects a non-empty selection on the active
+    /// layer. Commands that act on the selection itself (Delete, Cut,
+    /// transforms) are refused then.
+    pub fn selection_protected(&self) -> bool {
+        self.mask_selection && self.selection().is_some_and(|s| !s.is_empty())
+    }
+
+    /// The selection tools work inside (Fill, Move, Extrude): the active
+    /// layer's selection, unless it is empty or Mask Mode protects it.
+    pub fn region_selection(&self) -> Option<&Selection> {
+        self.selection()
+            .filter(|s| !s.is_empty() && !self.mask_selection)
+    }
+
     /// Deletes the selected voxels of the active layer and clears the
     /// selection, as one undo step. Returns the number of voxels removed.
     pub fn delete_selected(&mut self) -> usize {
         let layer = self.active_layer;
-        if self
-            .editable_layer(layer)
-            .is_err_and(|e| e != EditBlock::Hidden)
+        if self.selection_protected()
+            || self
+                .editable_layer(layer)
+                .is_err_and(|e| e != EditBlock::Hidden)
         {
             return 0;
         }
@@ -1081,7 +1337,10 @@ impl Document {
     // ---------------------------------------------------------- transforms
 
     /// Layer index a transform may write to, or why not (hidden is fine).
-    fn transform_layer(&self) -> Result<usize, TransformError> {
+    pub(crate) fn transform_layer(&self) -> Result<usize, TransformError> {
+        if self.selection_protected() {
+            return Err(TransformError::Masked);
+        }
         let layer = self.active_layer;
         match self.editable_layer(layer) {
             Ok(()) | Err(EditBlock::Hidden) => Ok(layer),
@@ -1168,6 +1427,357 @@ impl Document {
         n
     }
 
+    // ---------------------------------------------------- structure ops
+
+    /// Final geometry of layer `index` (voxels, rasterized shape, moved
+    /// clone, crop applied); `None` for groups and broken clones.
+    pub fn layer_geometry(&self, index: usize) -> Option<VoxelVolume> {
+        match self.data.evaluate(index)? {
+            Derived::Own => Some(self.data.layers[index].volume.clone()),
+            Derived::Owned(v) => Some(v),
+        }
+    }
+
+    /// The active layer if operations may rewrite its voxels (hidden is fine).
+    fn op_layer(&self) -> Result<usize, OpError> {
+        let layer = self.active_layer;
+        match self.editable_layer(layer) {
+            Ok(()) | Err(EditBlock::Hidden) => Ok(layer),
+            Err(e) => Err(OpError::Blocked(e)),
+        }
+    }
+
+    /// Writes `changes` into `layer` as one undo step (Mask Mode applies).
+    fn write_op(&mut self, layer: usize, changes: &[VoxelChange]) -> Result<usize, OpError> {
+        self.cancel_edit();
+        self.begin_edit();
+        let n = self.edit_voxels(layer, changes);
+        self.commit_edit();
+        if n == 0 {
+            Err(OpError::Nothing("Nothing changed"))
+        } else {
+            Ok(n)
+        }
+    }
+
+    /// Moves `parts` of `layer` (cell lists) into new layers just above it,
+    /// as one undo step. Returns the number of new layers.
+    fn move_parts_to_layers(&mut self, layer: usize, parts: &[(String, Vec<IVec3>)]) -> usize {
+        let source = &self.data.layers[layer];
+        let mut edits = Vec::new();
+        let mut cleared = Vec::new();
+        let first_id = self.next_layer_id();
+        let mut names: Vec<String> = Vec::new();
+        for (k, (suffix, cells)) in parts.iter().enumerate() {
+            let base = format!("{} {suffix}", source.name);
+            let mut name = self.unique_name_from(&base);
+            let mut n = 2;
+            while names.contains(&name) {
+                name = self.unique_name_from(&format!("{base} {n}"));
+                n += 1;
+            }
+            names.push(name.clone());
+            let mut new = Layer::new(name, self.data.bounds);
+            new.id = first_id + k as LayerId;
+            new.props.parent = source.props.parent;
+            new.props.material = source.props.material;
+            new.props.opacity = source.props.opacity;
+            for &p in cells {
+                let v = source.volume.get(p);
+                new.volume.set(p, v);
+                cleared.push(VoxelChange {
+                    pos: p,
+                    old: v,
+                    new: EMPTY_VOXEL,
+                });
+            }
+            edits.push(Edit::InsertLayer {
+                index: layer + 1 + k,
+                layer: new,
+            });
+        }
+        edits.insert(
+            0,
+            Edit::Voxels {
+                layer,
+                changes: cleared,
+            },
+        );
+        let count = parts.len();
+        self.cancel_edit();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = layer;
+        count
+    }
+
+    /// *Layer ▸ Separate Parts*: every 6-connected part of the active layer
+    /// with at least `min_voxels` voxels gets its own layer; the largest
+    /// part and the smaller bits stay. One undo step; returns the number of
+    /// new layers.
+    pub fn separate_parts(&mut self, min_voxels: usize) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        let parts = connected_components(&self.data.layers[layer].volume)
+            .map_err(|e| OpError::TooLarge(e.limit))?;
+        let big: Vec<(String, Vec<IVec3>)> = parts
+            .into_iter()
+            .filter(|p| p.len() >= min_voxels.max(1))
+            .skip(1)
+            .enumerate()
+            .map(|(k, cells)| (format!("part {}", k + 2), cells))
+            .collect();
+        if big.is_empty() {
+            return Err(OpError::Nothing("The layer has only one part"));
+        }
+        Ok(self.move_parts_to_layers(layer, &big))
+    }
+
+    /// *Layer ▸ Split at Work Plane*: the active layer's voxels on the
+    /// plane's positive side (`coord >= plane`) move to a new layer above.
+    pub fn split_at_plane(&mut self) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        let p = self.plane.clamped(self.data.bounds);
+        let (axis, coord) = (p.axis.min(2), p.coord);
+        let volume = &self.data.layers[layer].volume;
+        let side: Vec<IVec3> = volume
+            .iter()
+            .filter(|(q, _)| q[axis] >= coord)
+            .map(|(q, _)| q)
+            .collect();
+        if side.is_empty() || side.len() == volume.voxel_count() {
+            return Err(OpError::Nothing(
+                "The work plane does not cut through the layer",
+            ));
+        }
+        let suffix = format!("{}{coord}+", ["X", "Y", "Z"][axis]);
+        Ok(self.move_parts_to_layers(layer, &[(suffix, side)]))
+    }
+
+    /// *Selection ▸ To New Layer*: the selected voxels of the active layer
+    /// go into a new voxel layer right above it (same group, material and
+    /// opacity), which becomes active and carries the selection. `cut`
+    /// removes them from the source (a clone or shape source is baked into
+    /// voxels first); otherwise the source stays as it is. One undo step.
+    pub fn selection_to_new_layer(&mut self, cut: bool) -> Result<LayerId, OpError> {
+        let layer = self.active_layer;
+        let source = self
+            .data
+            .layers
+            .get(layer)
+            .ok_or(OpError::Blocked(EditBlock::NoLayer))?;
+        if source.kind().is_group() {
+            return Err(OpError::Blocked(EditBlock::NotVoxels));
+        }
+        if source.selection.is_empty() {
+            return Err(OpError::Nothing("Nothing is selected"));
+        }
+        if self.mask_selection {
+            return Err(OpError::Nothing(MASKED_MESSAGE));
+        }
+        if cut {
+            match self.editable_layer(layer) {
+                Ok(()) | Err(EditBlock::Hidden) | Err(EditBlock::NotVoxels) => {}
+                Err(e) => return Err(OpError::Blocked(e)),
+            }
+        }
+        let geometry = self
+            .layer_geometry(layer)
+            .ok_or(OpError::Nothing("The layer has no voxels"))?;
+        let picked: Vec<(IVec3, Voxel)> = source
+            .selection
+            .iter()
+            .map(|p| (p, geometry.get(p)))
+            .filter(|&(_, v)| v != EMPTY_VOXEL)
+            .collect();
+        if picked.is_empty() {
+            return Err(OpError::Nothing(
+                "The active layer has no voxels in the selection",
+            ));
+        }
+        let mut new = Layer::new(
+            self.unique_name_from(&format!("{} part", source.name)),
+            self.data.bounds,
+        );
+        new.id = self.next_layer_id();
+        new.props.parent = source.props.parent;
+        new.props.material = source.props.material;
+        new.props.opacity = source.props.opacity;
+        for &(p, v) in &picked {
+            new.volume.set(p, v);
+            new.selection.insert(p);
+        }
+        let id = new.id;
+        let mut edits = Vec::new();
+        if cut {
+            let baked = !source.kind().stores_voxels();
+            let changes: Vec<VoxelChange> = if baked {
+                // The source becomes a voxel layer holding what is left.
+                let mut props = source.props.clone();
+                props.kind = LayerKind::Voxels;
+                edits.push(Edit::SetLayerProps {
+                    index: layer,
+                    old: source.props.clone(),
+                    new: props,
+                });
+                geometry
+                    .iter()
+                    .filter(|(p, _)| !source.selection.contains(*p))
+                    .map(|(pos, new)| VoxelChange {
+                        pos,
+                        old: source.volume.get(pos),
+                        new,
+                    })
+                    .filter(|c| c.old != c.new)
+                    .collect()
+            } else {
+                picked
+                    .iter()
+                    .map(|&(pos, old)| VoxelChange {
+                        pos,
+                        old,
+                        new: EMPTY_VOXEL,
+                    })
+                    .collect()
+            };
+            edits.push(Edit::Voxels { layer, changes });
+            edits.push(Edit::SetSelection {
+                layer,
+                old: source.selection.clone(),
+                new: Selection::default(),
+            });
+        }
+        edits.push(Edit::InsertLayer {
+            index: layer + 1,
+            layer: new,
+        });
+        let label = if cut {
+            "To New Layer (Cut)"
+        } else {
+            "To New Layer (Copy)"
+        };
+        self.cancel_edit();
+        self.labeled(label, |d| d.apply(Edit::Batch(edits), false));
+        self.active_layer = layer + 1;
+        Ok(id)
+    }
+
+    /// Box around the geometry of every layer (hidden ones too).
+    pub fn content_bounds(&self) -> Option<(IVec3, IVec3)> {
+        (0..self.data.layers.len())
+            .filter_map(|i| self.layer_geometry(i)?.occupied_bounds())
+            .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)))
+    }
+
+    /// *Model ▸ Fit Bounds to Content*: moves every layer so the content's
+    /// minimum corner is at the origin and shrinks the bounds to fit it, as
+    /// one undo step. Shape areas and crop boxes move along.
+    pub fn fit_bounds_to_content(&mut self) -> Result<BoundSize, OpError> {
+        let (lo, hi) = self
+            .content_bounds()
+            .ok_or(OpError::Nothing("The model is empty"))?;
+        let size = hi - lo;
+        let new = BoundSize::new(size.x as u32, size.y as u32, size.z as u32);
+        if lo == IVec3::ZERO && new == self.data.bounds {
+            return Err(OpError::Nothing("The bounds already fit the model"));
+        }
+        let shift = -lo;
+        let moved = |b: VoxelBox| VoxelBox {
+            min: b.min + shift,
+            max: b.max + shift,
+        };
+        let mut edits = Vec::new();
+        for (index, l) in self.data.layers.iter().enumerate() {
+            if l.kind().stores_voxels() && !l.volume.is_empty() && shift != IVec3::ZERO {
+                let mut changes: Vec<VoxelChange> = l
+                    .volume
+                    .iter()
+                    .map(|(pos, old)| VoxelChange {
+                        pos,
+                        old,
+                        new: EMPTY_VOXEL,
+                    })
+                    .collect();
+                let placed: Vec<VoxelChange> = l
+                    .volume
+                    .iter()
+                    .map(|(pos, v)| VoxelChange {
+                        pos: pos + shift,
+                        old: EMPTY_VOXEL,
+                        new: v,
+                    })
+                    .collect();
+                crate::history::merge_voxel_changes(&mut changes, &placed);
+                edits.push(Edit::Voxels {
+                    layer: index,
+                    changes,
+                });
+            }
+            let mut props = l.props.clone();
+            props.crop = props.crop.map(moved);
+            if let LayerKind::Shape { area, .. } = &mut props.kind {
+                *area = moved(*area);
+            }
+            if props != l.props {
+                edits.push(Edit::SetLayerProps {
+                    index,
+                    old: l.props.clone(),
+                    new: props,
+                });
+            }
+            // Selections follow their voxels.
+            if !l.selection.is_empty() && shift != IVec3::ZERO {
+                edits.push(Edit::SetSelection {
+                    layer: index,
+                    old: l.selection.clone(),
+                    new: l.selection.translated(shift, new),
+                });
+            }
+        }
+        if new != self.data.bounds {
+            edits.push(Edit::SetBounds {
+                old: self.data.bounds,
+                new,
+                clipped: Vec::new(),
+            });
+        }
+        self.cancel_edit();
+        self.apply(Edit::Batch(edits), false);
+        Ok(new)
+    }
+
+    /// *Model ▸ Core* operations on the active layer, as one undo step.
+    /// Fill Hollows uses the selected color. Returns the voxels changed.
+    pub fn core_op(&mut self, op: CoreOp) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        let volume = &self.data.layers[layer].volume;
+        let changes = match op {
+            CoreOp::FillHollows => fill_hollows(volume, self.selected_color as Voxel),
+            CoreOp::Hollow => hollow(volume),
+            CoreOp::HollowAdvanced(t) => hollow_advanced(volume, t),
+        }
+        .map_err(|e| OpError::TooLarge(e.limit))?;
+        if changes.is_empty() {
+            return Err(OpError::Nothing(match op {
+                CoreOp::FillHollows => "No closed hollows to fill",
+                _ => "Nothing to hollow out",
+            }));
+        }
+        self.write_op(layer, &changes)
+    }
+
+    /// *Layer ▸ Boolean*: the active layer becomes `active op other`
+    /// (`other`'s final geometry; it is not changed). One undo step.
+    pub fn boolean(&mut self, other: usize, op: BooleanOp) -> Result<usize, OpError> {
+        let layer = self.op_layer()?;
+        if other == layer {
+            return Err(OpError::Nothing("Pick another layer"));
+        }
+        let geometry = self
+            .layer_geometry(other)
+            .ok_or(OpError::Nothing("That layer has no geometry"))?;
+        let changes = boolean_changes(&self.data.layers[layer].volume, &geometry, op);
+        self.write_op(layer, &changes)
+    }
+
     // ----------------------------------------------------------- clipboard
 
     /// Copies the selection (or the whole active layer), then deletes it, as
@@ -1175,9 +1785,10 @@ impl Document {
     /// locked or not a voxel layer.
     pub fn cut(&mut self) -> Option<Clipboard> {
         let layer = self.active_layer;
-        if self
-            .editable_layer(layer)
-            .is_err_and(|e| e != EditBlock::Hidden)
+        if self.selection_protected()
+            || self
+                .editable_layer(layer)
+                .is_err_and(|e| e != EditBlock::Hidden)
         {
             return None;
         }
@@ -1365,16 +1976,31 @@ impl Document {
     }
 
     /// Inserts `layer` above the active one (in the active layer's group),
-    /// gives it a fresh id, selects it and returns the id.
+    /// gives it a fresh id and that group, selects it and returns the id.
+    /// When the active layer is a group, the new layer becomes its top
+    /// child (right below the group row).
     fn insert_above_active(&mut self, mut layer: Layer) -> LayerId {
-        let index = (self.active_layer + 1).min(self.data.layers.len());
+        let into_group = self.active_layer().is_some_and(|a| a.kind().is_group());
+        let index = if into_group {
+            self.active_layer
+        } else {
+            (self.active_layer + 1).min(self.data.layers.len())
+        };
         layer.id = self.next_layer_id();
-        if layer.props.parent.is_none() {
-            layer.props.parent = self.active_layer().and_then(|a| match a.kind() {
-                LayerKind::Group { .. } => Some(a.id),
-                _ => a.props.parent,
-            });
+        // The position decides the group.
+        layer.props.parent = self.active_layer().and_then(|a| match a.kind() {
+            LayerKind::Group { .. } => Some(a.id),
+            _ => a.props.parent,
+        });
+        // Too deep for one more level: stay next to the group instead.
+        if into_group && self.data.tree().depth(self.active_layer) >= rizxel_io::MAX_GROUP_DEPTH {
+            layer.props.parent = self.active_layer().and_then(|a| a.props.parent);
+            return self.insert_at(self.active_layer + 1, layer);
         }
+        self.insert_at(index, layer)
+    }
+
+    fn insert_at(&mut self, index: usize, layer: Layer) -> LayerId {
         let id = layer.id;
         self.apply(Edit::InsertLayer { index, layer }, false);
         self.active_layer = index;
@@ -1410,7 +2036,6 @@ impl Document {
             source: src.id,
             offset,
         };
-        layer.props.parent = src.props.parent;
         layer.props.material = src.props.material;
         Some(self.insert_above_active(layer))
     }
@@ -1488,6 +2113,15 @@ impl Document {
             }
         }
         parent_ok &= parent.is_none();
+        // The new parent must keep the subtree contiguous (move layers into
+        // groups with `move_subtree`).
+        let structure_ok =
+            new.parent == layer.props.parent && new.kind.is_group() == layer.kind().is_group() || {
+                let mut links: Vec<Link> = self.data.layers.iter().map(Link::of).collect();
+                links[index].parent = new.parent;
+                links[index].group = new.kind.is_group();
+                LayerTree::from_links(&links).is_valid()
+            };
         let kind_ok = match new.kind {
             LayerKind::Clone { source, .. } => {
                 source != layer.id
@@ -1506,7 +2140,7 @@ impl Document {
         // children must stay a group.
         let links_ok = (new.kind.is_clone_source() || !self.is_clone_source_in_use(index))
             && (new.kind.is_group() || !self.has_children(index));
-        opacity_ok && material_ok && crop_ok && parent_ok && kind_ok && links_ok
+        opacity_ok && material_ok && crop_ok && parent_ok && structure_ok && kind_ok && links_ok
     }
 
     /// True when some other layer is a linked clone of layer `index`.
@@ -1576,28 +2210,315 @@ impl Document {
         }
     }
 
+    // --------------------------------------------------------- palette ops
+
+    /// Palette indices used by some voxel layer or shape (`used[i]`).
+    pub fn used_colors(&self) -> Vec<bool> {
+        let mut used = vec![false; MAX_PALETTE_COLORS];
+        for l in &self.data.layers {
+            match l.props.kind {
+                LayerKind::Voxels => {
+                    for (_, v) in l.volume.iter() {
+                        used[v as usize] = true;
+                    }
+                }
+                LayerKind::Shape { color, .. } => used[color as usize] = true,
+                _ => {}
+            }
+        }
+        used
+    }
+
+    /// Edits that recolor every voxel layer and shape by `map` (old index →
+    /// new index), on every layer (locked and hidden ones too: the colors
+    /// move, the look does not change).
+    fn remap_edits(&self, map: &[Voxel]) -> Vec<Edit> {
+        let to = |v: Voxel| map.get(v as usize).copied().unwrap_or(v);
+        let mut edits = Vec::new();
+        for (index, l) in self.data.layers.iter().enumerate() {
+            match l.props.kind {
+                LayerKind::Voxels => {
+                    let changes: Vec<VoxelChange> = l
+                        .volume
+                        .iter()
+                        .filter(|&(_, v)| to(v) != v)
+                        .map(|(pos, old)| VoxelChange {
+                            pos,
+                            old,
+                            new: to(old),
+                        })
+                        .collect();
+                    if !changes.is_empty() {
+                        edits.push(Edit::Voxels {
+                            layer: index,
+                            changes,
+                        });
+                    }
+                }
+                LayerKind::Shape { shape, area, color } if to(color) != color => {
+                    edits.push(Edit::SetLayerProps {
+                        index,
+                        old: l.props.clone(),
+                        new: LayerProps {
+                            kind: LayerKind::Shape {
+                                shape,
+                                area,
+                                color: to(color),
+                            },
+                            ..l.props.clone()
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+        edits
+    }
+
+    /// Applies a new palette and an index remap as one undo step; the
+    /// selected color follows the remap. Returns `false` when nothing would
+    /// change.
+    fn apply_palette_remap(&mut self, palette: Palette, map: &[Voxel]) -> bool {
+        let mut edits = self.remap_edits(map);
+        if palette != self.data.palette {
+            edits.insert(
+                0,
+                Edit::SetPalette {
+                    old: self.data.palette.clone(),
+                    new: palette,
+                },
+            );
+        }
+        if edits.is_empty() {
+            return false;
+        }
+        let selected = map
+            .get(self.selected_color)
+            .map_or(self.selected_color, |&v| v as usize);
+        self.cancel_edit();
+        self.apply(Edit::Batch(edits), false);
+        self.select_color(selected);
+        true
+    }
+
+    /// *Palette ▸ Sort*: reorders slots `1..` by `key` and remaps the voxels
+    /// so the model looks the same. One undo step.
+    pub fn sort_palette(&mut self, key: PaletteSort) -> bool {
+        let colors = self.data.palette.colors();
+        let mut order: Vec<usize> = (FIRST_COLOR_INDEX as usize..colors.len()).collect();
+        order.sort_by(|&a, &b| {
+            key.key(colors[a])
+                .partial_cmp(&key.key(colors[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut sorted = colors.to_vec();
+        let mut map: Vec<Voxel> = (0..MAX_PALETTE_COLORS).map(|i| i as Voxel).collect();
+        for (slot, &old) in order.iter().enumerate() {
+            let new = slot + FIRST_COLOR_INDEX as usize;
+            sorted[new] = colors[old];
+            map[old] = new as Voxel;
+        }
+        self.apply_palette_remap(Palette::new(sorted), &map)
+    }
+
+    /// *Palette ▸ Remove Duplicates*: later slots with the same color as an
+    /// earlier one go; the palette closes up and voxels follow. One step.
+    pub fn remove_duplicate_colors(&mut self) -> usize {
+        let colors = self.data.palette.colors();
+        let mut kept: Vec<Rgba8> = colors
+            .iter()
+            .take(FIRST_COLOR_INDEX as usize)
+            .copied()
+            .collect();
+        let mut map: Vec<Voxel> = (0..MAX_PALETTE_COLORS).map(|i| i as Voxel).collect();
+        for (i, &c) in colors.iter().enumerate().skip(FIRST_COLOR_INDEX as usize) {
+            let first = kept
+                .iter()
+                .skip(FIRST_COLOR_INDEX as usize)
+                .position(|&k| k == c)
+                .map(|p| p + FIRST_COLOR_INDEX as usize);
+            map[i] = match first {
+                Some(j) => j as Voxel,
+                None => {
+                    kept.push(c);
+                    (kept.len() - 1) as Voxel
+                }
+            };
+        }
+        let removed = colors.len() - kept.len();
+        if removed == 0 {
+            return 0;
+        }
+        self.apply_palette_remap(Palette::new(kept), &map);
+        removed
+    }
+
+    /// *Palette ▸ Remap*: every voxel (and shape) of color `from` becomes
+    /// `to`, on every layer. One undo step; returns the voxels changed.
+    pub fn remap_color(&mut self, from: usize, to: usize) -> usize {
+        let palette = &self.data.palette;
+        if from == to || !palette.is_selectable(from) || !palette.is_selectable(to) {
+            return 0;
+        }
+        let mut map: Vec<Voxel> = (0..MAX_PALETTE_COLORS).map(|i| i as Voxel).collect();
+        map[from] = to as Voxel;
+        let edits = self.remap_edits(&map);
+        let count = edits
+            .iter()
+            .map(|e| match e {
+                Edit::Voxels { changes, .. } => changes.len(),
+                _ => 1,
+            })
+            .sum();
+        if !edits.is_empty() {
+            self.cancel_edit();
+            self.apply(Edit::Batch(edits), false);
+        }
+        count
+    }
+
+    /// *Palette ▸ Gradient*: the slots from `a` to `b` (either order) blend
+    /// linearly between the two end colors, which stay exact. One step.
+    pub fn palette_gradient(&mut self, a: usize, b: usize) -> bool {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let palette = &self.data.palette;
+        if hi - lo < 2 || !palette.is_selectable(lo) || !palette.is_selectable(hi) {
+            return false;
+        }
+        let (start, end) = (
+            palette.get(a).unwrap_or_default(),
+            palette.get(b).unwrap_or_default(),
+        );
+        let mut colors = palette.colors().to_vec();
+        let span = (b as f32) - (a as f32);
+        for (i, slot) in colors.iter_mut().enumerate().take(hi + 1).skip(lo) {
+            let t = (i as f32 - a as f32) / span;
+            let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+            *slot = Rgba8::new(
+                mix(start.r, end.r),
+                mix(start.g, end.g),
+                mix(start.b, end.b),
+                mix(start.a, end.a),
+            );
+        }
+        let new = Palette::new(colors);
+        if new == self.data.palette {
+            return false;
+        }
+        self.cancel_edit();
+        self.apply(
+            Edit::SetPalette {
+                old: self.data.palette.clone(),
+                new,
+            },
+            false,
+        );
+        true
+    }
+
+    /// *Palette ▸ Load*: `colors` fill slots `1..` (indices stay, so voxels
+    /// take the new colors); a shorter list keeps the old trailing slots.
+    /// One undo step.
+    pub fn load_palette(&mut self, colors: &[Rgba8]) -> bool {
+        let before = self.data.palette.clone();
+        let mut new: Vec<Rgba8> = before
+            .colors()
+            .iter()
+            .take(FIRST_COLOR_INDEX as usize)
+            .copied()
+            .collect();
+        new.extend(colors.iter().take(MAX_PALETTE_COLORS - new.len()));
+        self.replace_palette_and_materials(Palette::new(new), self.data.materials.clone());
+        self.data.palette != before
+    }
+
+    /// *Palette ▸ Load and Snap Model* (Qubicle *Apply Colors*): the
+    /// palette becomes `colors` (slots `1..`) and every voxel takes the
+    /// nearest new color (RGB distance), so the model keeps its look as
+    /// closely as the new palette allows. One undo step.
+    pub fn snap_to_palette(&mut self, colors: &[Rgba8]) -> bool {
+        if colors.is_empty() {
+            return false;
+        }
+        let old = self.data.palette.colors().to_vec();
+        let mut new: Vec<Rgba8> = old
+            .iter()
+            .take(FIRST_COLOR_INDEX as usize)
+            .copied()
+            .collect();
+        new.extend(colors.iter().take(MAX_PALETTE_COLORS - new.len()));
+        let nearest = |c: Rgba8| -> Voxel {
+            let d = |k: &Rgba8| {
+                let (dr, dg, db) = (
+                    c.r as i32 - k.r as i32,
+                    c.g as i32 - k.g as i32,
+                    c.b as i32 - k.b as i32,
+                );
+                dr * dr + dg * dg + db * db
+            };
+            (FIRST_COLOR_INDEX as usize..new.len())
+                .min_by_key(|&i| d(&new[i]))
+                .unwrap_or(FIRST_COLOR_INDEX as usize) as Voxel
+        };
+        let map: Vec<Voxel> = (0..MAX_PALETTE_COLORS)
+            .map(|i| match old.get(i) {
+                Some(&c) if i >= FIRST_COLOR_INDEX as usize => nearest(c),
+                _ => i as Voxel,
+            })
+            .collect();
+        self.apply_palette_remap(Palette::new(new), &map)
+    }
+
     /// Everything exporters need: every non-group layer's final geometry
     /// (shapes rasterized, clones resolved, crops applied) with its
     /// effective visibility.
     pub fn export_scene(&self) -> rizxel_io::ExportScene {
-        let layers = (0..self.data.layers.len())
-            .filter_map(|i| {
-                let geometry = match self.data.evaluate(i)? {
-                    Derived::Own => self.data.layers[i].volume.clone(),
-                    Derived::Owned(v) => v,
-                };
-                Some(rizxel_io::ExportLayer {
-                    name: self.data.layers[i].name.clone(),
-                    visible: self.data.effectively_visible(i),
-                    volume: geometry,
-                })
-            })
+        let group_index: HashMap<LayerId, usize> = self
+            .data
+            .layers
+            .iter()
+            .filter(|l| l.kind().is_group())
+            .enumerate()
+            .map(|(g, l)| (l.id, g))
             .collect();
+        let group_of = |i: usize| {
+            self.data.layers[i]
+                .props
+                .parent
+                .and_then(|p| group_index.get(&p).copied())
+        };
+        let mut layers = Vec::new();
+        let mut groups = Vec::new();
+        for (i, l) in self.data.layers.iter().enumerate() {
+            if l.kind().is_group() {
+                groups.push(rizxel_io::ExportGroup {
+                    name: l.name.clone(),
+                    visible: self.data.effectively_visible(i),
+                    parent: group_of(i),
+                    order: layers.len(),
+                });
+                continue;
+            }
+            let Some(derived) = self.data.evaluate(i) else {
+                continue;
+            };
+            let geometry = match derived {
+                Derived::Own => l.volume.clone(),
+                Derived::Owned(v) => v,
+            };
+            layers.push(rizxel_io::ExportLayer {
+                name: l.name.clone(),
+                visible: self.data.effectively_visible(i),
+                volume: geometry,
+                group: group_of(i),
+            });
+        }
         rizxel_io::ExportScene {
             name: self.name.clone(),
             bounds: self.data.bounds,
             palette: self.data.palette.clone(),
             layers,
+            groups,
         }
     }
 
@@ -1729,54 +2650,388 @@ impl Document {
         }
     }
 
-    /// Moves a layer to a new index; the active layer follows it. Higher
-    /// indices draw on top.
+    /// Moves a layer to index `to` inside its group; the active layer
+    /// follows it. Higher indices draw on top. A group moves with its
+    /// subtree (see [`Document::move_subtree`]).
     pub fn move_layer(&mut self, from: usize, to: usize) -> bool {
+        let Some(parent) = self.data.layers.get(from).map(|l| l.props.parent) else {
+            return false;
+        };
+        self.move_subtree(from, to, parent)
+    }
+
+    /// Moves layer `from` together with its subtree so that it lands at
+    /// index `to` inside group `parent` (`None`: top level), as one undo
+    /// step; the active layer stays on the layer it was on. Refused when
+    /// the result breaks the tree rules: a group into itself, a group split
+    /// apart, or nesting deeper than the limit.
+    pub fn move_subtree(&mut self, from: usize, to: usize, parent: Option<LayerId>) -> bool {
         let len = self.data.layers.len();
-        if from >= len || to >= len || from == to {
+        if from >= len || to >= len {
             return false;
         }
-        let active = self.active_layer;
-        self.apply(Edit::MoveLayer { from, to }, false);
-        self.active_layer = if active == from {
-            to
-        } else if from < active && active <= to {
-            active - 1
-        } else if to <= active && active < from {
-            active + 1
-        } else {
-            active
-        };
-        true
-    }
-
-    /// Moves the active layer one step up (`true`, drawn above) or down.
-    pub fn move_active_layer(&mut self, up: bool) -> bool {
-        let from = self.active_layer;
-        let to = if up {
-            from + 1
-        } else {
-            match from.checked_sub(1) {
-                Some(to) => to,
-                None => return false,
-            }
-        };
-        self.move_layer(from, to)
-    }
-
-    /// Copies the active layer (voxels and flags) just above itself.
-    pub fn duplicate_active_layer(&mut self) -> bool {
-        let Some(source) = self.data.layers.get(self.active_layer) else {
+        let block = self.data.tree().subtree(from);
+        let (start, count) = (block.start, block.len());
+        // Index of the block's first layer once it is placed.
+        let Some(place) = (to + 1).checked_sub(count) else {
             return false;
         };
-        let mut layer = source.clone();
-        layer.selection = Selection::default();
-        layer.name = self.unique_name_from(&format!("{} copy", source.name));
-        layer.id = self.next_layer_id();
-        let index = self.active_layer + 1;
-        self.apply(Edit::InsertLayer { index, layer }, false);
-        self.active_layer = index;
+        let old_parent = self.data.layers[from].props.parent;
+        if place == start && parent == old_parent {
+            return false;
+        }
+        let mut links: Vec<Link> = self.data.layers.iter().map(Link::of).collect();
+        let moved: Vec<Link> = links.drain(block).collect();
+        links.splice(place..place, moved);
+        links[to].parent = parent;
+        if !LayerTree::from_links(&links).is_valid() {
+            return false;
+        }
+        // One `MoveLayer` per layer of the block, keeping its order.
+        let mut edits: Vec<Edit> = match place.cmp(&start) {
+            std::cmp::Ordering::Less => (0..count)
+                .map(|j| Edit::MoveLayer {
+                    from: start + j,
+                    to: place + j,
+                })
+                .collect(),
+            std::cmp::Ordering::Greater => (0..count)
+                .map(|_| Edit::MoveLayer { from: start, to })
+                .collect(),
+            std::cmp::Ordering::Equal => Vec::new(),
+        };
+        if parent != old_parent {
+            let old = self.data.layers[from].props.clone();
+            let new = LayerProps {
+                parent,
+                ..old.clone()
+            };
+            edits.push(Edit::SetLayerProps {
+                index: to,
+                old,
+                new,
+            });
+        }
+        let active = self.active_layer().map(|l| l.id);
+        let edit = match edits.len() {
+            1 => edits.pop().unwrap_or(Edit::Batch(Vec::new())),
+            _ => Edit::Batch(edits),
+        };
+        self.apply(edit, false);
+        if let Some(i) = active.and_then(|id| self.data.layer_index(id)) {
+            self.active_layer = i;
+        }
         true
+    }
+
+    /// Moves layer `from` (with its subtree) next to or into row `target`
+    /// of the Layers panel. Returns whether anything moved.
+    pub fn drop_layer(&mut self, from: usize, target: LayerDrop) -> bool {
+        match self.drop_destination(from, target) {
+            Some((to, parent)) => self.move_subtree(from, to, parent),
+            None => false,
+        }
+    }
+
+    /// Where [`Document::drop_layer`] would put layer `from`: its final
+    /// index and group. `None` when the drop is refused (onto itself or
+    /// into its own subtree, or breaking the tree rules).
+    pub fn drop_destination(
+        &self,
+        from: usize,
+        target: LayerDrop,
+    ) -> Option<(usize, Option<LayerId>)> {
+        let len = self.data.layers.len();
+        let tree = self.data.tree();
+        let row = target.row();
+        if from >= len || row >= len || tree.subtree(from).contains(&row) {
+            return None;
+        }
+        let parent_of = |i: usize| self.data.layers[i].props.parent;
+        // Insertion point in the full list, and the new group.
+        let (at, parent) = match target {
+            LayerDrop::Above(i) => (i + 1, parent_of(i)),
+            LayerDrop::Below(i) => (tree.subtree(i).start, parent_of(i)),
+            LayerDrop::Into(i) if self.data.layers[i].kind().is_group() => {
+                (i, Some(self.data.layers[i].id))
+            }
+            LayerDrop::Into(_) => return None,
+        };
+        let count = tree.subtree(from).len();
+        let place = if from < at { at - count } else { at };
+        let to = place + count - 1;
+        let mut links: Vec<Link> = self.data.layers.iter().map(Link::of).collect();
+        let moved: Vec<Link> = links.drain(tree.subtree(from)).collect();
+        links.splice(place..place, moved);
+        links[to].parent = parent;
+        let changed = to != from || parent != parent_of(from);
+        (changed && LayerTree::from_links(&links).is_valid()).then_some((to, parent))
+    }
+
+    /// Moves the active layer (with its subtree) one step up (`true`, drawn
+    /// above) or down, past its neighbor inside the same group.
+    pub fn move_active_layer(&mut self, up: bool) -> bool {
+        let from = self.active_layer;
+        let tree = self.data.tree();
+        if from >= tree.len() {
+            return false;
+        }
+        let parent = tree.parent(from);
+        let start = tree.subtree(from).start;
+        let to = if up {
+            // The sibling above: the ancestor of the next row in this group.
+            let next = from + 1;
+            if next >= tree.len() || Some(next) == parent {
+                return false;
+            }
+            match std::iter::once(next)
+                .chain(tree.ancestors(next))
+                .find(|&a| tree.parent(a) == parent)
+            {
+                Some(sibling) => sibling,
+                None => return false,
+            }
+        } else {
+            // The row right under the subtree is the sibling below, if any.
+            match start.checked_sub(1) {
+                Some(below) if tree.parent(below) == parent => {
+                    tree.subtree(below).start + (from - start)
+                }
+                _ => return false,
+            }
+        };
+        let parent = self.data.layers[from].props.parent;
+        self.move_subtree(from, to, parent)
+    }
+
+    /// Copies the active layer (voxels and flags) just above itself. A group
+    /// is copied with its whole subtree; clones inside it that point at
+    /// layers inside it point at the copies.
+    pub fn duplicate_active_layer(&mut self) -> bool {
+        let index = self.active_layer;
+        if index >= self.data.layers.len() {
+            return false;
+        }
+        let range = self.data.tree().subtree(index);
+        let mut next = self.next_layer_id();
+        let ids: HashMap<LayerId, LayerId> = range
+            .clone()
+            .map(|i| {
+                let id = (self.data.layers[i].id, next);
+                next = next.saturating_add(1);
+                id
+            })
+            .collect();
+        let start = range.start;
+        let edits: Vec<Edit> = range
+            .map(|i| {
+                let source = &self.data.layers[i];
+                let mut layer = source.clone();
+                layer.selection = Selection::default();
+                layer.id = ids[&source.id];
+                if i == index {
+                    layer.name = self.unique_name_from(&format!("{} copy", source.name));
+                } else {
+                    layer.props.parent = source.props.parent.map(|p| ids[&p]);
+                }
+                if let LayerKind::Clone { source, .. } = &mut layer.props.kind {
+                    if let Some(&copy) = ids.get(source) {
+                        *source = copy;
+                    }
+                }
+                Edit::InsertLayer {
+                    index: i + (index + 1 - start),
+                    layer,
+                }
+            })
+            .collect();
+        let count = edits.len();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = index + count;
+        true
+    }
+
+    /// Wraps layer `index` (a group with its subtree) in a new group at the
+    /// same place, as one undo step; the new group becomes active. Refused
+    /// when the nesting would get too deep.
+    pub fn group_layer(&mut self, index: usize) -> Option<LayerId> {
+        let tree = self.data.tree();
+        let layer = self.data.layers.get(index)?;
+        if tree.depth(index) + tree.subtree_height(index) + 1 > rizxel_io::MAX_GROUP_DEPTH {
+            return None;
+        }
+        let mut group = Layer::new(self.unique_name_from("Group"), self.data.bounds);
+        group.props.kind = LayerKind::Group { collapsed: false };
+        group.props.parent = layer.props.parent;
+        group.id = self.next_layer_id();
+        let id = group.id;
+        let old = layer.props.clone();
+        let new = LayerProps {
+            parent: Some(id),
+            ..old.clone()
+        };
+        self.labeled("Group Layer", |d| {
+            d.apply(
+                Edit::Batch(vec![
+                    Edit::InsertLayer {
+                        index: index + 1,
+                        layer: group,
+                    },
+                    Edit::SetLayerProps { index, old, new },
+                ]),
+                false,
+            )
+        });
+        self.active_layer = index + 1;
+        Some(id)
+    }
+
+    /// Dissolves group `index`: its children move up one level and the
+    /// group is removed, as one undo step. The top child becomes active.
+    pub fn ungroup(&mut self, index: usize) -> bool {
+        let Some(layer) = self.data.layers.get(index).cloned() else {
+            return false;
+        };
+        if !layer.kind().is_group() || self.data.layers.len() < 2 {
+            return false;
+        }
+        let mut edits = self.reparent_children(&layer);
+        let had_children = !edits.is_empty();
+        edits.push(Edit::RemoveLayer { index, layer });
+        self.labeled("Ungroup", |d| d.apply(Edit::Batch(edits), false));
+        self.active_layer = if had_children {
+            index - 1
+        } else {
+            index.min(self.data.layers.len() - 1)
+        };
+        true
+    }
+
+    /// Edits moving the children of `group` to its parent.
+    fn reparent_children(&self, group: &Layer) -> Vec<Edit> {
+        self.data
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.props.parent == Some(group.id))
+            .map(|(i, l)| Edit::SetLayerProps {
+                index: i,
+                old: l.props.clone(),
+                new: LayerProps {
+                    parent: group.props.parent,
+                    ..l.props.clone()
+                },
+            })
+            .collect()
+    }
+
+    /// True when a layer outside `range` is a linked clone of one inside.
+    fn range_is_cloned_from_outside(&self, range: &std::ops::Range<usize>) -> bool {
+        let ids: Vec<LayerId> = range.clone().map(|i| self.data.layers[i].id).collect();
+        self.data.layers.iter().enumerate().any(|(i, l)| {
+            !range.contains(&i)
+                && matches!(l.props.kind, LayerKind::Clone { source, .. } if ids.contains(&source))
+        })
+    }
+
+    /// Whether [`Document::delete_group_with_contents`] would act on `index`.
+    pub fn can_delete_group_with_contents(&self, index: usize) -> bool {
+        let range = self.data.tree().subtree(index);
+        self.data
+            .layers
+            .get(index)
+            .is_some_and(|l| l.kind().is_group())
+            && range.len() < self.data.layers.len()
+            && !self.range_is_cloned_from_outside(&range)
+    }
+
+    /// Deletes group `index` and everything inside it as one undo step.
+    /// Refused when it would remove every layer or a linked clone outside
+    /// the group points inside it.
+    pub fn delete_group_with_contents(&mut self, index: usize) -> bool {
+        if !self.can_delete_group_with_contents(index) {
+            return false;
+        }
+        let range = self.data.tree().subtree(index);
+        let start = range.start;
+        let edits = range
+            .rev()
+            .map(|i| Edit::RemoveLayer {
+                index: i,
+                layer: self.data.layers[i].clone(),
+            })
+            .collect();
+        self.labeled("Delete Group and Contents", |d| {
+            d.apply(Edit::Batch(edits), false)
+        });
+        self.active_layer = start.saturating_sub(1);
+        true
+    }
+
+    /// Bakes the visible contents of group `index` (voxels, shapes, clones,
+    /// crops) into one voxel layer that replaces the group, as one undo
+    /// step. Hidden children are dropped with the group. Refused for empty
+    /// groups and when a linked clone outside the group points inside it.
+    pub fn merge_group(&mut self, index: usize) -> bool {
+        let Some(group) = self.data.layers.get(index) else {
+            return false;
+        };
+        let tree = self.data.tree();
+        let range = tree.subtree(index);
+        if !group.kind().is_group() || range.len() < 2 || self.range_is_cloned_from_outside(&range)
+        {
+            return false;
+        }
+        // Visible inside the group: the layer and its ancestors below it.
+        let shown = |i: usize| {
+            self.data.layers[i].visible
+                && tree
+                    .ancestors(i)
+                    .take_while(|&a| a != index)
+                    .all(|a| self.data.layers[a].visible)
+        };
+        let mut merged = Layer::new(group.name.clone(), self.data.bounds);
+        merged.id = self.next_layer_id();
+        merged.visible = group.visible;
+        merged.props.parent = group.props.parent;
+        for i in range.clone().filter(|&i| i != index && shown(i)) {
+            let derived = match self.data.evaluate(i) {
+                Some(Derived::Owned(v)) => v,
+                Some(Derived::Own) => self.data.layers[i].volume.clone(),
+                None => continue,
+            };
+            for (pos, v) in derived.iter() {
+                merged.volume.set(pos, v);
+            }
+        }
+        let start = range.start;
+        let mut edits: Vec<Edit> = range
+            .rev()
+            .map(|i| Edit::RemoveLayer {
+                index: i,
+                layer: self.data.layers[i].clone(),
+            })
+            .collect();
+        edits.push(Edit::InsertLayer {
+            index: start,
+            layer: merged,
+        });
+        self.labeled("Merge Group", |d| d.apply(Edit::Batch(edits), false));
+        self.active_layer = start;
+        true
+    }
+
+    /// Folds or unfolds group `index` in the Layers panel. View state like
+    /// the camera: saved with the file, but no undo step and no unsaved
+    /// changes.
+    pub fn set_group_collapsed(&mut self, index: usize, collapsed: bool) -> bool {
+        match self.data.layers.get_mut(index).map(|l| &mut l.props.kind) {
+            Some(LayerKind::Group { collapsed: c }) if *c != collapsed => {
+                *c = collapsed;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// True when layer `index` can be painted into and removed by a merge:
@@ -2013,6 +3268,171 @@ impl Document {
             .expect("infinite iterator")
     }
 
+    // ------------------------------------------------------- references
+
+    /// Next free reference id.
+    fn next_reference_id(&self) -> ReferenceId {
+        self.data
+            .references
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    /// Adds a reference image on `plane`, fitted into the bounds face and
+    /// drawn above the others, and selects it. Refused at
+    /// [`rizxel_io::MAX_REFERENCES`].
+    pub fn add_reference(
+        &mut self,
+        name: impl Into<String>,
+        image: ImageData,
+        plane: RefPlane,
+    ) -> Option<ReferenceId> {
+        if self.data.references.len() >= rizxel_io::MAX_REFERENCES {
+            return None;
+        }
+        let id = self.next_reference_id();
+        let reference = ReferenceImage::fitted(id, name, image, plane, self.data.bounds);
+        let index = self.data.references.len();
+        self.apply(Edit::InsertReference { index, reference }, false);
+        self.active_reference = index;
+        Some(id)
+    }
+
+    pub fn remove_reference(&mut self, index: usize) -> bool {
+        let Some(reference) = self.data.references.get(index).cloned() else {
+            return false;
+        };
+        self.apply(Edit::RemoveReference { index, reference }, false);
+        self.active_reference = index.saturating_sub(1);
+        true
+    }
+
+    /// Replaces reference `index` with `new` (same id) as one undo step;
+    /// `merge` folds slider and field drags. Refused for invalid values.
+    pub fn set_reference(&mut self, index: usize, new: ReferenceImage, merge: bool) -> bool {
+        let Some(old) = self.data.references.get(index).cloned() else {
+            return false;
+        };
+        if old == new || old.id != new.id || !new.is_valid() {
+            return false;
+        }
+        self.apply(Edit::SetReference { index, old, new }, merge);
+        true
+    }
+
+    /// Changes reference `index` through `f` (see [`Document::set_reference`]).
+    pub fn update_reference(
+        &mut self,
+        index: usize,
+        merge: bool,
+        f: impl FnOnce(&mut ReferenceImage),
+    ) -> bool {
+        let Some(mut new) = self.data.references.get(index).cloned() else {
+            return false;
+        };
+        f(&mut new);
+        self.set_reference(index, new, merge)
+    }
+
+    /// Moves a reference in the draw order; the selection follows it.
+    pub fn move_reference(&mut self, from: usize, to: usize) -> bool {
+        let len = self.data.references.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        self.apply(Edit::MoveReference { from, to }, false);
+        self.active_reference = to;
+        true
+    }
+
+    /// Copies reference `index` just above itself (the image bytes are
+    /// shared) and selects the copy.
+    pub fn duplicate_reference(&mut self, index: usize) -> bool {
+        let Some(source) = self.data.references.get(index) else {
+            return false;
+        };
+        if self.data.references.len() >= rizxel_io::MAX_REFERENCES {
+            return false;
+        }
+        let reference = ReferenceImage {
+            id: self.next_reference_id(),
+            name: format!("{} copy", source.name),
+            ..source.clone()
+        };
+        self.apply(
+            Edit::InsertReference {
+                index: index + 1,
+                reference,
+            },
+            false,
+        );
+        self.active_reference = index + 1;
+        true
+    }
+
+    /// Gives reference `index` a new image, keeping its placement and
+    /// width (the height follows the new aspect ratio).
+    pub fn replace_reference_image(&mut self, index: usize, image: ImageData) -> bool {
+        self.update_reference(index, false, |r| {
+            let aspect = image.height.max(1) as f32 / image.width.max(1) as f32;
+            r.size.y = r.size.x * aspect;
+            r.image = image;
+        })
+    }
+
+    /// Shows or hides every reference image as one undo step.
+    pub fn set_all_references_visible(&mut self, visible: bool) -> bool {
+        let edits: Vec<Edit> = self
+            .data
+            .references
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.visible != visible)
+            .map(|(index, r)| Edit::SetReference {
+                index,
+                old: r.clone(),
+                new: ReferenceImage {
+                    visible,
+                    ..r.clone()
+                },
+            })
+            .collect();
+        if edits.is_empty() {
+            return false;
+        }
+        let label = if visible {
+            "Show All References"
+        } else {
+            "Hide All References"
+        };
+        self.labeled(label, |d| d.apply(Edit::Batch(edits), false));
+        true
+    }
+
+    /// *Show All / Hide All* (`Alt+R`): hides every reference when any is
+    /// visible, otherwise shows them all.
+    pub fn toggle_all_references(&mut self) -> bool {
+        let any = self.data.references.iter().any(|r| r.visible);
+        self.set_all_references_visible(!any)
+    }
+
+    /// Puts the work plane on reference `index`'s plane and position, so
+    /// the Plane tool draws straight onto it.
+    pub fn align_work_plane_to_reference(&mut self, index: usize) -> bool {
+        let Some(r) = self.data.references.get(index) else {
+            return false;
+        };
+        let axis = r.plane.normal_axis();
+        let max = self.data.bounds.0[axis] as i32;
+        self.plane.axis = axis;
+        self.plane.coord = (r.offset[axis].round() as i32).clamp(0, max);
+        self.plane.visible = true;
+        true
+    }
+
     // ---------------------------------------------------------- file I/O
 
     pub fn to_project(&self) -> ProjectFile {
@@ -2045,6 +3465,7 @@ impl Document {
                 .collect(),
             active_layer: self.active_layer,
             bounds: self.data.bounds,
+            references: self.data.references.clone(),
         }
     }
 
@@ -2077,10 +3498,21 @@ impl Document {
                 })
             })
             .collect::<Result<Vec<_>, RzxlError>>()?;
+        // Files may list a group's children anywhere (Goxel puts groups
+        // first): put each subtree right below its group.
+        let links: Vec<Link> = layers.iter().map(Link::of).collect();
+        let order = canonical_order(&links);
+        let active = order
+            .iter()
+            .position(|&i| i == project.active_layer)
+            .unwrap_or(project.active_layer);
+        let mut slots: Vec<Option<Layer>> = layers.into_iter().map(Some).collect();
+        let layers = order.iter().filter_map(|&i| slots[i].take()).collect();
         let mut doc = Self::with_bounds(project.name, bounds, layers);
         doc.data.palette = project.palette;
         doc.data.materials = project.materials;
-        doc.active_layer = project.active_layer;
+        doc.data.references = project.references;
+        doc.active_layer = active;
         doc.selected_color = project.selected_color;
         doc.path = path;
         doc.touch();

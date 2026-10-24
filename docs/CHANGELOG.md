@@ -5,6 +5,122 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Phase 10d: Workspace, docking tabs and mode switch (2026-10-24)
+
+- **Model / Render switch in the title bar**, left of the window controls. It no longer
+  sits in the Tool Options bar, so hiding or moving panels can't hide it, and it stays
+  in Zen mode. In narrow windows the title shrinks first, then the menus fold into one
+  ☰ menu.
+- **Tab groups for every panel.** The right side is now two tab groups: *Color Palette*
+  with *References*, and *Layers* with *Bound Model* and *History*. Drop any panel on a
+  group's tab strip to add it as a sub-tab, or on an edge to place it beside the group.
+  A double-click on a tab collapses its group to the strip and back.
+- **Stretched tabs:** tab titles share their strip's full width.
+- **Scrolling tab strips:** when a group's tabs don't fit, the strip scrolls with the
+  mouse wheel or the ‹ › arrows at its ends instead of hiding tabs in a "…" menu. The
+  active tab scrolls into view; a dragged tab held near an end scrolls the strip.
+- `craft-ui` is vendored in `vendor/craft-ui` (from `storytold/craft-libs` at `ae2f796`)
+  with the opt-in `TabSizing::Fill` and `TabOverflow::Scroll` styles; the change is kept
+  as a patch for upstream.
+
+### Phase 10c: Box select, lines and curves, Transform tool (2026-10-24)
+
+- **Box selection** (Selection tool, *Box* mode, default): a click or drag places a blue
+  box that stays open. Face arrows resize it, dragging a face moves it (`Alt`: along the
+  normal), and the option bar types its position and size. The voxels inside are previewed
+  live; `Enter`, *Apply*, a click outside or a tool switch applies it as one undo step
+  (`Shift` adds, `Ctrl` subtracts), `Esc` cancels. Locked to the slice in Slice Mode.
+- **Selection ▸ To New Layer** (Cut `Ctrl+Shift+J`, Copy `Ctrl+J`): the selected voxels
+  go into a new layer above the source, in its group. One undo step.
+- **Line tool** (`L`): Line, Polyline and Curve (quadratic or cubic Bézier) with the
+  Brush's settings, draggable points and a ghost preview. *Pixel perfect* (no L-corners)
+  and *Solid* (6-connected) connectivity, also for size-1 Brush strokes. `Ctrl`+click in
+  the Brush draws a line from the last click (`Shift` stays erase).
+- **Transform tool** (`T`): rotate and resize the selection or layer with rotation rings,
+  face arrows, corner cubes and typed rotation / scale / size / move / pivot. Exact at 90°
+  and whole scales, hole-free nearest-neighbour resampling otherwise. Out-of-bounds voxels
+  are drawn red and need *Clip to bounds*. One undo step per Apply.
+
+### Phase 10b: Layer hierarchy and reference images (2026-10-24)
+
+#### Added
+- Layer groups in the Layers panel: rows are indented by depth, groups have
+  a collapse caret and a folder icon, and collapsed groups fold their rows
+  (the fold is saved with the file but is not an undo step).
+- *New Group* (panel header and *Layer* menu), *Group Layer* (`Ctrl+G`),
+  *Ungroup* (`Ctrl+Shift+G`, also dissolves the group holding the active
+  layer), *Merge Group* (bakes the visible contents into one voxel layer)
+  and *Delete Group and Contents*.
+- Drag and drop in the Layers panel: the upper or lower part of a row drops
+  above or below it, the middle of a group row drops into the group. A
+  dragged group takes its contents along; drops into its own contents show
+  no marker and are refused.
+- Lock is inherited: layers inside a locked group refuse every tool ("The
+  active layer is inside a locked group"); the panel shows inherited locks
+  and hides dimmed.
+- Reference images: PNG or JPEG concept art on the XZ, XY or YZ plane with
+  an offset, size (aspect lock or pixels per voxel), quarter turns, flips,
+  opacity, *Behind model* or *On top*, and a Slice Mode filter. Images over
+  4096 px are scaled down on import.
+- References panel (*View ▸ Panels ▸ References*): thumbnails, rename,
+  show / hide, lock, plane badge, drag to change the draw order, Duplicate,
+  Replace Image, Reset Size and Delete; *Add Images* (several files), *Show
+  All / Hide All* (`Alt+R`, also *View ▸ Reference Images*) and *Align Work
+  Plane to Reference*. PNG and JPEG files dropped on the window become
+  references on the plane the camera faces most.
+- `.rzxl` version 4: reference images are embedded in the project (their
+  original PNG or JPEG bytes, base64). Version 1–3 files still load.
+
+#### Changed
+- Move Up / Move Down step over a whole neighboring group and stay inside the
+  layer's group. Duplicating a group copies its contents; linked clones
+  inside it point at the copies.
+- New layers made while a group is active go into that group, as its top
+  layer.
+- `.vox` export writes groups as group nodes, so they survive a round trip
+  through MagicaVoxel; `.vox` import keeps groups and models in scene order.
+- Files that list a group's contents away from the group (Goxel lists groups
+  first) are reordered on load so each group's contents sit right below it.
+- Tools on a group report "select a voxel layer" in the status bar.
+
+### Phase 10: Editing power (2026-10-24)
+
+#### Added
+- *Selection* menu: Select All, Deselect, Invert, Grow, Shrink and By Color
+  (the selected swatch, within the Fuzzy Select threshold). Grow and Shrink
+  are 6-connected; Grow only adds voxels of the active layer.
+- Mask Mode (`Shift+M`, a shield button in the Tools panel, shown in the
+  status bar): the selection is protected. Every tool, Fill and the Plane
+  cut leave selected voxels alone and edit the rest of the layer; Delete,
+  Cut and the transforms are refused while it protects a selection.
+- *Layer ▸ Separate Parts*: each 6-connected part becomes its own layer
+  (parts under a set size stay). *Layer ▸ Split at Work Plane* moves the
+  plane's `+` side to a new layer.
+- *Layer ▸ Boolean*: Union, Difference or Intersection of the active layer
+  with another layer (shapes and linked clones count with their geometry).
+  Only the active layer changes.
+- *Model ▸ Fit Bounds to Content*: moves the model to the origin and shrinks
+  the bounds around it (shape areas, crops and selections move along). Also
+  a *Fit* button next to the Plane tool's *Cut*, and *Fit Bounds on Import*.
+- *Model ▸ Core*: Fill Hollows (closed cavities get the selected color),
+  Hollow and Advanced Hollow (shell thickness in voxels).
+- Pyramid and cone shapes for Shape (pointing away from the pressed face)
+  and Brush (pointing up).
+- Palette files: load and save GIMP `.gpl` and `.hex`; *Load and Snap
+  Model* gives every voxel the nearest new color.
+- Palette tools in the Color Palette panel: sort by hue or luminance (the
+  model looks the same), remove duplicates, a gradient between two
+  swatches, remap one color to another on every layer, and a *Used only*
+  view. `Shift+click` marks the second swatch.
+- Favorite colors 0–9: `Ctrl+digit` selects, `Ctrl+Shift+digit` (or a
+  right-click on the favorites row) stores. Kept in the app settings.
+- History panel (*View ▸ Panels ▸ History*): every undo step by name;
+  clicking one undoes or redoes to it.
+
+#### Changed
+- Every new operation is a single undo step, named in the History panel.
+- The Selection commands moved from the Edit menu to the new Selection menu.
+
 ## [0.4.0] — 2026-10-24
 
 Milestone M3: everything stored in the file is visible, and models look good

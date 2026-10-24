@@ -15,6 +15,10 @@
 //! - Opaque voxel mesh (Phase 4): greedy-meshed quads with per-vertex palette
 //!   colors, flat-shaded in Model mode and Lambert-lit in Render mode. The
 //!   vertex/index buffers are re-uploaded only when the mesh key changes.
+//! - Reference images (Phase 10b): textured, alpha-blended quads, one
+//!   texture per image uploaded once. *Behind* images are depth-tested
+//!   against the model after the opaque voxels; *On top* images are drawn
+//!   after the translucent layers without a depth test.
 //!
 //! GPU resources live in egui-wgpu's `CallbackResources`; each frame the UI
 //! submits a [`SceneFrame`] describing what to draw.
@@ -107,6 +111,62 @@ pub struct VoxelVertex {
     pub material: u32,
     /// Ambient occlusion: 0 (most occluded) to 1 (open).
     pub ao: f32,
+}
+
+/// Vertex of a reference image quad (see `vs_reference`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct RefVertex {
+    pub pos: [f32; 3],
+    pub uv: [f32; 2],
+    pub opacity: f32,
+}
+
+/// Decoded RGBA8 pixels of a reference image.
+#[derive(Debug)]
+pub struct RefPixels {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+/// One reference image to draw this frame.
+#[derive(Clone, Debug)]
+pub struct ReferenceDraw {
+    /// Identity of the image: its texture is uploaded once per key.
+    pub key: usize,
+    pub pixels: Arc<RefPixels>,
+    /// World corners of the image's top-left, top-right, bottom-right and
+    /// bottom-left pixels.
+    pub corners: [Vec3; 4],
+    pub opacity: f32,
+    /// Drawn over the model without a depth test.
+    pub on_top: bool,
+}
+
+impl ReferenceDraw {
+    /// Two triangles, wound clockwise as seen from the image's front.
+    pub fn vertices(&self) -> [RefVertex; 6] {
+        let [tl, tr, br, bl] = self.corners;
+        let v = |p: Vec3, u: f32, v: f32| RefVertex {
+            pos: p.to_array(),
+            uv: [u, v],
+            opacity: self.opacity,
+        };
+        [
+            v(tl, 0.0, 0.0),
+            v(tr, 1.0, 0.0),
+            v(br, 1.0, 1.0),
+            v(tl, 0.0, 0.0),
+            v(br, 1.0, 1.0),
+            v(bl, 0.0, 1.0),
+        ]
+    }
+}
+
+/// A reference image's texture on the GPU.
+struct RefTexture {
+    bind_group: wgpu::BindGroup,
 }
 
 /// Number of entries in the material table: slot 0 is the default
@@ -230,6 +290,8 @@ pub struct SceneFrame {
     pub translucent: Vec<(Arc<GpuMesh>, f32)>,
     /// The document's materials (Render mode).
     pub materials: Vec<rizxel_math::Material>,
+    /// Visible reference images, in draw order.
+    pub references: Vec<ReferenceDraw>,
 }
 
 impl SceneFrame {
@@ -420,6 +482,15 @@ pub struct ViewportRenderer {
     blit_pipeline: wgpu::RenderPipeline,
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Reference images depth-tested against the model / drawn over it.
+    reference_behind_pipeline: wgpu::RenderPipeline,
+    reference_on_top_pipeline: wgpu::RenderPipeline,
+    reference_sampler: wgpu::Sampler,
+    /// Textures by [`ReferenceDraw::key`].
+    reference_textures: HashMap<usize, RefTexture>,
+    reference_vertices: DynBuffer,
+    /// This frame's references: key and on-top flag, in draw order.
+    reference_order: Vec<(usize, bool)>,
     lines: DynBuffer,
     fills: DynBuffer,
     opaque: MeshSlot,
@@ -745,6 +816,59 @@ impl ViewportRenderer {
             ..Default::default()
         });
 
+        // Reference images: the texture layout is the blit's (texture +
+        // filtering sampler) as group 1 next to the scene uniforms.
+        let reference_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("rizxel_reference_pipeline_layout"),
+                bind_group_layouts: &[Some(&scene_layout), Some(&blit_layout)],
+                immediate_size: 0,
+            });
+        let reference_attrs =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32];
+        let reference_pipeline = |label, compare| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&reference_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &scene_shader,
+                    entry_point: Some("vs_reference"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<RefVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &reference_attrs,
+                    })],
+                },
+                // Both sides show; `front_facing` dims the back.
+                primitive: wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: depth(false, compare),
+                multisample: msaa,
+                fragment: Some(wgpu::FragmentState {
+                    module: &scene_shader,
+                    entry_point: Some("fs_reference"),
+                    compilation_options: Default::default(),
+                    targets: &alpha,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let reference_behind_pipeline =
+            reference_pipeline("rizxel_reference_behind", wgpu::CompareFunction::LessEqual);
+        let reference_on_top_pipeline =
+            reference_pipeline("rizxel_reference_on_top", wgpu::CompareFunction::Always);
+        let reference_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("rizxel_reference_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         Self {
             uniform_buffer,
             material_buffer,
@@ -759,6 +883,16 @@ impl ViewportRenderer {
             blit_pipeline,
             blit_layout,
             sampler,
+            reference_behind_pipeline,
+            reference_on_top_pipeline,
+            reference_sampler,
+            reference_textures: HashMap::new(),
+            reference_vertices: DynBuffer::new(
+                device,
+                "rizxel_reference_vertices",
+                std::mem::size_of::<RefVertex>() as u64,
+            ),
+            reference_order: Vec::new(),
             lines: DynBuffer::new(
                 device,
                 "rizxel_lines",
@@ -801,6 +935,112 @@ impl ViewportRenderer {
         }
         self.alphas
             .upload(device, queue, bytemuck::cast_slice(&alphas));
+    }
+
+    /// Uploads the textures of new reference images, frees unused ones and
+    /// fills the quad vertex buffer.
+    fn upload_references(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        frame: &SceneFrame,
+    ) {
+        self.reference_textures
+            .retain(|key, _| frame.references.iter().any(|r| r.key == *key));
+        self.reference_order.clear();
+        let mut vertices = Vec::with_capacity(frame.references.len() * 6);
+        for r in &frame.references {
+            let p = &r.pixels;
+            if p.width == 0 || p.height == 0 || p.pixels.len() != (p.width * p.height * 4) as usize
+            {
+                continue;
+            }
+            if !self.reference_textures.contains_key(&r.key) {
+                let texture = self.reference_texture(device, queue, p);
+                self.reference_textures.insert(r.key, texture);
+            }
+            self.reference_order.push((r.key, r.on_top));
+            vertices.extend(r.vertices());
+        }
+        self.reference_vertices
+            .upload(device, queue, bytemuck::cast_slice(&vertices));
+    }
+
+    fn reference_texture(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        p: &RefPixels,
+    ) -> RefTexture {
+        let size = wgpu::Extent3d {
+            width: p.width,
+            height: p.height,
+            depth_or_array_layers: 1,
+        };
+        // Gamma-space colors like the rest of the scene (non-sRGB target).
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rizxel_reference"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &p.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(p.width * 4),
+                rows_per_image: Some(p.height),
+            },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rizxel_reference"),
+            layout: &self.blit_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.reference_sampler),
+                },
+            ],
+        });
+        RefTexture { bind_group }
+    }
+
+    /// Draws this frame's references with `on_top` set (or not).
+    fn draw_references(&self, pass: &mut wgpu::RenderPass<'_>, on_top: bool) {
+        let mut pipeline_set = false;
+        for (i, (key, top)) in self.reference_order.iter().enumerate() {
+            let Some(texture) = self.reference_textures.get(key).filter(|_| *top == on_top) else {
+                continue;
+            };
+            if !pipeline_set {
+                pass.set_pipeline(if on_top {
+                    &self.reference_on_top_pipeline
+                } else {
+                    &self.reference_behind_pipeline
+                });
+                pass.set_vertex_buffer(0, self.reference_vertices.buffer.slice(..));
+                pipeline_set = true;
+            }
+            pass.set_bind_group(1, &texture.bind_group, &[]);
+            let first = i as u32 * 6;
+            pass.draw(first..first + 6, 0..1);
+        }
     }
 
     /// (Re)creates the offscreen targets when the viewport size changes.
@@ -896,6 +1136,7 @@ impl ViewportRenderer {
         self.line_count = frame.lines.len() as u32;
         self.fill_count = frame.fills.len() as u32;
         self.upload_voxels(device, queue, frame);
+        self.upload_references(device, queue, frame);
         let table = material_table(&frame.materials);
         if self.materials.as_ref() != Some(&table) {
             queue.write_buffer(&self.material_buffer, 0, bytemuck::cast_slice(&table[..]));
@@ -945,6 +1186,9 @@ impl ViewportRenderer {
             pass.set_pipeline(&self.voxel_pipeline);
             self.opaque.draw(&mut pass, 0);
         }
+        // Tracing references: behind the model, before the translucent
+        // layers so those still blend over them.
+        self.draw_references(&mut pass, false);
         // Translucent layers after every opaque one, farthest first; each
         // draw is one instance whose alpha comes from the instance buffer.
         if !self.translucent_order.is_empty() {
@@ -956,6 +1200,7 @@ impl ViewportRenderer {
                 }
             }
         }
+        self.draw_references(&mut pass, true);
         if frame.floor_grid && eye_below_ground(frame.eye) {
             pass.set_pipeline(&self.grid_under_pipeline);
             pass.draw(0..3, 0..1);
@@ -1035,6 +1280,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
         // vec3 + vec3 + vec4 + u32 + f32.
         assert_eq!(std::mem::size_of::<VoxelVertex>(), 48);
+        // vec3 + vec2 + f32.
+        assert_eq!(std::mem::size_of::<RefVertex>(), 24);
         // 3 vec4 per material, 256 slots.
         assert_eq!(std::mem::size_of::<MaterialTable>(), 48 * 256);
     }
@@ -1161,6 +1408,7 @@ mod tests {
             voxels: None,
             translucent: Vec::new(),
             materials: Vec::new(),
+            references: Vec::new(),
         };
         let u = frame.uniform([100, 100]);
         assert_eq!(u.options[..2], [1.0, 0.0]);

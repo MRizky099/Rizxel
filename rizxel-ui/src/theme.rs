@@ -31,6 +31,9 @@ pub const BOUND: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
 pub const PAINT: Color32 = Color32::from_rgb(0xea, 0xb3, 0x08);
 pub const CLOSE_HOVER: Color32 = Color32::from_rgb(0xe8, 0x11, 0x23);
 pub const DANGER: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
+/// Box of the Selection tool's Box mode (distinct from the yellow model
+/// bounds and the light-blue selection outline).
+pub const SELECTION_BOX: Color32 = Color32::from_rgb(0x5b, 0x6c, 0xff);
 
 // Axis colors.
 pub const AXIS_X: Color32 = Color32::from_rgb(0xff, 0x47, 0x57);

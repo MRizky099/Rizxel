@@ -48,6 +48,18 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             rizxel_engine::Tool::FuzzySelect => Some(state.options.fuzzy_select.mask),
             _ => None,
         };
+        if state.options.mask_selection {
+            ui.label(
+                RichText::new(icon::SHIELD_CHECK)
+                    .font(theme::icon(12.0))
+                    .color(theme::ACCENT_LIGHT),
+            );
+            ui.label(
+                RichText::new("Mask Mode")
+                    .size(11.0)
+                    .color(theme::ACCENT_LIGHT),
+            );
+        }
         if let Some(option) = option {
             let mode = mask_mode(ui.input(|i| i.modifiers), option);
             ui.label(

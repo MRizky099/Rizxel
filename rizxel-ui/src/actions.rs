@@ -87,6 +87,49 @@ pub fn export(state: &mut AppState, format: FileFormat) {
     }
 }
 
+fn palette_dialog() -> rfd::FileDialog {
+    rfd::FileDialog::new()
+        .add_filter(
+            "Palette",
+            &[rizxel_app::GPL_EXTENSION, rizxel_app::HEX_EXTENSION],
+        )
+        .add_filter("GIMP Palette", &[rizxel_app::GPL_EXTENSION])
+        .add_filter("Hex Palette", &[rizxel_app::HEX_EXTENSION])
+}
+
+/// *Palette ▸ Load* (or *Load and Snap Model* with `snap`).
+pub fn load_palette(state: &mut AppState, snap: bool) {
+    let Some(path) = palette_dialog().set_title("Load Palette").pick_file() else {
+        return;
+    };
+    if let Err(e) = state.load_palette_file(&path, snap) {
+        log::error!("palette {}: {e}", path.display());
+        state.status_message = Some(format!("Failed to load the palette: {e}"));
+    }
+}
+
+/// *Palette ▸ Save*.
+pub fn save_palette(state: &mut AppState) {
+    let file_name = state
+        .doc()
+        .map(|d| format!("{}.{}", d.name, rizxel_app::GPL_EXTENSION))
+        .unwrap_or_default();
+    let Some(mut path) = palette_dialog()
+        .set_title("Save Palette")
+        .set_file_name(file_name)
+        .save_file()
+    else {
+        return;
+    };
+    if path.extension().is_none() {
+        path.set_extension(rizxel_app::GPL_EXTENSION);
+    }
+    if let Err(e) = state.save_palette_file(&path) {
+        log::error!("palette {}: {e}", path.display());
+        state.status_message = Some(format!("Failed to save the palette: {e}"));
+    }
+}
+
 /// Saves to the existing path or falls back to "Save As".
 pub fn save(state: &mut AppState) {
     match state.doc().and_then(|d| d.path.clone()) {

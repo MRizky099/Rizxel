@@ -437,3 +437,40 @@ fn fs_voxel(in: VoxelOut) -> @location(0) vec4<f32> {
 fn fs_voxel_translucent(in: VoxelOut) -> @location(0) vec4<f32> {
     return vec4<f32>(voxel_color(in), in.alpha);
 }
+
+// ---------------------------------------------------------------- reference images
+
+@group(1) @binding(0) var ref_texture: texture_2d<f32>;
+@group(1) @binding(1) var ref_sampler: sampler;
+
+struct RefIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) opacity: f32,
+};
+
+struct RefOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) opacity: f32,
+};
+
+@vertex
+fn vs_reference(v: RefIn) -> RefOut {
+    var out: RefOut;
+    // Pulled toward the eye like the overlays, so a floor image never
+    // z-fights with the ground grid.
+    out.pos = cam.view_proj * vec4<f32>(pull_to_eye(v.pos), 1.0);
+    out.uv = v.uv;
+    out.opacity = v.opacity;
+    return out;
+}
+
+/// Straight alpha. The back side shows the image mirrored (as seen through
+/// it) and dimmed.
+@fragment
+fn fs_reference(in: RefOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let c = textureSample(ref_texture, ref_sampler, in.uv);
+    let dim = select(0.55, 1.0, front);
+    return vec4<f32>(c.rgb * dim, c.a * in.opacity);
+}

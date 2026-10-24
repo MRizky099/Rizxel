@@ -8,9 +8,9 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::IVec3;
-use rizxel_engine::tools::NEIGHBORS_6;
+use rizxel_engine::tools::{colors_match, NEIGHBORS_6};
 use rizxel_engine::MaskMode;
-use rizxel_math::{BoundSize, VoxelVolume, EMPTY_VOXEL};
+use rizxel_math::{BoundSize, Palette, Voxel, VoxelVolume, EMPTY_VOXEL};
 
 /// Source of [`Selection::revision`]s; unique for the process lifetime.
 static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
@@ -143,6 +143,60 @@ impl Selection {
         within.into_iter().filter(|p| !self.contains(*p)).collect()
     }
 
+    /// *Grow Selection*: adds the solid cells of `volume` that touch the
+    /// selection by a face, `steps` times (6-connected).
+    pub fn grown(&self, volume: &VoxelVolume, steps: u32) -> Selection {
+        let mut out = self.clone();
+        let mut front: Vec<IVec3> = self.iter().collect();
+        for _ in 0..steps {
+            let mut next = Vec::new();
+            for p in front {
+                for n in NEIGHBORS_6 {
+                    let q = p + n;
+                    if volume.get(q) != EMPTY_VOXEL && out.insert(q) {
+                        next.push(q);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            front = next;
+        }
+        out
+    }
+
+    /// *Shrink Selection*: drops the cells with an unselected face
+    /// neighbour, `steps` times. Undoes [`Selection::grown`] on a solid.
+    pub fn shrunk(&self, steps: u32) -> Selection {
+        let mut out = self.clone();
+        for _ in 0..steps {
+            if out.is_empty() {
+                break;
+            }
+            out = out
+                .iter()
+                .filter(|&p| NEIGHBORS_6.iter().all(|&n| out.contains(p + n)))
+                .collect();
+        }
+        out
+    }
+
+    /// *Select by Color*: every voxel of `volume` whose color is within
+    /// `threshold` of palette entry `color` (Fuzzy Select's distance).
+    pub fn by_color(
+        volume: &VoxelVolume,
+        palette: &Palette,
+        color: Voxel,
+        threshold: u8,
+    ) -> Selection {
+        volume
+            .iter()
+            .filter(|&(_, v)| colors_match(palette, v, color, threshold))
+            .map(|(p, _)| p)
+            .collect()
+    }
+
     /// Selected solid cells of `volume` with at least one exposed face (an
     /// empty or out-of-bounds neighbour): what is visible of the selection.
     pub fn visible_shell(&self, volume: &VoxelVolume) -> Vec<IVec3> {
@@ -266,6 +320,56 @@ mod tests {
         let s = sel(&[0, 2]);
         assert_eq!(s.inverted(sel(&[0, 1, 2, 3]).iter()), sel(&[1, 3]));
         assert!(s.inverted(sel(&[0, 2]).iter()).is_empty());
+    }
+
+    fn solid(lo: i32, hi: i32) -> VoxelVolume {
+        let mut v = VoxelVolume::new(BoundSize::new(8, 8, 8));
+        for z in lo..hi {
+            for y in lo..hi {
+                for x in lo..hi {
+                    v.set(IVec3::new(x, y, z), 1);
+                }
+            }
+        }
+        v
+    }
+
+    fn cube(lo: i32, hi: i32) -> Selection {
+        solid(lo, hi).iter().map(|(p, _)| p).collect()
+    }
+
+    #[test]
+    fn shrink_undoes_grow_on_a_solid() {
+        let v = solid(0, 7);
+        let s = cube(2, 5);
+        let g = s.grown(&v, 1);
+        // 27 cells plus one 3x3 layer on each of the 6 faces.
+        assert_eq!(g.len(), 27 + 6 * 9);
+        assert_eq!(g.shrunk(1), s);
+        assert_eq!(cube(1, 6).shrunk(1), s);
+        assert!(s.shrunk(2).is_empty());
+        // Growth stops at empty cells and at the volume's solid part.
+        assert_eq!(s.grown(&v, 10), cube(0, 7));
+        assert_eq!(s.grown(&solid(2, 5), 3), s);
+        assert!(Selection::default().grown(&v, 2).is_empty());
+    }
+
+    #[test]
+    fn select_by_color_uses_the_threshold() {
+        let mut v = VoxelVolume::new(BoundSize::new(8, 8, 8));
+        let palette = Palette::new(vec![
+            rizxel_math::Rgba8::new(0, 0, 0, 0),
+            rizxel_math::Rgba8::new(100, 0, 0, 255),
+            rizxel_math::Rgba8::new(104, 0, 0, 255),
+            rizxel_math::Rgba8::new(0, 200, 0, 255),
+        ]);
+        v.set(IVec3::ZERO, 1);
+        v.set(IVec3::X, 2);
+        v.set(IVec3::Y, 3);
+        assert_eq!(Selection::by_color(&v, &palette, 1, 0).len(), 1);
+        assert_eq!(Selection::by_color(&v, &palette, 1, 4).len(), 2);
+        let green: Selection = [IVec3::Y].into_iter().collect();
+        assert_eq!(Selection::by_color(&v, &palette, 3, 0), green);
     }
 
     #[test]

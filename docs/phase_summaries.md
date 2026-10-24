@@ -17,6 +17,9 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 7 | Stabilize, CI and 0.2.0 | ✅ Done | `v0.2.0` |
 | 8 | Safe editing and 0.3.0 | ✅ Done | `v0.3.0` |
 | 9 | Visual fidelity and 0.4.0 | ✅ Done | `v0.4.0` |
+| 10 | Editing power | ✅ Done (branch) | `a179e73`..`7d60c3e` |
+| 10b | Layer hierarchy and reference images | ✅ Done (branch) | `af5b8a3`..`59eaac7` |
+| 10c | Box select, lines and curves, Transform tool | ✅ Done (branch) | `8d556ac`..`2d3c6dc` |
 
 ---
 
@@ -214,3 +217,84 @@ Plan: [`rizxel_phase9_implementation_plan.md`](plan/rizxel_phase9_implementation
   flips; neighbours re-mesh only when a change touches their side (`22600dd`).
 - Background tile meshing pool for imports and undo of big edits; small edits stay
   synchronous (`e4bafa4`); 289 tests.
+
+## Phase 10 — Editing power
+
+Plan: [`rizxel_phase10_implementation_plan.md`](plan/rizxel_phase10_implementation_plan.md)
+
+**Delivered** (branch `claude/phase10-editing-power-f1ac88`, part of M4 / 0.5.0)
+- Selection Grow, Shrink and By Color in a new Selection menu, and Mask Mode, which
+  protects the selection from every write path (`a179e73`).
+- Separate Parts, Split at Work Plane, Fit Bounds to Content, Fill Hollows, Hollow,
+  Advanced Hollow, layer Booleans, and pyramid and cone shapes; engine functions in
+  `tools/components.rs`, `tools/core_ops.rs` and `tools/boolean.rs` (`f98408c`).
+- `.gpl` / `.hex` palette files with hostile-input tests, palette sort, remove
+  duplicates, gradient, remap, load and snap, a Used only view, and favorite colors
+  0–9 (`8a01562`).
+- Named undo steps and a History dock panel that jumps to any step (`6e25e4d`,
+  `7312eed`).
+- The randomized undo-all / redo-all test covers every new operation, with Mask Mode on
+  at random, and also jumps through the history; 325 tests.
+
+## Phase 10b — Layer hierarchy and reference images
+
+Plan: [`rizxel_phase10b_implementation_plan.md`](plan/rizxel_phase10b_implementation_plan.md)
+
+**Delivered** (branch `claude/phase10b-layers-references`, on top of Phase 10, part of
+M4 / 0.5.0)
+- `LayerTree` (`rizxel-app/src/layer_tree.rs`) derives the tree from the `parent` ids
+  and enforces one rule: a group's contents sit right below it. Debug builds check it
+  after every change, and files written without it are reordered on load. Group
+  Layer, Ungroup, move and drop of whole subtrees, sibling-aware Move Up / Down,
+  Duplicate / Merge / Delete Group and Contents, inherited lock (`af5b8a3`).
+- Layers panel tree: indentation, collapse, folder icons, above / into / below drop
+  zones with markers, inherited hide and lock shown dimmed, `Ctrl+G` /
+  `Ctrl+Shift+G` (`cfa405c`, `59eaac7`).
+- `.vox` export with nested group nodes, and scene order kept on import (`a57e589`).
+- `ReferenceImage` in `rizxel-math` with the placement math shared by the renderer and
+  tests, undoable reference edits, PNG / JPEG import with downscaling, and `.rzxl` v4
+  with round-trip and hostile-input tests (`beb30be`).
+- Textured-quad reference pipeline (behind / on top, dimmed back side, Slice Mode
+  filters), the References dock panel, `Alt+R` and file drop (`2f3d424`).
+- The randomized undo-all / redo-all test covers the group and reference operations;
+  366 tests.
+
+## Phase 10c — Box select, lines and curves, Transform tool
+
+Plan: [`rizxel_phase10c_implementation_plan.md`](plan/rizxel_phase10c_implementation_plan.md)
+
+**Delivered** (on top of Phase 10b, part of M4 / 0.5.0)
+- Selection tool *Box* mode: an open blue box with face arrows, face drags and typed
+  position / size, a live preview, Apply as one undo step (mask mode from the modifiers
+  held), Esc to cancel, a dimmed box that can be re-opened, and Slice Mode clamping.
+  Engine helpers `resize_face`, `move_box`, `fit_box`, tile-limited `select_box`; the
+  session lives in `rizxel-app/src/box_select.rs` (`8d556ac`).
+- *Selection ▸ To New Layer* (Cut / Copy) in one undo step; clone and shape sources are
+  baked on Cut (`05f3aa5`).
+- Line tool with Line, Polyline and Curve modes, draggable points and ghost previews;
+  `tools/line.rs` with `bezier_path` and the Pixel perfect and Solid filters, also used
+  by size-1 Brush strokes; `Ctrl`+click lines in the Brush (`3336579`).
+- Transform tool: rings, face arrows, corner cubes and typed rotation, scale or size,
+  move and pivot; `transform_cells` (inverse nearest neighbour), `scale_cells` and
+  `apply_transform` (exact at 90° and whole scales); the session in
+  `rizxel-app/src/transform_session.rs` (`2d3c6dc`).
+- The randomized undo-all / redo-all test covers box selection, to-new-layer, lines and
+  curves and transforms; 396 tests.
+
+## Phase 10d — Workspace: docking tabs and mode switch
+
+Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementation_plan.md)
+
+**Delivered** (on top of Phase 10c, part of M4 / 0.5.0)
+- The *Model / Render* switch sits in the title bar next to the window controls; the
+  title bar is laid out by `bar_layout`, which shrinks the title, then folds the menus
+  into ☰ (`193871f`).
+- The inspector is two tab groups in a vertical split instead of a `Node::Stack`, so any
+  panel can join a strip as a sub-tab or split beside a group; a double-click on a tab
+  collapses its group to the strip (`56e4bba`).
+- `craft-ui` vendored at `ae2f796` (`b8409fb`), then `TabSizing::Fill` and
+  `TabOverflow::Scroll` with `tabs::fill` / `tabs::scroll`, turned on in `dock.rs`
+  (`4d52dfb`). The change is also kept as a patch for upstream.
+- No new document operations, so the undo tests are unchanged; 489 tests (402 Rizxel,
+  87 craft-ui).
+

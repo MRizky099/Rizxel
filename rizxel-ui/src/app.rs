@@ -153,6 +153,19 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD, Key::D)) {
             self.state.deselect();
         }
+        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::J)) {
+            self.state.selection_to_new_layer(true);
+        }
+        if pressed(KeyboardShortcut::new(CMD, Key::J)) {
+            self.state.selection_to_new_layer(false);
+        }
+        // Groups. Before the `G` view toggles, which plain patterns match.
+        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::G)) {
+            self.state.ungroup_active_layer();
+        }
+        if pressed(KeyboardShortcut::new(CMD, Key::G)) {
+            self.state.group_active_layer();
+        }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::S)) {
             actions::save_as(&mut self.state);
         }
@@ -201,6 +214,22 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::H)) {
             view.ghosts = !view.ghosts;
         }
+        // Favorite colors: Ctrl+Shift+digit stores, Ctrl+digit recalls.
+        for (slot, key) in DIGITS.into_iter().enumerate() {
+            if pressed(KeyboardShortcut::new(CMD_SHIFT, key)) {
+                self.state.store_favorite(slot);
+            }
+            if pressed(KeyboardShortcut::new(CMD, key)) {
+                self.state.recall_favorite(slot);
+            }
+        }
+        // Before the tool letters: `M` is the Move tool, `R` a tool key.
+        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::M)) {
+            self.state.toggle_mask_selection();
+        }
+        if pressed(KeyboardShortcut::new(Modifiers::ALT, Key::R)) {
+            self.state.toggle_all_references();
+        }
         // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
         // the commands above and to the tools' own modifiers).
         for tool in rizxel_engine::Tool::ALL {
@@ -210,6 +239,31 @@ impl RizxelApp {
             if pressed(KeyboardShortcut::new(Modifiers::NONE, key)) {
                 self.state.tool = tool;
             }
+        }
+    }
+}
+
+impl RizxelApp {
+    /// Image files dropped on the window become reference images on the
+    /// plane the camera faces most.
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let paths: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if paths.is_empty() {
+            return;
+        }
+        let (images, others): (Vec<_>, Vec<_>) = paths
+            .into_iter()
+            .partition(|p| rizxel_app::is_image_path(p));
+        panels::references::add_files(&mut self.state, &images);
+        if images.is_empty() && !others.is_empty() {
+            self.state.status_message =
+                Some("Drop PNG or JPEG files to add reference images".to_owned());
         }
     }
 }
@@ -227,6 +281,7 @@ impl eframe::App for RizxelApp {
         // Keep ticking while idle so the time-based autosave still fires.
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
         self.handle_shortcuts(&ctx);
+        self.handle_dropped_files(&ctx);
 
         let state = &mut self.state;
         let ui_state = &mut self.ui;
@@ -268,15 +323,21 @@ impl eframe::App for RizxelApp {
                         .inner_margin(egui::Margin::symmetric(8, 0))
                         .show(ui, |ui| panels::options::show(ui, state, icons));
                 }),
-                dock::Panel::Palette => {
-                    scroll_panel(ui, panel, |ui| panels::sidebar::palette(ui, state))
-                }
+                dock::Panel::Palette => scroll_panel(ui, panel, |ui| {
+                    panels::sidebar::palette(ui, state, ui_state)
+                }),
                 dock::Panel::Layers => {
                     scroll_panel(ui, panel, |ui| panels::sidebar::layers(ui, state, ui_state))
                 }
                 dock::Panel::Bounds => {
                     scroll_panel(ui, panel, |ui| panels::sidebar::bounds(ui, state))
                 }
+                dock::Panel::History => {
+                    scroll_panel(ui, panel, |ui| panels::history::show(ui, state))
+                }
+                dock::Panel::References => scroll_panel(ui, panel, |ui| {
+                    panels::references::show(ui, state, ui_state)
+                }),
             });
             if let Some(error) = error {
                 log::warn!("{error}");
@@ -290,6 +351,20 @@ impl eframe::App for RizxelApp {
         resize::paint_border(&ctx);
     }
 }
+
+/// Keys of favorite colors `0`–`9`.
+const DIGITS: [Key; 10] = [
+    Key::Num0,
+    Key::Num1,
+    Key::Num2,
+    Key::Num3,
+    Key::Num4,
+    Key::Num5,
+    Key::Num6,
+    Key::Num7,
+    Key::Num8,
+    Key::Num9,
+];
 
 enum ClipboardCommand {
     Copy,

@@ -6,10 +6,14 @@
 //! one drag is one undo step. Selection tools (Selection, Fuzzy Select)
 //! return cells; the selection type lives in the application layer.
 
+mod boolean;
 mod brush;
+mod components;
+mod core_ops;
 mod extrude;
 mod fill;
 mod fuzzy;
+mod line;
 mod moving;
 mod options;
 mod pick;
@@ -25,10 +29,17 @@ use glam::IVec3;
 use rizxel_math::{BoundSize, Voxel, VoxelVolume};
 use serde::{Deserialize, Serialize};
 
+pub use boolean::{boolean_changes, BooleanOp};
 pub use brush::{brush_center, brush_positions, brush_stroke, line_cells, stamp_shape};
+pub use components::connected_components;
+pub use core_ops::{fill_hollows, hollow, hollow_advanced, MAX_CORE_CELLS};
 pub use extrude::{extrude_changes, extrude_region, extruded_cells, selection_region};
 pub use fill::{fill_cells, FillError};
 pub use fuzzy::fuzzy_select;
+pub use line::{
+    bezier_at, bezier_path, connect, line_cells_stamped, line_path, line_stroke, pixel_perfect,
+    polyline_path, solid,
+};
 pub use moving::{drag_axis, move_changes, move_selection_changes, resize_bounds};
 pub use options::*;
 pub use pick::pick_voxel;
@@ -36,12 +47,16 @@ pub use quality::{
     apply_op, color_distance, colors_match, filter_placeable, flood, FloodCapped, MAX_FLOOD_CELLS,
     NEIGHBORS_6,
 };
-pub use select::{select_box, selection_box};
-pub use shape::{shape_box, shape_cells};
+pub use select::{
+    box_cells, box_face_hit, fit_box, move_box, resize_face, select_box, selection_box,
+    MAX_LIVE_BOX,
+};
+pub use shape::{shape_box, shape_cells, shape_cells_toward};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
 pub use symmetry::{apply_symmetry, mirror};
 pub use transform::{
-    cells_box, flip, mirror as mirror_changes, relocate_changes, rotate90, Transform,
+    apply_transform, cells_box, flip, mirror as mirror_changes, relocate_changes, rotate90,
+    scale_cells, transform_cells, Transform, TransformParams, MAX_SCALE, MIN_SCALE,
 };
 pub use work_plane::WorkPlane;
 
@@ -73,10 +88,12 @@ pub struct ToolContext<'a> {
 pub enum Tool {
     Cursor,
     Brush,
+    Line,
     Shape,
     #[default]
     Plane,
     Move,
+    Transform,
     ColorPicker,
     Selection,
     FuzzySelect,
@@ -86,11 +103,18 @@ pub enum Tool {
 
 impl Tool {
     /// Primary drawing tools (above the toolbar separator).
-    pub const PRIMARY: [Tool; 4] = [Tool::Cursor, Tool::Brush, Tool::Shape, Tool::Plane];
+    pub const PRIMARY: [Tool; 5] = [
+        Tool::Cursor,
+        Tool::Brush,
+        Tool::Line,
+        Tool::Shape,
+        Tool::Plane,
+    ];
 
     /// Secondary manipulation tools (below the toolbar separator).
-    pub const SECONDARY: [Tool; 6] = [
+    pub const SECONDARY: [Tool; 7] = [
         Tool::Move,
+        Tool::Transform,
         Tool::ColorPicker,
         Tool::Selection,
         Tool::FuzzySelect,
@@ -102,9 +126,11 @@ impl Tool {
         match self {
             Tool::Cursor => "Cursor",
             Tool::Brush => "Brush",
+            Tool::Line => "Line",
             Tool::Shape => "Shape",
             Tool::Plane => "Plane",
             Tool::Move => "Move",
+            Tool::Transform => "Transform",
             Tool::ColorPicker => "Color Picker",
             Tool::Selection => "Selection",
             Tool::FuzzySelect => "Fuzzy Select",
@@ -114,12 +140,14 @@ impl Tool {
     }
 
     /// Every tool, in toolbar order.
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 12] = [
         Tool::Cursor,
         Tool::Brush,
+        Tool::Line,
         Tool::Shape,
         Tool::Plane,
         Tool::Move,
+        Tool::Transform,
         Tool::ColorPicker,
         Tool::Selection,
         Tool::FuzzySelect,
@@ -128,15 +156,18 @@ impl Tool {
     ];
 
     /// Single-letter keyboard shortcut (Goxel / Photoshop conventions:
-    /// B brush, S shape, P plane, M move, C color picker, R rectangle
-    /// select, W magic wand, E extrude, F fill, V cursor).
+    /// B brush, L line, S shape, P plane, M move, T transform, C color
+    /// picker, R rectangle select, W magic wand, E extrude, F fill, V
+    /// cursor).
     pub const fn shortcut(self) -> char {
         match self {
             Tool::Cursor => 'V',
             Tool::Brush => 'B',
+            Tool::Line => 'L',
             Tool::Shape => 'S',
             Tool::Plane => 'P',
             Tool::Move => 'M',
+            Tool::Transform => 'T',
             Tool::ColorPicker => 'C',
             Tool::Selection => 'R',
             Tool::FuzzySelect => 'W',
@@ -149,19 +180,27 @@ impl Tool {
     pub const fn hint(self) -> &'static str {
         match self {
             Tool::Cursor => "Hover to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
-            Tool::Brush => "Click and drag to paint. Shift: erase, Alt: pick color, Esc: cancel.",
+            Tool::Brush => {
+                "Drag to paint. Ctrl+click: line from the last click. Shift: erase, Alt: pick color."
+            }
+            Tool::Line => {
+                "Drag a line. Polyline: click points, right-click ends. Curve: drag, then drag to bend."
+            }
             Tool::Shape => {
-                "Drag on a face to draw a cube, sphere or cylinder. Shift: carve, Esc: cancel."
+                "Drag on a face to draw a cube, sphere, cylinder, pyramid or cone. Shift: carve, Esc: cancel."
             }
             Tool::Plane => "Click a face to place the work plane; other tools then draw on it.",
             Tool::Move => {
                 "Drag to move the selection (or the whole layer). Resize: drag to grow the bounds."
             }
+            Tool::Transform => {
+                "Rings rotate, arrows and corners scale, the box moves. Shift/Ctrl: finer steps. Enter: apply."
+            }
             Tool::ColorPicker => {
                 "Click a voxel to pick its color. Ctrl+click: copy it into the swatch."
             }
             Tool::Selection => {
-                "Drag a box to select. Shift: add, Ctrl: subtract, Esc: deselect, Del: delete."
+                "Click or drag a box, adjust it by its arrows or faces. Enter: apply. Shift: add, Ctrl: subtract."
             }
             Tool::FuzzySelect => {
                 "Click to select connected voxels of a similar color. Shift: add, Ctrl: subtract."
@@ -248,7 +287,7 @@ mod tests {
             .chain(&Tool::SECONDARY)
             .copied()
             .collect();
-        assert_eq!(all.len(), 10);
+        assert_eq!(all.len(), Tool::ALL.len());
         for (i, a) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(a), "duplicate tool {a:?}");
         }

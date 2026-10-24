@@ -30,15 +30,25 @@ fn stamp_box(center: IVec3, size: [u32; 3]) -> (IVec3, IVec3) {
 
 /// Normalized distance of cell `p` from the stamp center: `<= 1` inside.
 /// Cubes use the max norm, spheres the Euclidean norm and cylinders (Y up)
-/// the larger of the radial and height norms.
-fn stamp_distance(p: IVec3, lo: IVec3, hi: IVec3, shape: BrushShape) -> f32 {
+/// the larger of the radial and height norms. Pyramids and cones stand on
+/// the box face opposite `up` (a unit axis vector) and taper to a point
+/// toward `up`: the cross-section norm divided by the room left at that
+/// height.
+fn stamp_distance(p: IVec3, lo: IVec3, hi: IVec3, shape: BrushShape, up: IVec3) -> f32 {
     let center = (lo + hi).as_vec3() * 0.5;
     let half = (hi - lo).as_vec3() * 0.5;
-    let d = ((p.as_vec3() + Vec3::splat(0.5) - center) / half).abs();
+    let signed = (p.as_vec3() + Vec3::splat(0.5) - center) / half;
+    let d = signed.abs();
+    let axis = (0..3).find(|&a| up[a] != 0).unwrap_or(1);
+    let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+    // Cross-section half-width left at the cell's height above the base.
+    let room = || 1.0 - (signed[axis] * up[axis].signum() as f32 + 1.0) * 0.5;
     match shape {
         BrushShape::Cube => d.max_element(),
         BrushShape::Sphere => d.length(),
         BrushShape::Cylinder => (d.x * d.x + d.z * d.z).sqrt().max(d.y),
+        BrushShape::Pyramid => d[u].max(d[v]) / room(),
+        BrushShape::Cone => (d[u] * d[u] + d[v] * d[v]).sqrt() / room(),
     }
 }
 
@@ -50,16 +60,22 @@ pub fn stamp_shape(
     shape: BrushShape,
 ) -> impl Iterator<Item = IVec3> {
     let (lo, hi) = stamp_box(center, size);
-    box_shape(lo, hi, shape)
+    box_shape(lo, hi, shape, IVec3::Y)
 }
 
-/// Cells of `shape` inscribed in the box `lo..hi` (max exclusive).
-pub(super) fn box_shape(lo: IVec3, hi: IVec3, shape: BrushShape) -> impl Iterator<Item = IVec3> {
+/// Cells of `shape` inscribed in the box `lo..hi` (max exclusive); `up`
+/// points pyramids and cones (see [`stamp_distance`]).
+pub(super) fn box_shape(
+    lo: IVec3,
+    hi: IVec3,
+    shape: BrushShape,
+    up: IVec3,
+) -> impl Iterator<Item = IVec3> {
     (lo.z..hi.z).flat_map(move |z| {
         (lo.y..hi.y).flat_map(move |y| {
             (lo.x..hi.x).filter_map(move |x| {
                 let p = IVec3::new(x, y, z);
-                (stamp_distance(p, lo, hi, shape) <= 1.0).then_some(p)
+                (stamp_distance(p, lo, hi, shape, up) <= 1.0).then_some(p)
             })
         })
     })
@@ -81,7 +97,7 @@ fn hash01(p: IVec3) -> f32 {
 /// edge looks soft; it never drops the center.
 pub fn brush_positions(center: IVec3, opts: &BrushOptions, bounds: BoundSize) -> Vec<IVec3> {
     let (lo, hi) = stamp_box(center, opts.size);
-    let cells = soft_box_shape(lo, hi, opts.shape, opts.antialiasing);
+    let cells = soft_box_shape(lo, hi, opts.shape, opts.antialiasing, IVec3::Y);
     apply_symmetry(cells, bounds, opts.symmetry)
 }
 
@@ -92,15 +108,16 @@ pub(super) fn soft_box_shape(
     hi: IVec3,
     shape: BrushShape,
     antialiasing: u32,
+    up: IVec3,
 ) -> Vec<IVec3> {
     let min_half = ((hi - lo).min_element() as f32 * 0.5).max(0.5);
     let band = (antialiasing as f32 / min_half).min(1.0);
-    box_shape(lo, hi, shape)
+    box_shape(lo, hi, shape, up)
         .filter(|&p| {
             if band <= 0.0 {
                 return true;
             }
-            let d = stamp_distance(p, lo, hi, shape);
+            let d = stamp_distance(p, lo, hi, shape, up);
             d <= 1.0 - band || hash01(p) < (1.0 - d) / band
         })
         .collect()
@@ -139,11 +156,19 @@ fn on_surface(volume: &VoxelVolume, p: IVec3) -> bool {
 /// Changes for one brush segment from the previous stamp center `from`
 /// (`None` at the start of a drag) to `to`.
 pub fn brush_stroke(ctx: &ToolContext, from: Option<IVec3>, to: IVec3) -> Vec<VoxelChange> {
-    let opts = &ctx.options.brush;
     let centers = match from {
         Some(a) => line_cells(a, to),
         None => vec![to],
     };
+    stamp_path(ctx, centers)
+}
+
+/// Changes of one brush stamp at each of `centers` (Brush and Line).
+pub(super) fn stamp_path(
+    ctx: &ToolContext,
+    centers: impl IntoIterator<Item = IVec3>,
+) -> Vec<VoxelChange> {
+    let opts = &ctx.options.brush;
     let mut seen = HashSet::new();
     let mut cells = Vec::new();
     for c in centers {
