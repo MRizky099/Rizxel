@@ -28,6 +28,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 pub mod offscreen;
+pub mod pathtrace;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
@@ -268,6 +269,30 @@ fn rgba(c: Color32) -> [f32; 4] {
     [r, g, b, a].map(|v| v as f32 / 255.0)
 }
 
+/// Path-traced preview for this frame (Render mode).
+#[derive(Clone)]
+pub struct PtFrame {
+    pub inputs: pathtrace::PtInputs,
+    pub params: pathtrace::PtParams,
+    /// Samples already accumulated (0 restarts).
+    pub first: u32,
+    /// Samples to add this frame (0: show the image as it is).
+    pub count: u32,
+    /// Filter and tone-map the samples into the shown image this frame.
+    pub resolve: bool,
+    /// Upscale without filtering (pixelated renders).
+    pub nearest: bool,
+}
+
+impl std::fmt::Debug for PtFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PtFrame")
+            .field("first", &self.first)
+            .field("count", &self.count)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Render mode's look from the document's render settings: key light,
 /// ground and background (colors in sRGB, like the rest of the scene).
 #[derive(Clone, Debug, PartialEq)]
@@ -376,6 +401,8 @@ pub struct SceneFrame {
     /// Maps this frame's NDC y to the full image's (scale, offset): a tile
     /// of a large output keeps the background gradient of the whole image.
     pub screen_y: [f32; 2],
+    /// Path-traced preview instead of the raster scene.
+    pub pt: Option<PtFrame>,
 }
 
 impl SceneFrame {
@@ -613,6 +640,13 @@ pub struct ViewportRenderer {
     targets: Option<Targets>,
     line_count: u32,
     fill_count: u32,
+    /// Path tracer of the Render-mode preview (created on first use).
+    pt: Option<pathtrace::PathTracer>,
+    /// Blit of the path-traced image: tracer generation, nearest, group.
+    pt_blit: Option<(u64, bool, wgpu::BindGroup)>,
+    /// This frame shows the path-traced image.
+    pt_shown: bool,
+    linear_sampler: wgpu::Sampler,
 }
 
 impl ViewportRenderer {
@@ -1020,6 +1054,15 @@ impl ViewportRenderer {
             targets: None,
             line_count: 0,
             fill_count: 0,
+            pt: None,
+            pt_blit: None,
+            pt_shown: false,
+            linear_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("rizxel_blit_linear"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }),
         }
     }
 
@@ -1229,6 +1272,62 @@ impl ViewportRenderer {
         });
     }
 
+    /// Adds the frame's samples to the path-traced preview and prepares
+    /// its blit.
+    fn render_path_traced(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        f: &PtFrame,
+    ) {
+        let pt = self
+            .pt
+            .get_or_insert_with(|| pathtrace::PathTracer::new(device));
+        f.inputs.upload(pt, device, queue);
+        pt.resize(device, f.params.size());
+        if f.count > 0 || f.resolve {
+            pt.run(
+                device,
+                queue,
+                encoder,
+                &f.params,
+                f.first..f.first + f.count,
+                f.resolve,
+            );
+        }
+        let generation = pt.generation();
+        let stale = !matches!(
+            &self.pt_blit,
+            Some((g, n, _)) if *g == generation && *n == f.nearest
+        );
+        if stale {
+            if let Some(view) = pt.image_view() {
+                let sampler = if f.nearest {
+                    &self.sampler
+                } else {
+                    &self.linear_sampler
+                };
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("rizxel_pt_blit"),
+                    layout: &self.blit_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                });
+                self.pt_blit = Some((generation, f.nearest, group));
+            }
+        }
+        self.pt_shown = true;
+    }
+
     /// Uploads per-frame data and records the offscreen scene pass.
     pub(crate) fn render_scene(
         &mut self,
@@ -1239,6 +1338,11 @@ impl ViewportRenderer {
         size: [u32; 2],
         format: wgpu::TextureFormat,
     ) {
+        if let Some(pt) = &frame.pt {
+            self.render_path_traced(device, queue, encoder, pt);
+            return;
+        }
+        self.pt_shown = false;
         self.ensure_targets(device, size, format);
         queue.write_buffer(
             &self.uniform_buffer,
@@ -1374,6 +1478,14 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         let Some(renderer) = resources.get::<ViewportRenderer>() else {
             return;
         };
+        if renderer.pt_shown {
+            if let Some((_, _, group)) = &renderer.pt_blit {
+                pass.set_pipeline(&renderer.blit_pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            return;
+        }
         let Some(targets) = &renderer.targets else {
             return;
         };
@@ -1445,6 +1557,8 @@ mod tests {
         for (name, src) in [
             ("scene", include_str!("scene.wgsl")),
             ("blit", include_str!("blit.wgsl")),
+            ("pathtrace", pathtrace::TRACE_SOURCE),
+            ("denoise", pathtrace::RESOLVE_SOURCE),
         ] {
             let module = naga::front::wgsl::parse_str(src)
                 .unwrap_or_else(|e| panic!("{name}.wgsl: {}", e.emit_to_string(src)));
@@ -1527,6 +1641,7 @@ mod tests {
             references: Vec::new(),
             look: RenderLook::default(),
             screen_y: [1.0, 0.0],
+            pt: None,
         };
         let u = frame.uniform([100, 100]);
         assert_eq!(u.options[..2], [1.0, 0.0]);

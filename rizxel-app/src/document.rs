@@ -560,7 +560,7 @@ impl Document {
     }
 
     /// [`Document::with_visible_geometry`] with each volume's layer index.
-    fn with_visible_layers<R>(&self, f: impl FnOnce(&[(usize, &VoxelVolume)]) -> R) -> R {
+    pub fn with_visible_layers<R>(&self, f: impl FnOnce(&[(usize, &VoxelVolume)]) -> R) -> R {
         let mut cache = self.geometry.borrow_mut();
         if cache.as_ref().is_none_or(|c| c.revision != self.revision) {
             let layers = (0..self.data.layers.len())

@@ -43,7 +43,13 @@ impl RizxelApp {
             );
             rs.target_format
         });
-        let state = AppState::with_paths(rizxel_app::AppPaths::new());
+        let mut state = AppState::with_paths(rizxel_app::AppPaths::new());
+        // Compute shaders (not the GL backend) for the path tracer.
+        state.render_view.path_tracing = cc
+            .wgpu_render_state
+            .as_ref()
+            .is_some_and(|rs| crate::render::pathtrace::supported(&rs.adapter, &rs.device));
+        log::info!("path tracer available: {}", state.render_view.path_tracing);
         // Recovery files left by a session that did not exit cleanly.
         let ui = panels::UiState {
             recovery: state.recoverable(),

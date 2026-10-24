@@ -30,8 +30,10 @@ use rizxel_app::{
 };
 use rizxel_math::{BoundSize, ImageData, VoxelBox};
 
+use crate::render::pathtrace::{document_params, PtInputs, PtScene, PtTables, SkyCache};
 use crate::render::{
-    GpuMesh, LineInstance, RefPixels, ReferenceDraw, RenderLook, SceneFrame, ViewportCallback,
+    GpuMesh, LineInstance, PtFrame, RefPixels, ReferenceDraw, RenderLook, SceneFrame,
+    ViewportCallback,
 };
 use crate::theme;
 use crate::tool_input::{self, ToolInput};
@@ -83,6 +85,8 @@ pub struct MeshCache {
     /// `ImageData` keeps its bytes alive, so a key is never reused for
     /// another image while it is cached.
     images: HashMap<usize, (ImageData, Arc<RefPixels>)>,
+    /// Render mode's path-traced preview.
+    pub preview: PtPreview,
 }
 
 impl MeshCache {
@@ -207,6 +211,121 @@ impl MeshCache {
 
 /// Degrees of rotation per dragged pixel.
 const ORBIT_SPEED: f32 = 0.4;
+/// What the preview's samples were traced for: a change restarts them.
+type PreviewKey = (u64, u64, OrbitCamera, [u32; 2], Option<VoxelBox>);
+
+/// Render mode's path-traced preview: the scene on the CPU (rebuilt only
+/// when the meshes or the layer-to-material slots change) and the samples
+/// accumulated for the current view.
+#[derive(Default)]
+pub struct PtPreview {
+    /// Document id and mesh upload keys the scene was built from.
+    scene_key: Option<(u64, Vec<(u64, u64)>)>,
+    inputs: Option<PtInputs>,
+    sky: SkyCache,
+    key: Option<PreviewKey>,
+    samples: u32,
+    last_camera: Option<OrbitCamera>,
+    /// Half resolution until then (the camera moved).
+    moving_until: Option<std::time::Instant>,
+}
+
+/// How long the preview stays at half resolution after the camera moves.
+const MOVING_HALF_RES: std::time::Duration = std::time::Duration::from_millis(250);
+
+impl PtPreview {
+    /// The preview frame for `doc` in a viewport of `size_px` pixels:
+    /// adds a sample unless paused or done. Updates `view.samples_done`.
+    pub fn frame(
+        &mut self,
+        doc: &Document,
+        meshes: &DocMeshes,
+        camera: &OrbitCamera,
+        size_px: [u32; 2],
+        view: &mut rizxel_app::RenderView,
+    ) -> PtFrame {
+        let now = std::time::Instant::now();
+        if self.last_camera.is_some_and(|c| c != *camera) {
+            self.moving_until = Some(now + MOVING_HALF_RES);
+        }
+        self.last_camera = Some(*camera);
+        let moving = self.moving_until.is_some_and(|t| now < t);
+        let scale = view.scale * if moving { 0.5 } else { 1.0 };
+        let size = size_px.map(|v| ((v as f32 * scale).round() as u32).max(1));
+
+        let tables = PtTables::new(doc);
+        let mut keys = vec![meshes.opaque.key];
+        keys.extend(meshes.transparent.iter().map(|t| t.mesh.key));
+        let scene_key = (doc.id(), keys);
+        let sky = self.sky.get(&doc.data.render);
+        let rebuild = self.scene_key.as_ref() != Some(&scene_key)
+            || self
+                .inputs
+                .as_ref()
+                .is_none_or(|i| !i.tables.same_slots(&tables));
+        let inputs = match self.inputs.take() {
+            Some(mut i) if !rebuild => {
+                if *i.tables != tables {
+                    i.tables = Arc::new(tables);
+                }
+                i.sky = sky.clone();
+                i
+            }
+            _ => {
+                self.scene_key = Some(scene_key);
+                PtInputs {
+                    scene: Arc::new(PtScene::from_document(doc, &tables)),
+                    tables: Arc::new(tables),
+                    sky: sky.clone(),
+                }
+            }
+        };
+        self.inputs = Some(inputs.clone());
+
+        let key = (doc.id(), doc.revision(), *camera, size, doc.view_clip());
+        if self.key.as_ref() != Some(&key) {
+            self.key = Some(key);
+            self.samples = 0;
+        }
+        let target = doc.data.render.sample.samples;
+        let count = if view.paused || self.samples >= target {
+            0
+        } else {
+            1
+        };
+        let first = self.samples;
+        self.samples += count;
+        // The filter costs about a sample: after the first 16 samples the
+        // image is refreshed every 4th one (and at the last).
+        let resolve =
+            count > 0 && (self.samples <= 16 || self.samples % 4 == 0 || self.samples >= target);
+        view.samples_done = self.samples;
+        let params = document_params(
+            doc,
+            camera,
+            size,
+            false,
+            sky.as_ref().map(|(_, i)| i.as_ref()),
+        );
+        PtFrame {
+            inputs,
+            params,
+            first,
+            count,
+            resolve,
+            nearest: doc.data.render.sample.pixelated,
+        }
+    }
+
+    /// The preview still adds samples (keep repainting).
+    pub fn busy(&self, doc: &Document, view: &rizxel_app::RenderView) -> bool {
+        !view.paused && self.samples < doc.data.render.sample.samples
+            || self
+                .moving_until
+                .is_some_and(|t| std::time::Instant::now() < t)
+    }
+}
+
 /// Zoom exponent per scrolled point.
 const ZOOM_SPEED: f32 = 0.002;
 /// Width of the yellow bounds wireframe, in logical points.
@@ -443,19 +562,38 @@ pub fn show(
                 .map(|(a, b)| LineInstance::new(a, b, color, ppp)),
         );
     }
-    if let Some(meshes) = voxels {
+    if let Some(meshes) = &voxels {
         frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
-        frame.voxels = Some(meshes.opaque);
+        frame.voxels = Some(meshes.opaque.clone());
     }
     if let Some(doc) = state.doc().filter(|_| !render_mode) {
         frame.references = meshes.references(doc, bmin);
     }
+    let size_px = [
+        (rect.width() * ppp).round().max(1.0) as u32,
+        (rect.height() * ppp).round().max(1.0) as u32,
+    ];
+    // Render mode: the path-traced preview replaces the raster scene.
+    let traced = render_mode
+        && state.render_view.path_traced
+        && state.render_view.path_tracing
+        && target_format.is_some();
+    if traced {
+        if let (Some(doc), Some(m)) = (state.documents.get(state.active_doc), &voxels) {
+            let mut view = state.render_view;
+            frame.pt = Some(
+                meshes
+                    .preview
+                    .frame(doc, m, &state.camera, size_px, &mut view),
+            );
+            if meshes.preview.busy(doc, &view) {
+                ui.ctx().request_repaint();
+            }
+            state.render_view = view;
+        }
+    }
     match target_format {
         Some(format) => {
-            let size_px = [
-                (rect.width() * ppp).round().max(1.0) as u32,
-                (rect.height() * ppp).round().max(1.0) as u32,
-            ];
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 ViewportCallback {
@@ -569,6 +707,7 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
         references: Vec::new(),
         look,
         screen_y: [1.0, 0.0],
+        pt: None,
     }
 }
 
@@ -800,6 +939,7 @@ fn scene_frame(
         render_mode: state.view_mode == ViewMode::Render,
         look,
         screen_y: [1.0, 0.0],
+        pt: None,
         floor_grid: view.floor_grid,
         voxel_grid: view.voxel_grid,
         ao: view.ao(state.view_mode),

@@ -53,6 +53,7 @@ pub use recent::RecentFiles;
 pub use render_presets::{UserPreset, UserPresets};
 pub use rizxel_engine::Mesh;
 pub use rizxel_engine::VoxelizeOptions;
+pub use rizxel_io::hdr::{read_hdr, HdrImage};
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::png_io::RgbaImage;
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};

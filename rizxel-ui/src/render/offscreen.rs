@@ -44,8 +44,20 @@ pub fn read_rgba8(
     origin: [u32; 2],
     size: [u32; 2],
 ) -> Vec<u8> {
+    read_texture(device, queue, texture, origin, size, 4)
+}
+
+/// [`read_rgba8`] for any format of `bytes_per_pixel` bytes.
+pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    origin: [u32; 2],
+    size: [u32; 2],
+    bytes_per_pixel: u32,
+) -> Vec<u8> {
     let [w, h] = size;
-    let row = w * 4;
+    let row = w * bytes_per_pixel;
     let padded =
         row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
