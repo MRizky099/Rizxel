@@ -259,7 +259,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     "",
                     state.can_export(format),
                 ) {
-                    actions::export(state, format);
+                    actions::export(state, &mut ui_state.dialogs, format);
                 }
                 ui.label(
                     egui::RichText::new(format.export_note())
@@ -267,6 +267,21 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                         .color(theme::TEXT_DIM),
                 );
             }
+            ui.separator();
+            if menu_item(
+                ui,
+                icon::STACK,
+                "Slices (PNG)...",
+                "",
+                state.can_export(FileFormat::Obj),
+            ) {
+                ui_state.dialogs.slices = true;
+            }
+            ui.label(
+                egui::RichText::new("one image per voxel slice, into a folder")
+                    .size(10.0)
+                    .color(theme::TEXT_DIM),
+            );
         });
         ui.separator();
         // Goes through the app's close request, which asks about

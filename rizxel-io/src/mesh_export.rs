@@ -13,7 +13,8 @@ pub enum Pivot {
     BottomCenter,
     /// The exact center of the bounds.
     Center,
-    /// The bounds' minimum corner (all coordinates positive).
+    /// The bounds' minimum corner in the file's frame (all coordinates
+    /// positive).
     Corner,
 }
 
@@ -35,6 +36,15 @@ impl Pivot {
             Pivot::BottomCenter => Vec3::new((x / 2) as f32, 0.0, z.div_ceil(2) as f32),
             Pivot::Center => Vec3::new(x as f32, y as f32, z as f32) / 2.0,
             Pivot::Corner => Vec3::ZERO,
+        }
+    }
+
+    /// [`Self::origin`] for Z-up files (STL, PLY): there Rizxel's +Z points
+    /// to −Y, so the minimum corner is Rizxel's front-bottom-left one.
+    pub fn origin_zup(self, bounds: BoundSize) -> Vec3 {
+        match self {
+            Pivot::Corner => Vec3::new(0.0, 0.0, bounds.z() as f32),
+            _ => self.origin(bounds),
         }
     }
 }

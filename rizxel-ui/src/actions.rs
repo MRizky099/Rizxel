@@ -92,8 +92,17 @@ pub fn import_heightmap(dialogs: &mut Dialogs) {
     });
 }
 
-/// File ▸ Export ▸ `format`.
-pub fn export(state: &mut AppState, format: FileFormat) {
+/// File ▸ Export ▸ `format`. Mesh formats open their options first.
+pub fn export(state: &mut AppState, dialogs: &mut Dialogs, format: FileFormat) {
+    if format.is_mesh() {
+        dialogs.export = Some(format);
+    } else {
+        export_with(state, format, &rizxel_app::ExportOptions::default());
+    }
+}
+
+/// Asks for the file name, then exports with `options`.
+pub fn export_with(state: &mut AppState, format: FileFormat, options: &rizxel_app::ExportOptions) {
     let ext = format.extension();
     let file_name = state
         .doc()
@@ -109,7 +118,7 @@ pub fn export(state: &mut AppState, format: FileFormat) {
     if path.extension().is_none() {
         path.set_extension(ext);
     }
-    match state.export_active(&path, format) {
+    match state.export_active_with(&path, format, options) {
         Ok(msg) => state.status_message = Some(msg),
         Err(e) => {
             log::error!("export {}: {e}", path.display());

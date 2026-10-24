@@ -15,6 +15,7 @@
 //! - `--pivot bottom-center|center|corner`
 //! - `--gltf-colors vertex|texture`
 //! - `--obj-layout fast|magicavoxel` (default fast)
+//! - `--per-layer` writes one file per visible layer (OBJ, STL, PLY)
 //!
 //! Export Slices: `--slices x|y|z [--slice-scale N] input outdir` writes
 //! one PNG per slice into the folder `outdir`.
@@ -48,6 +49,10 @@ fn main() {
         let flag = arg.to_string_lossy().into_owned();
         if !flag.starts_with("--") {
             paths.push(PathBuf::from(arg));
+            continue;
+        }
+        if flag == "--per-layer" {
+            options.per_layer = true;
             continue;
         }
         let value = args

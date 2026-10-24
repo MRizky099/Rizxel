@@ -66,7 +66,7 @@ pub use format_rzxl::{
     MAX_MATERIALS, MAX_NAME_CHARS, MAX_REFERENCES, MAX_REFERENCE_BYTES, RZXL_EXTENSION,
     RZXL_VERSION,
 };
-pub use format_stl::{read_stl, write_stl, DEFAULT_STL_SCALE, STL_EXTENSION};
+pub use format_stl::{read_stl, write_stl, write_stl_with, DEFAULT_STL_SCALE, STL_EXTENSION};
 pub use format_vox::{read_vox, write_vox, VOX_EXTENSION};
 pub use heightmap::{project_from_heightmap, HeightmapOptions};
 pub use image_io::{

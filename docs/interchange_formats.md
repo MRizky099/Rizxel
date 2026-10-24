@@ -17,12 +17,36 @@ These formats are supported for exchange with other tools:
 | Heightmap (PNG, JPEG) | File ▸ Import ▸ Heightmap. New tab: brightness sets column heights; optional color image. | — |
 | glTF 2.0 `.glb` / `.gltf` | — | One node per visible layer, groups as parent nodes, linked clones as instances of one mesh. Vertex colors or a palette texture; layer materials as PBR. |
 
-Code: `rizxel-io/src/format_{vox,gox,obj,mtl,stl,gltf,qb,qef,qbt,ply}.rs`, `qubicle.rs`, `mesh_import.rs`, and
+Code: `rizxel-io/src/format_{vox,gox,obj,mtl,stl,gltf,qb,qef,qbt,ply}.rs`, `qubicle.rs`, `heightmap.rs`, `slices.rs`, `mesh_export.rs`, `mesh_import.rs`, and
 `rizxel-app/src/interchange.rs`. To convert files from the command line:
 
 ```text
 cargo run -p rizxel-app --example convert -- input.vox output.obj
+cargo run -p rizxel-app --example convert -- --obj-layout magicavoxel --pivot corner input.qb output.obj
+cargo run -p rizxel-app --example convert -- --slices y --slice-scale 4 input.vox slices/
 ```
+
+`convert` takes every format in the table by extension, plus `--scale`,
+`--pivot bottom-center|center|corner`, `--obj-layout fast|magicavoxel`,
+`--gltf-colors vertex|texture`, `--per-layer`, `--slices x|y|z`,
+`--slice-scale N`, `--heightmap MAX`, `--resolution N` and
+`--turn x|y|z`.
+
+## Mesh export options
+
+File ▸ Export ▸ OBJ, STL, PLY or glTF opens one options dialog before the
+save dialog. Settings are kept for the session.
+
+| Option | Formats | Values |
+|---|---|---|
+| Scale | all | units per voxel; defaults OBJ 0.1, PLY 0.1, glTF 0.1 m, STL 1 mm |
+| Pivot | all | *Bottom center* (default: X and Z centered with integer halves, standing on the floor, MagicaVoxel's placement), *Center* (center of the bounds), *Corner* (minimum corner in the file's frame, all coordinates positive) |
+| Layout | OBJ | *Fast load* (default) or *MagicaVoxel* |
+| Colors | glTF | *Vertex colors* (default) or *Palette texture* |
+| Files | OBJ, STL, PLY | *One file per visible layer*: `name_<layer>.ext`, all in the same frame so they line up |
+
+Hidden faces between voxels are always removed and same-color faces are
+always merged, so there is no culling option.
 
 ## Axes
 

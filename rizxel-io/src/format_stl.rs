@@ -1,7 +1,7 @@
 //! STL export (binary) and import (binary or ASCII).
 //!
 //! - **Export**: Z-up, as 3D printers and slicers expect, centered on X/Y
-//!   and standing on Z = 0. One voxel is `scale` units (default 1 mm).
+//!   and standing on Z = 0 by default (or placed by a [`Pivot`]). One voxel is `scale` units (default 1 mm).
 //!   Faces are the same merged quads as the OBJ export, split into
 //!   outward-facing triangles. STL has no standard color, so none is
 //!   written.
@@ -15,6 +15,7 @@ use rizxel_engine::Triangle;
 use rizxel_math::{BoundSize, Rgba8, VoxelVolume};
 
 use crate::format_obj::zup_faces;
+use crate::mesh_export::Pivot;
 use crate::RzxlError;
 
 pub const STL_EXTENSION: &str = "stl";
@@ -22,11 +23,23 @@ pub const STL_EXTENSION: &str = "stl";
 pub const DEFAULT_STL_SCALE: f32 = 1.0;
 const MAX_TRIANGLES: usize = 40_000_000;
 
-/// Encodes the visible model as binary STL.
+/// Encodes the visible model as binary STL, centered on X/Y and standing
+/// on Z = 0.
 pub fn write_stl(
     volume: &VoxelVolume,
     bounds: BoundSize,
     scale: f32,
+) -> Result<Vec<u8>, RzxlError> {
+    write_stl_with(volume, bounds, scale, Pivot::default().origin(bounds))
+}
+
+/// [`write_stl`] with the Rizxel point `origin` (see [`Pivot`]) at
+/// `(0, 0, 0)`.
+pub fn write_stl_with(
+    volume: &VoxelVolume,
+    bounds: BoundSize,
+    scale: f32,
+    origin: Vec3,
 ) -> Result<Vec<u8>, RzxlError> {
     if volume.is_empty() {
         return Err(RzxlError::Invalid(
@@ -38,8 +51,18 @@ pub fn write_stl(
     } else {
         DEFAULT_STL_SCALE
     };
+    let origin = if origin.is_finite() {
+        origin
+    } else {
+        Vec3::ZERO
+    };
     let faces = zup_faces(volume, bounds);
-    let half = IVec3::new(faces.size.x / 2, faces.size.y / 2, 0);
+    let depth = bounds.z() as i32;
+    // Z-up corner -> Rizxel corner (x, z, depth - y) -> pivot and scale -> Z-up.
+    let place = |g: IVec3| {
+        let r = (IVec3::new(g.x, g.z, depth - g.y).as_vec3() - origin) * scale;
+        Vec3::new(r.x, -r.z, r.y)
+    };
     let count: usize = faces.groups.iter().map(|g| g.triangles.len()).sum();
 
     let mut out = Vec::with_capacity(84 + 50 * count);
@@ -58,7 +81,7 @@ pub fn write_stl(
         for (t, _) in &g.triangles {
             put(&mut out, n);
             for &i in t {
-                put(&mut out, (g.vertices[i] - half).as_vec3() * scale);
+                put(&mut out, place(g.vertices[i]));
             }
             out.extend_from_slice(&[0, 0]); // attribute byte count
         }

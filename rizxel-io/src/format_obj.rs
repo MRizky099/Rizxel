@@ -206,8 +206,6 @@ pub fn write_obj_file(mesh: &Mesh, path: &Path) -> io::Result<()> {
 /// Exposed faces of a model in the Z-up (MagicaVoxel) frame, grouped by
 /// direction in the order −X, +X, −Y, +Y, −Z, +Z.
 pub(crate) struct ZupFaces {
-    /// Z-up model size.
-    pub size: IVec3,
     pub groups: Vec<FaceGroup>,
 }
 
@@ -264,7 +262,7 @@ pub(crate) fn zup_faces(volume: &VoxelVolume, bounds: BoundSize) -> ZupFaces {
             });
         }
     }
-    ZupFaces { size, groups }
+    ZupFaces { groups }
 }
 
 // ------------------------------------------------ MagicaVoxel-style OBJ
