@@ -11,7 +11,7 @@ These formats are supported for exchange with other tools:
 | `.mtl` | Replaces the active document's palette and materials (undoable). A 256×1 palette texture maps one to one; otherwise the `Kd` colors are used in file order. | `.mtl` + palette `.png`. |
 | STL `.stl` | New tab. Binary or ASCII, Z-up, voxelized like OBJ, in one color. | Binary, Z-up, centered on X/Y, 1 voxel = 1 mm. |
 | Qubicle `.qb` | New tab. One layer per matrix at its position; RGBA or BGRA, RLE or raw, either Z orientation. True colors are reduced to the palette. | One RLE matrix per visible layer, cut to its voxels, at its position. |
-| Qubicle `.qbt` | New tab. Matrices as layers; models and compounds as groups. | Matrices per visible layer, groups as compounds. |
+| Qubicle `.qbt` | New tab. Matrices as layers; models and compounds as groups. | Matrices per visible layer, groups as nested models. |
 | Qubicle `.qef` | New tab. One layer; up to 255 colors keep their order. | Merged visible layers at the full bounds size, every palette color. |
 | Stanford `.ply` | New tab. ASCII or binary, Z-up, voxelized like STL, with vertex colors. | Binary little-endian, Z-up, vertex colors, 1 voxel = 0.1. |
 | Heightmap (PNG, JPEG) | File ▸ Import ▸ Heightmap. New tab: brightness sets column heights; optional color image. | — |
@@ -29,7 +29,7 @@ cargo run -p rizxel-app --example convert -- --slices y --slice-scale 4 input.vo
 `convert` takes every format in the table by extension, plus `--scale`,
 `--pivot bottom-center|center|corner`, `--obj-layout fast|magicavoxel`,
 `--gltf-colors vertex|texture`, `--per-layer`, `--slices x|y|z`,
-`--slice-scale N`, `--heightmap MAX`, `--resolution N` and
+`--slice-scale N`, `--heightmap MAX` (with `--color IMAGE`), `--resolution N` and
 `--turn x|y|z`.
 
 ## Mesh export options
@@ -191,7 +191,9 @@ check pixel colors in CI.
 
 ## Qubicle formats
 
-All three are Y-up like Rizxel. Each matrix becomes a layer at its
+All three are Y-up like Rizxel, and Qubicle's own frame is Rizxel's (checked
+in Qubicle 3.1 with an asymmetric model: the front stays at the front and
+nothing is mirrored). Each matrix becomes a layer at its
 position; the bounds are the union of the matrix boxes, moved to the origin
 when a matrix lies below zero, and refused above 256 per axis. Exports
 write the visible layers only (Qubicle files have no hidden flag), with
@@ -203,21 +205,26 @@ the same bytes.
   matrix a `u8` name length, name, size, position and voxels (X fastest,
   then Y, then Z; RLE per Z slice with `2` = run and `6` = end of slice).
   Alpha 0 is empty; with the visibility mask any non-zero alpha is solid.
-  Left-handed files are mirrored on Z (`z → −z − 1`). Rizxel writes RGBA,
-  right-handed, RLE, no mask.
+  Qubicle shows files flagged left-handed (0, its default) the way Rizxel
+  does, so those load as they are; right-handed files are mirrored on Z
+  (`z → −z − 1`). Rizxel writes RGBA, left-handed, RLE, no mask.
 - **`.qbt`**: `QB 2`, a color map (with colors, a voxel's red byte is an
   index into it) and a node tree: matrix (zlib voxels, Y fastest, then Z,
   then X; mask 0 = empty), model (children) and compound (a merged matrix
   plus children). Models and compounds become groups; a compound's own
   merged matrix is skipped when it has children. Rizxel writes true colors,
-  the face mask, and every group as a compound holding the merge of its
-  content. Unknown node types are skipped. Read and written right-handed.
+  the face mask, a pivot at each matrix's center, and every group as a
+  nested model. Qubicle draws a compound from its own merged matrix,
+  placed by rules that depend on its pivot and size, while model children
+  keep their positions; models have no name, so group names are lost.
+  Qubicle draws `.qbt` faces from the mask bits, so they must be right.
+  Unknown node types are skipped.
 - **`.qef`**: text: three header lines, the size, the colors (`r g b`,
   0..1) and one `x y z index mask` line per voxel. Up to 255 colors become
   the palette in file order, so indices survive; more are reduced. The
   export writes every palette color, the full bounds size (so the model
-  keeps its place) and the face mask (bit 0 solid, then left, right, top,
-  bottom, front, back).
+  keeps its place) and the face mask (1 solid, 2 −X, 4 +X, 8 +Y, 16 −Y,
+  32 −Z back, 64 +Z front; the same bits as `.qbt`).
 
 Hostile inputs are refused with a message: sides of 0 or over 256,
 truncated data or RLE, runs past their slice, name lengths past the end,
@@ -276,6 +283,8 @@ mesh, and that the triangles cover exactly the OBJ export's surface.
   ignored on import.
 - glTF export writes no animation, cameras or lights. Bounds still cap
   models at 256 voxels per axis.
+- `.vox` scene nodes are written in id order: MagicaVoxel shows an empty
+  scene when a group node comes after its children.
 - `.vox` export bakes linked clones into their own models. MagicaVoxel
   instancing would place the whole moved model box and grow the bounds on
   re-import. Use `.gox` or `.rzxl` to keep clones linked.

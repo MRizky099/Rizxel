@@ -12,10 +12,13 @@
 //!   the union of the matrix boxes (moved to the origin when a matrix lies
 //!   below zero). Alpha 0 is empty; with the visibility mask the alpha is a
 //!   face mask and any non-zero value is solid. True colors are reduced to
-//!   the palette. Left-handed files are mirrored on Z into Rizxel's
-//!   right-handed frame.
+//!   the palette. Qubicle shows a file flagged left-handed (0) the way
+//!   Rizxel does (checked in Qubicle 3.1: the front of a model stays at the
+//!   front, nothing mirrored), so those load as they are; right-handed (1)
+//!   files are mirrored on Z.
 //! - **Export**: one RLE-compressed RGBA matrix per visible layer, cut to its
-//!   voxels, right-handed, at its position in the bounds. Re-exporting a
+//!   voxels, flagged left-handed (Qubicle's own default), at its position
+//!   in the bounds. Re-exporting a
 //!   file Rizxel wrote gives the same bytes.
 
 use glam::IVec3;
@@ -46,9 +49,9 @@ pub fn read_qb(bytes: &[u8], name: &str) -> Result<ProjectFile, RzxlError> {
         1 => true,
         n => return Err(r.invalid(format!("unknown color format {n}"))),
     };
-    let left_handed = match r.u32()? {
-        0 => true,
-        1 => false,
+    let mirrored = match r.u32()? {
+        0 => false,
+        1 => true,
         n => return Err(r.invalid(format!("unknown Z-axis orientation {n}"))),
     };
     let compressed = r.u32()? != 0;
@@ -132,7 +135,7 @@ pub fn read_qb(bytes: &[u8], name: &str) -> Result<ProjectFile, RzxlError> {
             cells,
             group: None,
         };
-        matrices.push(if left_handed { m.mirrored_z() } else { m });
+        matrices.push(if mirrored { m.mirrored_z() } else { m });
     }
     project_from_matrices(name, matrices, &[], None)
 }
@@ -141,7 +144,7 @@ pub fn read_qb(bytes: &[u8], name: &str) -> Result<ProjectFile, RzxlError> {
 pub fn write_qb(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
     let matrices = export_matrices(scene)?;
     let mut out = Vec::new();
-    for v in [VERSION, 0, 1, 1, 0, matrices.len() as u32] {
+    for v in [VERSION, 0, 0, 1, 0, matrices.len() as u32] {
         put_u32(&mut out, v);
     }
     let rgba = |v| {
@@ -217,7 +220,7 @@ mod tests {
         }
     }
 
-    /// Writes a hand-made file: `flags` = (bgra, right-handed, compressed,
+    /// Writes a hand-made file: `flags` = (bgra, Z orientation, compressed,
     /// mask), one matrix, raw `values` (RLE stream or dense colors).
     fn file(flags: [u32; 4], size: [u32; 3], pos: [i32; 3], values: &[u32]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -296,19 +299,19 @@ mod tests {
         let red = u32::from_le_bytes([255, 0, 0, 255]);
         let red_bgra = u32::from_le_bytes([0, 0, 255, 255]);
         // 1×1×2 matrix, voxel at z = 0 only.
-        for (flags, color) in [([0, 1, 0, 0], red), ([1, 1, 0, 0], red_bgra)] {
+        for (flags, color) in [([0, 0, 0, 0], red), ([1, 0, 0, 0], red_bgra)] {
             let p = read_qb(&file(flags, [1, 1, 2], [0, 0, 0], &[color, 0]), "t").unwrap();
             assert_eq!(cells(&p), vec![(IVec3::ZERO, Rgba8::rgb(255, 0, 0))]);
         }
-        // Left-handed: the same file mirrors to z = 1.
-        let p = read_qb(&file([0, 0, 0, 0], [1, 1, 2], [0, 0, 0], &[red, 0]), "t").unwrap();
+        // Right-handed: the same file mirrors to z = 1.
+        let p = read_qb(&file([0, 1, 0, 0], [1, 1, 2], [0, 0, 0], &[red, 0]), "t").unwrap();
         assert_eq!(
             cells(&p),
             vec![(IVec3::new(0, 0, 1), Rgba8::rgb(255, 0, 0))]
         );
         // Visibility mask: any non-zero alpha is solid.
         let masked = u32::from_le_bytes([0, 255, 0, 0x3e]);
-        let p = read_qb(&file([0, 1, 0, 1], [1, 1, 1], [0, 0, 0], &[masked]), "t").unwrap();
+        let p = read_qb(&file([0, 0, 0, 1], [1, 1, 1], [0, 0, 0], &[masked]), "t").unwrap();
         assert_eq!(cells(&p).len(), 1);
     }
 
@@ -318,7 +321,7 @@ mod tests {
         // 3×1×1 at x = 2: a run of 3.
         let p = read_qb(
             &file(
-                [0, 1, 1, 0],
+                [0, 0, 1, 0],
                 [3, 1, 1],
                 [2, 0, 0],
                 &[CODE_FLAG, 3, c, NEXT_SLICE_FLAG],
@@ -335,16 +338,16 @@ mod tests {
     fn hostile_inputs_are_refused() {
         let c = u32::from_le_bytes([1, 2, 3, 255]);
         // Matrix side over 256.
-        assert!(read_qb(&file([0, 1, 0, 0], [300, 1, 1], [0, 0, 0], &[]), "t").is_err());
+        assert!(read_qb(&file([0, 0, 0, 0], [300, 1, 1], [0, 0, 0], &[]), "t").is_err());
         // Zero side.
-        assert!(read_qb(&file([0, 1, 0, 0], [0, 1, 1], [0, 0, 0], &[]), "t").is_err());
+        assert!(read_qb(&file([0, 0, 0, 0], [0, 1, 1], [0, 0, 0], &[]), "t").is_err());
         // Truncated raw data.
-        assert!(read_qb(&file([0, 1, 0, 0], [4, 4, 4], [0, 0, 0], &[c]), "t").is_err());
+        assert!(read_qb(&file([0, 0, 0, 0], [4, 4, 4], [0, 0, 0], &[c]), "t").is_err());
         // Truncated RLE (no end marker), and a run past the slice.
-        assert!(read_qb(&file([0, 1, 1, 0], [2, 1, 1], [0, 0, 0], &[c]), "t").is_err());
+        assert!(read_qb(&file([0, 0, 1, 0], [2, 1, 1], [0, 0, 0], &[c]), "t").is_err());
         assert!(read_qb(
             &file(
-                [0, 1, 1, 0],
+                [0, 0, 1, 0],
                 [2, 1, 1],
                 [0, 0, 0],
                 &[CODE_FLAG, 99, c, NEXT_SLICE_FLAG]
@@ -354,22 +357,22 @@ mod tests {
         .is_err());
         // Too many literal values for the slice.
         assert!(read_qb(
-            &file([0, 1, 1, 0], [1, 1, 1], [0, 0, 0], &[c, c, NEXT_SLICE_FLAG]),
+            &file([0, 0, 1, 0], [1, 1, 1], [0, 0, 0], &[c, c, NEXT_SLICE_FLAG]),
             "t"
         )
         .is_err());
         // A name length past the end of the file.
-        let mut bad = file([0, 1, 0, 0], [1, 1, 1], [0, 0, 0], &[c]);
+        let mut bad = file([0, 0, 0, 0], [1, 1, 1], [0, 0, 0], &[c]);
         bad[24] = 255;
         assert!(read_qb(&bad, "t").is_err());
         // Unknown flags, huge matrix counts, empty input.
-        assert!(read_qb(&file([7, 1, 0, 0], [1, 1, 1], [0, 0, 0], &[c]), "t").is_err());
-        let mut many = file([0, 1, 0, 0], [1, 1, 1], [0, 0, 0], &[c]);
+        assert!(read_qb(&file([7, 0, 0, 0], [1, 1, 1], [0, 0, 0], &[c]), "t").is_err());
+        let mut many = file([0, 0, 0, 0], [1, 1, 1], [0, 0, 0], &[c]);
         many[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(read_qb(&many, "t").is_err());
         assert!(read_qb(&[], "t").is_err());
         // Matrices too far apart for the bounds.
-        let mut far = file([0, 1, 0, 0], [1, 1, 1], [0, 0, 0], &[c]);
+        let mut far = file([0, 0, 0, 0], [1, 1, 1], [0, 0, 0], &[c]);
         far[20..24].copy_from_slice(&2u32.to_le_bytes());
         far.extend_from_slice(&[1, b'n']);
         for v in [1u32, 1, 1] {

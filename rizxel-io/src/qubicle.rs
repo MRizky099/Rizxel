@@ -2,9 +2,11 @@
 //! reader, matrices in Rizxel's frame, and the conversions between
 //! matrices and projects or export scenes.
 //!
-//! Qubicle is Y-up like Rizxel. A right-handed matrix maps straight onto
-//! Rizxel cells (`position + local`); a left-handed one is mirrored on Z
-//! (`z → -z - 1`), which [`QMatrix::mirrored_z`] applies.
+//! Qubicle is Y-up like Rizxel, and its own frame (what `.qbt`, `.qef` and
+//! `.qb` files flagged left-handed hold) maps straight onto Rizxel cells
+//! (`position + local`). `.qb` files flagged right-handed are mirrored on Z
+//! (`z → -z - 1`), which [`QMatrix::mirrored_z`] applies. Checked against
+//! Qubicle 3.1: an asymmetric model keeps its front and its sides.
 
 use std::collections::HashMap;
 
@@ -117,7 +119,8 @@ pub(crate) struct QMatrix {
 }
 
 impl QMatrix {
-    /// The matrix of a left-handed file in Rizxel's frame: Z is mirrored.
+    /// The matrix of a right-handed `.qb` file in Rizxel's frame: Z is
+    /// mirrored.
     pub fn mirrored_z(mut self) -> Self {
         self.pos.z = -self.pos.z - self.size.z;
         let depth = self.size.z;
@@ -317,7 +320,9 @@ pub(crate) fn color_of(palette: &Palette, v: Voxel) -> Rgba8 {
 }
 
 /// Face mask of the voxel at `p`: bit 0 set for any voxel, then one bit
-/// per open side (Qubicle's order: left, right, top, bottom, front, back).
+/// per open side: 2 = −X (left), 4 = +X, 8 = +Y (top), 16 = −Y, 32 = −Z
+/// (back), 64 = +Z (front). Qubicle draws `.qbt` faces from these bits
+/// (checked in Qubicle 3.1, one probe voxel per bit).
 pub(crate) fn face_mask(volume: &VoxelVolume, p: IVec3) -> u32 {
     let open = |d: IVec3| volume.get(p + d) == EMPTY_VOXEL;
     let sides = [
@@ -325,8 +330,8 @@ pub(crate) fn face_mask(volume: &VoxelVolume, p: IVec3) -> u32 {
         IVec3::X,
         IVec3::Y,
         IVec3::NEG_Y,
-        IVec3::Z,
         IVec3::NEG_Z,
+        IVec3::Z,
     ];
     sides
         .iter()
@@ -400,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn left_handed_matrices_mirror_z() {
+    fn mirrored_matrices_flip_z() {
         let m = matrix(
             IVec3::new(0, 0, 2),
             IVec3::new(1, 1, 3),
@@ -409,8 +414,19 @@ mod tests {
         .mirrored_z();
         assert_eq!(m.pos.z, -5);
         assert_eq!(m.cells[0].0.z, 2);
-        // Cell z = 2 (left-handed) -> -3 (right-handed) = -5 + 2.
+        // Cell z = 2 in the file -> -3 in Rizxel = -5 + 2.
         assert_eq!(m.pos.z + m.cells[0].0.z, -2 - 1);
+    }
+
+    #[test]
+    fn face_mask_bits_follow_qubicle() {
+        let mut v = VoxelVolume::new(BoundSize::new(4, 4, 4));
+        v.set(IVec3::ONE, 1);
+        assert_eq!(face_mask(&v, IVec3::ONE), 127);
+        // A neighbour in front (+Z) closes bit 64, one above (+Y) bit 8.
+        v.set(IVec3::new(1, 1, 2), 1);
+        v.set(IVec3::new(1, 2, 1), 1);
+        assert_eq!(face_mask(&v, IVec3::ONE), 127 - 64 - 8);
     }
 
     #[test]

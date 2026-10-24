@@ -12,17 +12,24 @@
 //! | 1 | Model | `u32` child count, child nodes |
 //! | 2 | Compound | a matrix body (the merge of its children), `u32` child count, child nodes |
 //!
+//! Checked in Qubicle 3.1: a matrix sits at its position whatever its pivot,
+//! children of nested models keep their absolute positions, Qubicle draws a
+//! compound from its own merged matrix (placed by rules that also depend on
+//! its pivot and size), and faces are drawn from the mask bits (see
+//! [`crate::qubicle::face_mask`]).
+//!
 //! Matrix data is 4 bytes per voxel (`r g b mask`, mask 0 = empty) with Y
 //! fastest, then Z, then X.
 //!
 //! - **Import**: matrices become layers at their positions (bounds as for
 //!   `.qb`); nested models and compounds become groups, and a compound's
-//!   own merged matrix is skipped when it has children. Read as
-//!   right-handed. Unknown node types are skipped.
+//!   own merged matrix is skipped when it has children. Qubicle's frame is
+//!   Rizxel's, so nothing is mirrored. Unknown node types are skipped.
 //! - **Export**: a root model; each visible layer is a matrix cut to its
-//!   voxels, each group holding exported layers is a compound with the
-//!   merge of its content. No color map (true colors) and the face mask of
-//!   every voxel. Re-exporting a file Rizxel wrote gives the same bytes.
+//!   voxels (pivot at its center), each group holding exported layers a
+//!   nested model. Models have no name, so group names are not kept. No
+//!   color map (true colors) and the face mask of every voxel. Re-exporting
+//!   a file Rizxel wrote gives the same bytes.
 
 use std::io::Read;
 
@@ -58,7 +65,8 @@ struct Tree {
 
 /// One matrix body: name, position and voxels (scale and pivot are read
 /// and ignored).
-fn read_matrix(r: &mut ByteReader, tree: &mut Tree) -> Result<QMatrix, RzxlError> {
+/// Returns the matrix and its pivot.
+fn read_matrix(r: &mut ByteReader, tree: &mut Tree) -> Result<(QMatrix, Vec3), RzxlError> {
     let len = r.u32()? as usize;
     if len > MAX_NAME_BYTES {
         return Err(r.invalid(format!("node name of {len} bytes")));
@@ -68,9 +76,7 @@ fn read_matrix(r: &mut ByteReader, tree: &mut Tree) -> Result<QMatrix, RzxlError
     for _ in 0..3 {
         r.u32()?; // local scale
     }
-    for _ in 0..3 {
-        r.f32()?; // pivot
-    }
+    let pivot = Vec3::new(r.f32()?, r.f32()?, r.f32()?);
     let size = r.size()?;
     let packed = r.u32()? as usize;
     let data = r.bytes(packed)?;
@@ -107,13 +113,16 @@ fn read_matrix(r: &mut ByteReader, tree: &mut Tree) -> Result<QMatrix, RzxlError
     if tree.cells > MAX_CELLS {
         return Err(r.invalid("too many voxels"));
     }
-    Ok(QMatrix {
-        name,
-        pos,
-        size,
-        cells,
-        group: None,
-    })
+    Ok((
+        QMatrix {
+            name,
+            pos,
+            size,
+            cells,
+            group: None,
+        },
+        pivot,
+    ))
 }
 
 fn read_children(
@@ -148,7 +157,8 @@ fn read_node(
     let size = r.u32()? as usize;
     match kind {
         NODE_MATRIX => {
-            let m = read_matrix(r, tree)?;
+            // Plain matrices sit at their position whatever the pivot.
+            let (m, _) = read_matrix(r, tree)?;
             tree.matrices.push(QMatrix { group, ..m });
         }
         NODE_MODEL => {
@@ -165,7 +175,7 @@ fn read_node(
             read_children(r, tree, depth, inner)?;
         }
         NODE_COMPOUND => {
-            let merged = read_matrix(r, tree)?;
+            let (merged, pivot) = read_matrix(r, tree)?;
             let g = tree.groups.len();
             tree.groups.push(QGroup {
                 name: merged.name.clone(),
@@ -175,8 +185,15 @@ fn read_node(
             read_children(r, tree, depth, Some(g))?;
             if tree.matrices.len() == before {
                 // No children: the compound's own voxels are its content.
+                // Qubicle places a compound at `position - pivot`.
+                let shift = if pivot.is_finite() && pivot.abs().max_element() <= 1024.0 {
+                    pivot.round().as_ivec3()
+                } else {
+                    IVec3::ZERO
+                };
                 tree.matrices.push(QMatrix {
                     group: Some(g),
+                    pos: merged.pos - shift,
                     ..merged
                 });
             } else {
@@ -251,6 +268,7 @@ fn matrix_body(
     volume: &VoxelVolume,
     lo: IVec3,
     hi: IVec3,
+    pivot: Vec3,
     palette: &Palette,
 ) -> Result<Vec<u8>, RzxlError> {
     let size = hi - lo;
@@ -260,7 +278,7 @@ fn matrix_body(
     out.extend_from_slice(name);
     put_ivec3(&mut out, lo);
     put_ivec3(&mut out, IVec3::ONE);
-    for c in (size.as_vec3() / 2.0 + Vec3::ZERO).to_array() {
+    for c in (pivot + Vec3::ZERO).to_array() {
         out.extend_from_slice(&c.to_le_bytes());
     }
     put_ivec3(&mut out, size);
@@ -300,7 +318,8 @@ fn children(
             continue;
         }
         if let Some((lo, hi)) = l.volume.occupied_bounds() {
-            let body = matrix_body(&l.name, &l.volume, lo, hi, &scene.palette)?;
+            let pivot = (hi - lo).as_vec3() / 2.0;
+            let body = matrix_body(&l.name, &l.volume, lo, hi, pivot, &scene.palette)?;
             items.push((2 * i + 1, node(NODE_MATRIX, body)));
         }
     }
@@ -313,39 +332,16 @@ fn children(
             if kids.is_empty() {
                 continue;
             }
-            let merged = merged_group(scene, g);
-            let Some((lo, hi)) = merged.occupied_bounds() else {
-                continue;
-            };
-            let mut body = matrix_body(&group.name, &merged, lo, hi, &scene.palette)?;
+            // A nested model, not a compound: Qubicle keeps model children
+            // where they are, but redraws a compound from its own matrix.
+            let mut body = Vec::new();
             put_u32(&mut body, kids.len() as u32);
             kids.iter().for_each(|k| body.extend_from_slice(k));
-            items.push((2 * group.order, node(NODE_COMPOUND, body)));
+            items.push((2 * group.order, node(NODE_MODEL, body)));
         }
     }
     items.sort_by_key(|(k, _)| *k);
     Ok(items.into_iter().map(|(_, n)| n).collect())
-}
-
-/// Visible layers inside group `g` (at any depth) merged into one volume.
-fn merged_group(scene: &ExportScene, g: usize) -> VoxelVolume {
-    let inside = |mut at: Option<usize>| {
-        for _ in 0..=MAX_GROUP_DEPTH {
-            match at {
-                Some(x) if x == g => return true,
-                Some(x) => at = scene.groups.get(x).and_then(|gr| gr.parent),
-                None => return false,
-            }
-        }
-        false
-    };
-    let mut out = VoxelVolume::new(scene.bounds);
-    for l in scene.layers.iter().filter(|l| l.visible && inside(l.group)) {
-        for (p, v) in l.volume.iter() {
-            out.set(p, v);
-        }
-    }
-    out
 }
 
 /// Encodes the visible layers and their groups as a `.qbt` file.
@@ -457,7 +453,8 @@ mod tests {
         assert_eq!(&bytes[..4], b"QB 2");
         let p = read_qbt(&bytes, "t").unwrap();
         let names: Vec<&str> = p.layers.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names, ["Base", "Upper", "Arm", "Hat"]);
+        // The group comes back as a model, which has no name.
+        assert_eq!(names, ["Base", "Model 1", "Arm", "Hat"]);
         assert!(matches!(p.layers[1].kind, LayerKind::Group { .. }));
         assert_eq!(p.layers[2].parent, Some(p.layers[1].id));
         assert_eq!(p.layers[0].parent, None);
@@ -515,6 +512,29 @@ mod tests {
         let p = read_qbt(&file(&[], &matrix_node("m", [2, 1, 1], &raw)), "t").unwrap();
         let v = volume_from_runs(p.bounds, &p.layers[0].voxels).unwrap();
         assert_ne!(v.get(IVec3::new(1, 0, 0)), EMPTY_VOXEL);
+    }
+
+    #[test]
+    fn childless_compounds_are_placed_at_position_minus_pivot() {
+        let mut body = Vec::new();
+        put_u32(&mut body, 1);
+        body.push(b'c');
+        put_ivec3(&mut body, IVec3::new(5, 0, 0));
+        put_ivec3(&mut body, IVec3::ONE);
+        for c in [2.0f32, 0.0, 0.0] {
+            body.extend_from_slice(&c.to_le_bytes());
+        }
+        [1u32, 1, 1].iter().for_each(|&s| put_u32(&mut body, s));
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut z, &[9, 9, 9, 1]).unwrap();
+        let packed = z.finish().unwrap();
+        put_u32(&mut body, packed.len() as u32);
+        body.extend_from_slice(&packed);
+        put_u32(&mut body, 0);
+        let p = read_qbt(&file(&[], &node(NODE_COMPOUND, body)), "t").unwrap();
+        let layer = p.layers.iter().find(|l| !l.kind.is_group()).unwrap();
+        let v = volume_from_runs(p.bounds, &layer.voxels).unwrap();
+        assert_ne!(v.get(IVec3::new(3, 0, 0)), EMPTY_VOXEL);
     }
 
     #[test]

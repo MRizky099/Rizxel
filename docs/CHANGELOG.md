@@ -28,8 +28,17 @@ All notable changes to Rizxel are documented here. Format follows
 - **Voxelizer dialog** for OBJ, STL and PLY imports: grid detection, target size, quarter
   turns and a live voxel count.
 - The `convert` example handles every format plus `--scale`, `--pivot`, `--obj-layout`,
-  `--gltf-colors`, `--per-layer`, `--slices`, `--slice-scale`, `--heightmap`,
-  `--resolution` and `--turn`.
+  `--gltf-colors`, `--per-layer`, `--slices`, `--slice-scale`, `--heightmap` (with
+  `--color`), `--resolution` and `--turn`.
+
+### Fixed
+
+- `.vox` exports with groups opened as an empty scene in MagicaVoxel: scene nodes are now
+  written in id order.
+- Qubicle `.qb` files flagged left-handed (Qubicle's default) loaded mirrored front to
+  back, and Rizxel's own exports showed mirrored in Qubicle.
+- Qubicle `.qbt` exports showed missing faces (front and back mask bits were swapped) and
+  misplaced groups; groups are now nested models.
 
 ## [0.5.0] — 2026-10-24
 

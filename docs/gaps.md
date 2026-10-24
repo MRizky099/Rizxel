@@ -59,6 +59,7 @@ The **Phase** column names the plan that closes the gap (see
 | OBJ export loads slowly in other tools | Phase 11, `40bd3da` (Fast load layout, the new default) |
 | No heightmap import, and `voxelize` has no UI | Phase 11, `3701e78` (Heightmap import, Voxelizer dialog) |
 | No mesh export options (scale, pivot, per-layer files) | Phase 11, `5e825eb` |
+| Qubicle files aren't checked in Qubicle | Phase 11 fixes: checked in Qubicle 3.1; `.qb` orientation flag, `.qbt` face mask and groups corrected |
 
 ## Known bugs
 
@@ -81,11 +82,11 @@ No open bugs are known. Fixed bugs move to the table above.
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
 | No image output: PNG render, photo-realistic render, turntables, sprite sheets | Medium | 11b | |
-| glTF and the Fast load OBJ aren't checked in Blender or Godot | Medium | 12 | Neither is installed on the development machine; both open in Windows 3D Viewer. OBJ load times of the two layouts weren't compared. |
+| glTF isn't checked in Godot | Low | 12 | Blender 5.2 imports the glTF (vertex colors and palette texture), both OBJ layouts, PLY and STL with matching colors; Godot wasn't available. |
+| The Fast load OBJ doesn't load faster in Blender | Medium | 11 | Blender 5.2 imports a 489k-triangle terrain in 1.38 s as Fast load and 0.99 s in the MagicaVoxel layout (best of three; PLY 0.40 s, GLB 4.4 s). Fast load has 38% more vertices and one material per color. It is still the default; whether it should be is open. |
 | Fast load `Kd` colors look darker in some viewers | Low | — | `Kd` is written as linear RGB, like BrickLink Studio and as Blender reads it; Windows 3D Viewer reads it as sRGB. Rizxel's importer restores the exact colors. |
-| Qubicle files aren't checked in Qubicle | Medium | 12 | `.qb`, `.qbt` and `.qef` round-trip in Rizxel and follow the published layouts, but Qubicle itself wasn't available. `.qbt` and `.qef` handedness is assumed right-handed. |
 | No glTF import | Low | post | glTF is export only. |
-| Qubicle exports leave out hidden layers; pivots and scales are ignored on import | Low | post | Qubicle files have no hidden flag. Matrix pivots and local/global scales have no Rizxel equivalent. |
+| Qubicle exports leave out hidden layers and `.qbt` group names; pivots and scales are ignored on import | Low | post | Qubicle files have no hidden flag. `.qbt` groups are written as nested models, which have no name (compounds are drawn from their own merged matrix, placed by rules that depend on pivot and size). Matrix pivots and local/global scales have no Rizxel equivalent. |
 | The Voxelizer preview runs on the UI thread | Low | 12 | Each setting change voxelizes the whole mesh; very large meshes stall the dialog. Open… and drag and drop skip the dialog. |
 | MagicaVoxel `MATL`, cameras and animation frames are dropped | Medium | post | |
 | `.vox` export bakes linked clones | Low | — | Done on purpose, to avoid bounds growing on re-import. |

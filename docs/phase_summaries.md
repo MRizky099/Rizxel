@@ -318,5 +318,7 @@ Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementati
   and Heightmap dialogs in `rizxel-ui/src/panels/export.rs` (`3701e78`).
 - The mesh export options dialog and Export Slices dialog; STL takes scale and pivot;
   per-layer files (`5e825eb`).
-- 534 tests (447 Rizxel, 87 craft-ui). Blender, Godot and Qubicle weren't available for
-  manual checks; the GLB and Fast load OBJ open in Windows 3D Viewer.
+- Checked by hand in MagicaVoxel 0.99.7, Qubicle 3.1 (Demo) and Blender 5.2: fixes for
+  `.vox` node order, the `.qb` orientation flag, `.qbt` face mask bits and `.qbt` groups
+  (nested models). The `chr_knight` parity test ran against MagicaVoxel's own files.
+- 536 tests (449 Rizxel, 87 craft-ui). Godot wasn't available.

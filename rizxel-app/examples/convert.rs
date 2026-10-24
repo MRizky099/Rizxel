@@ -21,7 +21,7 @@
 //! one PNG per slice into the folder `outdir`.
 //!
 //! Imports: `--heightmap MAX` reads a PNG/JPEG input as a heightmap with
-//! columns up to MAX voxels; `--resolution N` voxelizes OBJ/STL/PLY meshes
+//! columns up to MAX voxels (`--color IMAGE` colors them); `--resolution N` voxelizes OBJ/STL/PLY meshes
 //! to N voxels on the longest side instead of detecting their grid;
 //! `--turn x|y|z` turns a mesh a quarter turn about that axis (repeatable).
 
@@ -42,6 +42,7 @@ fn main() {
     let mut slices: Option<SliceAxis> = None;
     let mut slice_scale = 1u32;
     let mut heightmap: Option<u32> = None;
+    let mut color: Option<PathBuf> = None;
     let mut voxelizer = VoxelizerSettings::default();
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args_os().skip(1);
@@ -55,10 +56,14 @@ fn main() {
             options.per_layer = true;
             continue;
         }
-        let value = args
+        let raw = args
             .next()
-            .map(|v| v.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_else(|| fail(format!("{flag} needs a value")));
+        if flag == "--color" {
+            color = Some(PathBuf::from(raw));
+            continue;
+        }
+        let value = raw.to_string_lossy().to_ascii_lowercase();
         match flag.as_str() {
             "--scale" => {
                 options.scale = Some(
@@ -142,7 +147,9 @@ fn main() {
         Some(FileFormat::Obj | FileFormat::Stl | FileFormat::Ply)
     );
     let imported = match heightmap {
-        Some(max_height) => state.import_heightmap(input, None, HeightmapOptions { max_height }),
+        Some(max_height) => {
+            state.import_heightmap(input, color.as_deref(), HeightmapOptions { max_height })
+        }
         None if is_mesh && voxelizer != VoxelizerSettings::default() => state
             .load_mesh(input)
             .and_then(|mesh| state.import_mesh(&mesh, &voxelizer)),

@@ -10,7 +10,7 @@
 //! x y z index mask   (one line per voxel; index into the colors)
 //! ```
 //!
-//! One matrix, Y-up, read and written right-handed (like Rizxel). The mask
+//! One matrix, Y-up, in Qubicle's own frame, which matches Rizxel's. The mask
 //! marks visible faces; every listed voxel is solid.
 //!
 //! - **Import**: up to 255 colors become the palette in file order, so
