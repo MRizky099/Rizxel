@@ -10,9 +10,13 @@ These formats are supported for exchange with other tools:
 | Wavefront `.obj` | New tab. Voxel-editor exports (Rizxel, MagicaVoxel, Qubicle, …) import losslessly on their own grid. Other meshes are scaled to 64 voxels on the longest side. Colors come from vertex colors, the `map_Kd` texture or `Kd`. | `.obj` + `.mtl` + palette `.png` in MagicaVoxel's layout (below). |
 | `.mtl` | Replaces the active document's palette and materials (undoable). A 256×1 palette texture maps one to one; otherwise the `Kd` colors are used in file order. | `.mtl` + palette `.png`. |
 | STL `.stl` | New tab. Binary or ASCII, Z-up, voxelized like OBJ, in one color. | Binary, Z-up, centered on X/Y, 1 voxel = 1 mm. |
+| Qubicle `.qb` | New tab. One layer per matrix at its position; RGBA or BGRA, RLE or raw, either Z orientation. True colors are reduced to the palette. | One RLE matrix per visible layer, cut to its voxels, at its position. |
+| Qubicle `.qbt` | New tab. Matrices as layers; models and compounds as groups. | Matrices per visible layer, groups as compounds. |
+| Qubicle `.qef` | New tab. One layer; up to 255 colors keep their order. | Merged visible layers at the full bounds size, every palette color. |
+| Stanford `.ply` | New tab. ASCII or binary, Z-up, voxelized like STL, with vertex colors. | Binary little-endian, Z-up, vertex colors, 1 voxel = 0.1. |
 | glTF 2.0 `.glb` / `.gltf` | — | One node per visible layer, groups as parent nodes, linked clones as instances of one mesh. Vertex colors or a palette texture; layer materials as PBR. |
 
-Code: `rizxel-io/src/format_{vox,gox,obj,mtl,stl,gltf}.rs`, `mesh_import.rs`, and
+Code: `rizxel-io/src/format_{vox,gox,obj,mtl,stl,gltf,qb,qef,qbt,ply}.rs`, `qubicle.rs`, `mesh_import.rs`, and
 `rizxel-app/src/interchange.rs`. To convert files from the command line:
 
 ```text
@@ -74,6 +78,53 @@ Checked against the original (`rizxel-io` test
 Rizxel merges same-color faces greedily across the whole model, so it writes
 fewer triangles (1012 against MagicaVoxel's 1124 for the knight).
 
+## Qubicle formats
+
+All three are Y-up like Rizxel. Each matrix becomes a layer at its
+position; the bounds are the union of the matrix boxes, moved to the origin
+when a matrix lies below zero, and refused above 256 per axis. Exports
+write the visible layers only (Qubicle files have no hidden flag), with
+linked clones and shapes baked, and re-exporting a file Rizxel wrote gives
+the same bytes.
+
+- **`.qb`**: six `u32` header fields (version 1.1.0.0, color format,
+  Z orientation, compression, visibility mask, matrix count), then per
+  matrix a `u8` name length, name, size, position and voxels (X fastest,
+  then Y, then Z; RLE per Z slice with `2` = run and `6` = end of slice).
+  Alpha 0 is empty; with the visibility mask any non-zero alpha is solid.
+  Left-handed files are mirrored on Z (`z → −z − 1`). Rizxel writes RGBA,
+  right-handed, RLE, no mask.
+- **`.qbt`**: `QB 2`, a color map (with colors, a voxel's red byte is an
+  index into it) and a node tree: matrix (zlib voxels, Y fastest, then Z,
+  then X; mask 0 = empty), model (children) and compound (a merged matrix
+  plus children). Models and compounds become groups; a compound's own
+  merged matrix is skipped when it has children. Rizxel writes true colors,
+  the face mask, and every group as a compound holding the merge of its
+  content. Unknown node types are skipped. Read and written right-handed.
+- **`.qef`**: text: three header lines, the size, the colors (`r g b`,
+  0..1) and one `x y z index mask` line per voxel. Up to 255 colors become
+  the palette in file order, so indices survive; more are reduced. The
+  export writes every palette color, the full bounds size (so the model
+  keeps its place) and the face mask (bit 0 solid, then left, right, top,
+  bottom, front, back).
+
+Hostile inputs are refused with a message: sides of 0 or over 256,
+truncated data or RLE, runs past their slice, name lengths past the end,
+unknown flags, huge counts, nesting deeper than 32, color indices past
+the map, and zlib data that does not inflate to the matrix size (it stops
+reading there).
+
+## PLY
+
+Export writes binary little-endian PLY: per merged quad 4 vertices
+(`float x y z`, `float nx ny nz`, `uchar red green blue`) and one 4-sided
+face wound counter-clockwise from outside. It is Z-up, like MagicaVoxel's
+PLY export and Blender, centered on X/Y and standing on Z = 0, 1 voxel =
+0.1 units by default. Import reads ASCII and binary (both byte orders),
+`vertex_indices` faces split into fans, and `red green blue` as integers
+or 0..1 floats; other elements are skipped. Voxel-editor PLY files import
+exactly on their own grid, like OBJ.
+
 ## glTF export
 
 `.glb` is one binary file; `.gltf` is JSON with a `.bin` of the same name
@@ -109,6 +160,9 @@ mesh, and that the triangles cover exactly the OBJ export's surface.
   are ignored.
 - Goxel previews, cameras, lights and 2D image layers are ignored.
 - STL carries no color.
+- `.qef` holds one matrix: layers are merged on export.
+- Qubicle matrix pivots, local scales and the `.qbt` global scale are
+  ignored on import.
 - glTF export writes no animation, cameras or lights. Bounds still cap
   models at 256 voxels per axis.
 - `.vox` export bakes linked clones into their own models. MagicaVoxel

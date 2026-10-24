@@ -8,6 +8,10 @@
 //! | `.mtl` | palette and materials of the active document | `.mtl` + palette `.png` |
 //! | STL `.stl` | new tab: voxelized, one color | binary STL, Z-up, 1 voxel = 1 mm |
 //! | glTF `.glb` / `.gltf` | — | one node per visible layer, groups, instanced clones |
+//! | Qubicle `.qb` | new tab: one layer per matrix | one matrix per visible layer |
+//! | Qubicle `.qef` | new tab: one layer, palette order kept | merged visible layers |
+//! | Qubicle `.qbt` | new tab: matrices, models/compounds as groups | matrices, groups as compounds |
+//! | Stanford `.ply` | new tab: voxelized like STL, vertex colors | binary, Z-up, vertex colors |
 //! | PNG / JPEG | reference image in the active document | — |
 
 use std::path::Path;
@@ -32,6 +36,10 @@ pub enum FileFormat {
     Stl,
     Glb,
     Gltf,
+    Qb,
+    Qef,
+    Qbt,
+    Ply,
 }
 
 /// Settings for mesh exports, set in the export dialog (or `convert`
@@ -56,26 +64,34 @@ impl ExportOptions {
 
 impl FileFormat {
     /// Formats offered under File ▸ Import.
-    pub const IMPORTS: [FileFormat; 5] = [
+    pub const IMPORTS: [FileFormat; 9] = [
         FileFormat::Vox,
         FileFormat::Gox,
+        FileFormat::Qb,
+        FileFormat::Qbt,
+        FileFormat::Qef,
         FileFormat::Obj,
         FileFormat::Stl,
+        FileFormat::Ply,
         FileFormat::Mtl,
     ];
     /// Formats offered under File ▸ Export.
-    pub const EXPORTS: [FileFormat; 7] = [
+    pub const EXPORTS: [FileFormat; 11] = [
         FileFormat::Glb,
         FileFormat::Gltf,
         FileFormat::Obj,
         FileFormat::Vox,
         FileFormat::Gox,
+        FileFormat::Qb,
+        FileFormat::Qbt,
+        FileFormat::Qef,
         FileFormat::Stl,
+        FileFormat::Ply,
         FileFormat::Mtl,
     ];
 
     /// Every format, for extension lookup.
-    pub const ALL: [FileFormat; 8] = [
+    pub const ALL: [FileFormat; 12] = [
         FileFormat::Rzxl,
         FileFormat::Vox,
         FileFormat::Gox,
@@ -84,13 +100,21 @@ impl FileFormat {
         FileFormat::Stl,
         FileFormat::Glb,
         FileFormat::Gltf,
+        FileFormat::Qb,
+        FileFormat::Qef,
+        FileFormat::Qbt,
+        FileFormat::Ply,
     ];
 
     /// True for formats that bake the model into a triangle mesh.
     pub const fn is_mesh(self) -> bool {
         matches!(
             self,
-            FileFormat::Obj | FileFormat::Stl | FileFormat::Glb | FileFormat::Gltf
+            FileFormat::Obj
+                | FileFormat::Stl
+                | FileFormat::Glb
+                | FileFormat::Gltf
+                | FileFormat::Ply
         )
     }
 
@@ -113,6 +137,10 @@ impl FileFormat {
             FileFormat::Stl => rizxel_io::STL_EXTENSION,
             FileFormat::Glb => rizxel_io::GLB_EXTENSION,
             FileFormat::Gltf => rizxel_io::GLTF_EXTENSION,
+            FileFormat::Qb => rizxel_io::QB_EXTENSION,
+            FileFormat::Qef => rizxel_io::QEF_EXTENSION,
+            FileFormat::Qbt => rizxel_io::QBT_EXTENSION,
+            FileFormat::Ply => rizxel_io::PLY_EXTENSION,
         }
     }
 
@@ -127,6 +155,10 @@ impl FileFormat {
             FileFormat::Stl => "STL",
             FileFormat::Glb => "glTF Binary",
             FileFormat::Gltf => "glTF",
+            FileFormat::Qb => "Qubicle Binary",
+            FileFormat::Qef => "Qubicle Exchange",
+            FileFormat::Qbt => "Qubicle Binary Tree",
+            FileFormat::Ply => "Stanford PLY",
         }
     }
 
@@ -140,6 +172,10 @@ impl FileFormat {
             FileFormat::Stl => "binary, Z-up, 1 voxel = 1 mm",
             FileFormat::Glb => "one file: a node per layer, 1 voxel = 0.1 m",
             FileFormat::Gltf => ".gltf + .bin: a node per layer, 1 voxel = 0.1 m",
+            FileFormat::Qb => "one matrix per visible layer",
+            FileFormat::Qef => "one matrix, palette order kept",
+            FileFormat::Qbt => "matrices, groups as compounds",
+            FileFormat::Ply => "binary, Z-up, vertex colors, scale 0.1",
             FileFormat::Rzxl => "",
         }
     }
@@ -328,6 +364,22 @@ impl AppState {
                     &name,
                 )?)
             }
+            FileFormat::Ply => {
+                let tris = rizxel_io::read_ply(&read_limited(path)?, rizxel_io::uncolored())?;
+                voxelized(rizxel_io::project_from_mesh(
+                    tris,
+                    rizxel_io::UpAxis::Z,
+                    None,
+                    VoxelizeOptions::default(),
+                    &name,
+                )?)
+            }
+            FileFormat::Qb => rizxel_io::read_qb(&read_limited(path)?, &name)?,
+            FileFormat::Qbt => rizxel_io::read_qbt(&read_limited(path)?, &name)?,
+            FileFormat::Qef => {
+                let text = String::from_utf8_lossy(&read_limited(path)?).into_owned();
+                rizxel_io::read_qef(&text, &name)?
+            }
         };
         let mut doc = Document::from_project(project, None)?;
         if self.structure.fit_on_import {
@@ -363,9 +415,14 @@ impl AppState {
             return false;
         };
         match format {
-            FileFormat::Obj | FileFormat::Stl | FileFormat::Glb | FileFormat::Gltf => {
-                doc.visible_voxel_count() > 0
-            }
+            FileFormat::Obj
+            | FileFormat::Stl
+            | FileFormat::Glb
+            | FileFormat::Gltf
+            | FileFormat::Ply
+            | FileFormat::Qb
+            | FileFormat::Qef
+            | FileFormat::Qbt => doc.visible_voxel_count() > 0,
             // Cheap check (menus ask every frame); hidden layers count too.
             FileFormat::Vox => {
                 doc.visible_voxel_count() > 0
@@ -434,6 +491,35 @@ impl AppState {
                 let tris = (bytes.len() - 84) / 50;
                 std::fs::write(path, bytes)?;
                 format!("{tris} triangles")
+            }
+            FileFormat::Ply => {
+                let bytes = rizxel_io::write_ply(
+                    &doc.merged_visible_volume(),
+                    &doc.data.palette,
+                    options.scale_for(format),
+                    options.pivot.origin(doc.data.bounds),
+                )?;
+                std::fs::write(path, bytes)?;
+                "binary, Z-up".to_owned()
+            }
+            FileFormat::Qb | FileFormat::Qbt => {
+                let scene = doc.export_scene();
+                let bytes = if format == FileFormat::Qb {
+                    rizxel_io::write_qb(&scene)?
+                } else {
+                    rizxel_io::write_qbt(&scene)?
+                };
+                std::fs::write(path, bytes)?;
+                let n = scene
+                    .layers
+                    .iter()
+                    .filter(|l| l.visible && !l.volume.is_empty())
+                    .count();
+                format!("{n} matrices")
+            }
+            FileFormat::Qef => {
+                std::fs::write(path, rizxel_io::write_qef(&doc.export_scene())?)?;
+                "one matrix".to_owned()
             }
             FileFormat::Glb | FileFormat::Gltf => {
                 let scene = doc.export_scene();
@@ -517,6 +603,10 @@ mod tests {
             FileFormat::Gox,
             FileFormat::Obj,
             FileFormat::Stl,
+            FileFormat::Qb,
+            FileFormat::Qbt,
+            FileFormat::Qef,
+            FileFormat::Ply,
         ] {
             // (glTF has no importer; see `gltf_export_writes_nodes_per_layer`.)
             let path = d.join(format!("model.{}", format.extension()));
@@ -545,8 +635,18 @@ mod tests {
                 }
                 // Mesh formats carry the visible surface only; the solid
                 // block and its clone come back as the same voxels.
-                FileFormat::Obj | FileFormat::Stl => {
+                FileFormat::Obj | FileFormat::Stl | FileFormat::Ply => {
                     assert_eq!(doc.visible_voxel_count(), visible, "{format:?}");
+                }
+                // Qubicle files carry the visible layers (clones baked).
+                FileFormat::Qb | FileFormat::Qbt => {
+                    assert_eq!(doc.visible_voxel_count(), visible, "{format:?}");
+                    assert!(doc.data.layers.iter().all(|l| l.visible));
+                    assert_eq!(doc.data.layers.len(), 2, "{format:?}: block + clone");
+                }
+                FileFormat::Qef => {
+                    assert_eq!(doc.visible_voxel_count(), visible);
+                    assert_eq!(doc.data.layers.len(), 1);
                 }
                 _ => unreachable!(),
             }

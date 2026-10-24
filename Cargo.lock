@@ -2870,6 +2870,7 @@ dependencies = [
 name = "rizxel-io"
 version = "0.5.0"
 dependencies = [
+ "flate2",
  "glam",
  "image",
  "png 0.18.1",

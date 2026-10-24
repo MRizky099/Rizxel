@@ -5,11 +5,12 @@
 //! cargo run -p rizxel-app --example convert -- --scale 1 --pivot corner input.vox output.obj
 //! ```
 //!
-//! Inputs: `.rzxl`, `.vox`, `.gox`, `.obj`, `.stl`. Outputs: `.rzxl`,
-//! `.vox`, `.gox`, `.obj` (+ `.mtl` + `.png`), `.stl`, `.mtl` (+ `.png`),
-//! `.glb`, `.gltf` (+ `.bin`).
+//! Inputs: `.rzxl`, `.vox`, `.gox`, `.qb`, `.qbt`, `.qef`, `.obj`, `.stl`,
+//! `.ply`. Outputs: `.rzxl`, `.vox`, `.gox`, `.qb`, `.qbt`, `.qef`, `.obj`
+//! (+ `.mtl` + `.png`), `.stl`, `.ply`, `.mtl` (+ `.png`), `.glb`, `.gltf`
+//! (+ `.bin`).
 //!
-//! Mesh options (OBJ, STL, glTF):
+//! Mesh options (OBJ, STL, PLY, glTF):
 //! - `--scale <units per voxel>` (default: the format's own)
 //! - `--pivot bottom-center|center|corner`
 //! - `--gltf-colors vertex|texture`

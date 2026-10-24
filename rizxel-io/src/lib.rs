@@ -7,6 +7,10 @@
 //! - [`format_gltf`]: glTF 2.0 `.glb` / `.gltf` export.
 //! - [`format_obj`] / [`format_mtl`]: Wavefront OBJ + MTL export in the
 //!   MagicaVoxel layout, and OBJ import.
+//! - [`format_ply`]: Stanford `.ply` export and import.
+//! - [`format_qb`]: Qubicle Binary `.qb` import/export.
+//! - [`format_qbt`]: Qubicle Binary Tree `.qbt` import/export.
+//! - [`format_qef`]: Qubicle Exchange `.qef` import/export.
 //! - [`format_stl`]: binary STL export, binary/ASCII STL import.
 //! - [`mesh_import`]: voxelizes imported OBJ/STL meshes into a project.
 //! - [`format_palette`]: GIMP `.gpl` and `.hex` palette files.
@@ -17,6 +21,10 @@ pub mod format_gox;
 pub mod format_mtl;
 pub mod format_obj;
 pub mod format_palette;
+pub mod format_ply;
+pub mod format_qb;
+pub mod format_qbt;
+pub mod format_qef;
 pub mod format_rzxl;
 pub mod format_stl;
 pub mod format_vox;
@@ -25,6 +33,7 @@ pub mod interchange;
 pub mod mesh_export;
 pub mod mesh_import;
 pub mod png_io;
+mod qubicle;
 #[cfg(test)]
 mod test_samples;
 
@@ -42,6 +51,10 @@ pub use format_palette::{
     load_palette_file, read_gpl, read_hex, save_palette_file, write_gpl, write_hex, PaletteFile,
     GPL_EXTENSION, HEX_EXTENSION,
 };
+pub use format_ply::{read_ply, write_ply, PLY_EXTENSION};
+pub use format_qb::{read_qb, write_qb, QB_EXTENSION};
+pub use format_qbt::{read_qbt, write_qbt, QBT_EXTENSION};
+pub use format_qef::{read_qef, write_qef, QEF_EXTENSION};
 pub use format_rzxl::{
     generator, linear_index, load_rzxl, read_rzxl, runs_from_volume, save_rzxl, volume_from_runs,
     write_rzxl, LayerData, ProjectFile, RzxlError, VoxelRun, MAX_GROUP_DEPTH, MAX_LAYERS,
