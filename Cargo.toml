@@ -6,6 +6,8 @@ members = [
     "rizxel-io",
     "rizxel-app",
     "rizxel-ui",
+    # Vendored craft-ui with Rizxel's tab-strip change; see vendor/craft-ui/README.md.
+    "vendor/craft-ui",
 ]
 
 [workspace.package]
@@ -43,7 +45,9 @@ eframe = { version = "0.36", default-features = false, features = ["wgpu", "defa
 egui = "0.36"
 egui-phosphor = "0.14"
 # Panel docking shared with CADCraft (transactional layout model + egui surface).
-craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "ae2f796b673f29cf3161f36eb6a8933f0a3fe028" }
+# Vendored from storytold/craft-libs at ae2f796 plus Fill / Scroll tab strips; back to a
+# git rev once upstream has them (vendor/craft-ui/README.md).
+craft-ui = { path = "vendor/craft-ui" }
 # Same major as the wgpu pulled in by eframe 0.36; used to validate WGSL in tests.
 naga = { version = "30", features = ["wgsl-in"] }
 
