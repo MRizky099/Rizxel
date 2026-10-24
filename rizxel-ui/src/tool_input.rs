@@ -574,10 +574,11 @@ impl ToolInput {
             hit.filter(|_| !transform_tool && !(line_tool && self.line.is_some()))
         {
             self.hover_preview(f, state, &hit, mods, &mut preview);
-            if box_select::box_mode(state) {
-                if let Some(text) = state.doc().and_then(box_select::feedback) {
-                    state.tool_feedback = Some(text);
-                }
+        }
+        // An open box reports itself wherever the pointer is.
+        if self.drag.is_none() && box_grab.is_none() && box_select::box_mode(state) {
+            if let Some(text) = state.doc().and_then(box_select::feedback) {
+                state.tool_feedback = Some(text);
             }
         }
 

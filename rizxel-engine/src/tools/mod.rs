@@ -181,10 +181,10 @@ impl Tool {
         match self {
             Tool::Cursor => "Hover to inspect a voxel. Right-drag to orbit, middle-drag to pan.",
             Tool::Brush => {
-                "Click and drag to paint. Ctrl+click: line from the last click. Shift: erase, Alt: pick color."
+                "Drag to paint. Ctrl+click: line from the last click. Shift: erase, Alt: pick color."
             }
             Tool::Line => {
-                "Drag a line. Polyline: click points, Enter or right-click ends. Curve: drag, then drag to bend. Shift: erase."
+                "Drag a line. Polyline: click points, right-click ends. Curve: drag, then drag to bend."
             }
             Tool::Shape => {
                 "Drag on a face to draw a cube, sphere, cylinder, pyramid or cone. Shift: carve, Esc: cancel."
@@ -194,13 +194,13 @@ impl Tool {
                 "Drag to move the selection (or the whole layer). Resize: drag to grow the bounds."
             }
             Tool::Transform => {
-                "Drag the rings to rotate, arrows and corners to scale, the box to move. Shift/Ctrl: finer steps. Enter: apply, Esc: cancel."
+                "Rings rotate, arrows and corners scale, the box moves. Shift/Ctrl: finer steps. Enter: apply."
             }
             Tool::ColorPicker => {
                 "Click a voxel to pick its color. Ctrl+click: copy it into the swatch."
             }
             Tool::Selection => {
-                "Click or drag a box; drag its arrows or faces to adjust it. Enter: apply, Esc: cancel. Shift: add, Ctrl: subtract."
+                "Click or drag a box, adjust it by its arrows or faces. Enter: apply. Shift: add, Ctrl: subtract."
             }
             Tool::FuzzySelect => {
                 "Click to select connected voxels of a similar color. Shift: add, Ctrl: subtract."

@@ -1589,7 +1589,9 @@ impl Document {
             .filter(|&(_, v)| v != EMPTY_VOXEL)
             .collect();
         if picked.is_empty() {
-            return Err(OpError::Nothing("The selection has no voxels"));
+            return Err(OpError::Nothing(
+                "The active layer has no voxels in the selection",
+            ));
         }
         let mut new = Layer::new(
             self.unique_name_from(&format!("{} part", source.name)),
