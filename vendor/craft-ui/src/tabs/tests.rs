@@ -233,3 +233,80 @@ fn invalid_rectangles_do_not_paint_or_accept_input() {
         assert!(responses.iter().all(|r| r.rect.is_finite() && !r.sense.senses_click()));
     }
 }
+
+#[test]
+fn fill_shares_the_strip_and_keeps_wide_labels() {
+    let widths = fill(&[60.0, 70.0, 80.0], 300.0).unwrap();
+    assert_eq!(widths, [100.0, 100.0, 100.0]);
+    // A label wider than the even share keeps its width; the others split the rest.
+    let widths = fill(&[40.0, 200.0, 50.0], 400.0).unwrap();
+    assert_eq!(widths, [100.0, 200.0, 100.0]);
+    let widths = fill(&[80.0], 333.0).unwrap();
+    assert_eq!(widths, [333.0]);
+    assert_eq!(fill(&[], 100.0), Some(Vec::new()));
+    assert_eq!(fill(&[60.0, 70.0], 100.0), None, "natural widths don't fit");
+}
+
+#[test]
+fn fill_widths_sum_to_the_strip_width() {
+    for available in [0.0, 1.0, 99.5, 210.0, 333.3, 1000.0, 1e6] {
+        for natural in [&[10.0, 20.0, 30.0][..], &[0.0, 0.0][..], &[33.3, 66.6, 99.9, 12.0][..], &[f32::NAN, 5.0][..]] {
+            let Some(widths) = fill(natural, available) else { continue };
+            let sum: f32 = widths.iter().sum();
+            assert!(sum <= available + 1e-3 && sum >= available - available * 1e-5 - 1e-3, "{natural:?} in {available}: {widths:?}");
+            for (w, n) in widths.iter().zip(natural) {
+                assert!(*w >= extent(*n) - 1e-3, "{widths:?}");
+            }
+        }
+    }
+    for available in [f32::NAN, f32::INFINITY, -4.0] {
+        assert!(fill(&[10.0], available).is_none_or(|w| w.iter().all(|w| w.is_finite())));
+    }
+}
+
+#[test]
+fn scroll_keeps_natural_widths_and_reveals_the_selected_tab() {
+    let natural = [100.0; 6];
+    let fits = scroll(&natural, 0, 600.0, 50.0, 16.0, true);
+    assert_eq!((fits.offset, fits.max_offset, fits.arrow_width, fits.view), (0.0, 0.0, 0.0, 600.0));
+
+    let s = scroll(&natural, 0, 332.0, 0.0, 16.0, true);
+    assert_eq!(s.widths, natural);
+    assert_eq!((s.arrow_width, s.view, s.max_offset), (16.0, 300.0, 300.0));
+    assert_eq!(s.offset, 0.0);
+    // Selecting the fifth tab scrolls just far enough to show its right edge.
+    let s = scroll(&natural, 4, 332.0, 0.0, 16.0, true);
+    assert_eq!(s.offset, 200.0);
+    assert_eq!(s.visible(4), Some((200.0, 100.0)));
+    assert_eq!(s.visible(1), None, "scrolled out on the left");
+    // Back to the first tab: its start wins.
+    let s = scroll(&natural, 0, 332.0, 200.0, 16.0, true);
+    assert_eq!(s.offset, 0.0);
+    // Without reveal, a wheel offset is only clamped.
+    let s = scroll(&natural, 0, 332.0, 999.0, 16.0, false);
+    assert_eq!(s.offset, 300.0);
+    let s = scroll(&natural, 0, 332.0, 150.0, 16.0, false);
+    assert_eq!(s.visible(1), Some((0.0, 50.0)), "partly visible tab is clipped");
+    assert_eq!(s.visible(4), Some((250.0, 50.0)));
+    assert_eq!(s.visible(5), None);
+    assert_eq!(s.visible(9), None);
+}
+
+#[test]
+fn scroll_sanitizes_malformed_dimensions() {
+    for available in [f32::NAN, f32::INFINITY, -1.0, 0.0, 10.0, 1e20] {
+        for offset in [f32::NAN, f32::NEG_INFINITY, -5.0, 1e30] {
+            for arrows in [f32::NAN, -1.0, 0.0, 16.0, f32::MAX] {
+                let s = scroll(&[f32::MAX, 40.0, f32::NAN, 80.0], 1, available, offset, arrows, true);
+                assert!(s.offset.is_finite() && (0.0..=s.max_offset).contains(&s.offset), "{s:?}");
+                assert!(s.view >= 0.0 && s.arrow_width >= 0.0);
+                assert!(s.view + 2.0 * s.arrow_width <= extent(available) + 1e-3, "{s:?}");
+                for i in 0..4 {
+                    if let Some((start, width)) = s.visible(i) {
+                        assert!(start >= 0.0 && width > 0.0 && start + width <= s.view + 1e-3, "{s:?}");
+                    }
+                }
+            }
+        }
+    }
+}

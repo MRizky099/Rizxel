@@ -23,6 +23,10 @@ pub struct DockStyle {
     pub border: Stroke,
     pub accent: Color32,
     pub font: FontId,
+    /// How tabs share a strip's width. `Natural` keeps label widths.
+    pub tab_sizing: TabSizing,
+    /// What a strip does when its tabs don't fit. `Menu` squeezes, then lists the rest in a menu.
+    pub tab_overflow: TabOverflow,
     /// Localize these action labels in the application adapter.
     pub float_label: String,
     pub close_label: String,
@@ -30,6 +34,29 @@ pub struct DockStyle {
     pub panels_label: String,
     pub resize_label: String,
     pub resize_window_label: String,
+    pub scroll_left_label: String,
+    pub scroll_right_label: String,
+}
+
+/// Width of the tabs on a group strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabSizing {
+    /// Each tab is as wide as its label plus padding.
+    #[default]
+    Natural,
+    /// Tabs stretch to share the whole strip evenly; a wider label keeps its width.
+    Fill,
+}
+
+/// Strip behaviour when its tabs are wider than the strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabOverflow {
+    /// Squeeze tabs to a minimum width, then move the rest into a "…" menu.
+    #[default]
+    Menu,
+    /// Keep label widths and scroll the strip with the wheel or the arrows at its ends. The
+    /// active tab scrolls into view when it changes; a dragged tab near an end auto-scrolls.
+    Scroll,
 }
 
 impl DockStyle {
@@ -47,12 +74,16 @@ impl DockStyle {
             border: visuals.widgets.noninteractive.bg_stroke,
             accent: visuals.selection.stroke.color,
             font: FontId::proportional(12.0),
+            tab_sizing: TabSizing::Natural,
+            tab_overflow: TabOverflow::Menu,
             float_label: "Float panel".into(),
             close_label: "Close panel".into(),
             move_label: "Move to group".into(),
             panels_label: "Panels".into(),
             resize_label: "Resize panels".into(),
             resize_window_label: "Resize panel window".into(),
+            scroll_left_label: "Scroll tabs left".into(),
+            scroll_right_label: "Scroll tabs right".into(),
         }
     }
 
@@ -114,6 +145,19 @@ struct Drag<P> {
     source: Rect,
     grab: Vec2,
 }
+
+/// Scroll position of one group's strip, kept in egui temp memory under its first panel.
+#[derive(Clone, Copy, Debug, Default)]
+struct StripScroll {
+    offset: f32,
+    /// Active tab when last shown; a change scrolls the new one into view.
+    active: Option<usize>,
+}
+
+/// Width of a scrolling strip's arrow buttons.
+const SCROLL_ARROW_WIDTH: f32 = 16.0;
+/// Auto-scroll distance per frame while a dragged tab hovers near a strip end.
+const DRAG_SCROLL_STEP: f32 = 8.0;
 
 #[derive(Clone)]
 struct GroupDrag<P> {
@@ -413,7 +457,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                     };
                     let panel_rect = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), (top + header + share).min(rect.bottom())));
                     let title_rect = Rect::from_min_max(panel_rect.min, pos2(panel_rect.right(), (top + header).min(panel_rect.bottom())));
-                    self.tab(ui, &entry.panel, title_rect, entry.open, panel_rect);
+                    self.tab(ui, &entry.panel, title_rect, title_rect, entry.open, panel_rect);
                     let collapse = Rect::from_min_max(pos2((title_rect.right() - 18.0).max(title_rect.left()), title_rect.top()), title_rect.max);
                     let response = ui.interact(collapse, self.id.with(("collapse", &entry.panel)), Sense::click());
                     response.widget_info(|| {
@@ -612,13 +656,65 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                     + 24.0
             })
             .collect();
-        let fit = tabs::fit(&widths, active, (strip.width() - header_width).max(0.0), 40.0, 22.0);
-        let mut x = strip.left();
+        let available = (strip.width() - header_width).max(0.0);
+        let filled = match self.style.tab_sizing {
+            TabSizing::Fill => tabs::fill(&widths, available),
+            TabSizing::Natural => None,
+        };
         let mut targets = Vec::new();
+        if let Some(filled) = filled {
+            let mut x = strip.left();
+            for (index, width) in filled.iter().enumerate() {
+                let Some(panel) = panels.get(index) else { continue };
+                let tab = Rect::from_min_size(pos2(x, strip.top()), vec2(*width, strip.height()));
+                self.tab(ui, panel, tab, tab, index == active, rect);
+                targets.push((panel.clone(), tab));
+                x += width;
+            }
+        } else if self.style.tab_overflow == TabOverflow::Scroll {
+            let area = Rect::from_min_max(strip.min, pos2(strip.left() + available, strip.bottom()));
+            self.scrolling_tabs(ui, panels, active, &widths, area, rect, &mut targets);
+        } else {
+            self.menu_tabs(ui, panels, active, &widths, strip, available, rect, &mut targets);
+        }
+        // Include hidden tab identities for source-group detection without creating hit areas.
+        for panel in panels {
+            if !targets.iter().any(|(p, _)| p == panel) {
+                targets.push((panel.clone(), Rect::NOTHING));
+            }
+        }
+        self.targets.push(DropTarget {
+            anchor: selected.clone(),
+            rect,
+            tab_strip: Some(strip),
+            tabs: targets,
+            allow_splits: !floating,
+            accepts_tabs: policy.accepts_tabs,
+        });
+        self.contents(ui, selected, Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max));
+        ui.painter().rect_stroke(rect, 0.0, self.style.border, StrokeKind::Inside);
+    }
+
+    /// Squeezed tabs followed by a "…" menu with the ones that don't fit.
+    #[allow(clippy::too_many_arguments)]
+    fn menu_tabs(
+        &mut self,
+        ui: &mut Ui,
+        panels: &[P],
+        active: usize,
+        widths: &[f32],
+        strip: Rect,
+        available: f32,
+        group: Rect,
+        targets: &mut Vec<(P, Rect)>,
+    ) {
+        let Some(selected) = panels.get(active) else { return };
+        let fit = tabs::fit(widths, active, available, 40.0, 22.0);
+        let mut x = strip.left();
         for (index, width) in &fit.shown {
             let Some(panel) = panels.get(*index) else { continue };
             let tab = Rect::from_min_size(pos2(x, strip.top()), vec2(*width, strip.height()));
-            self.tab(ui, panel, tab, *index == active, rect);
+            self.tab(ui, panel, tab, tab, *index == active, group);
             targets.push((panel.clone(), tab));
             x += width;
         }
@@ -641,22 +737,79 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 });
             });
         }
-        // Include hidden tab identities for source-group detection without creating hit areas.
-        for panel in panels {
-            if !targets.iter().any(|(p, _)| p == panel) {
-                targets.push((panel.clone(), Rect::NOTHING));
+    }
+
+    /// Tabs at label width in a strip that scrolls with the wheel, the end arrows, or a dragged
+    /// tab held near an end. Tabs scrolled out of view get no hit area and no drop slot.
+    #[allow(clippy::too_many_arguments)]
+    fn scrolling_tabs(&mut self, ui: &mut Ui, panels: &[P], active: usize, widths: &[f32], area: Rect, group: Rect, targets: &mut Vec<(P, Rect)>) {
+        let Some(first) = panels.first() else { return };
+        let memo_id = self.id.with(("tab-scroll", first));
+        let memo: StripScroll = ui.ctx().data(|d| d.get_temp(memo_id)).unwrap_or_default();
+        let hovered = ui.rect_contains_pointer(area);
+        let mut offset = memo.offset;
+        if hovered {
+            let delta = ui.input(|i| i.smooth_scroll_delta);
+            offset -= if delta.x != 0.0 { delta.x } else { delta.y };
+        }
+        let mut fit = tabs::scroll(widths, active, area.width(), offset, SCROLL_ARROW_WIDTH, memo.active != Some(active));
+        let dragging = ui.ctx().data(|d| d.get_temp::<Drag<P>>(self.id.with("drag")).is_some());
+        if dragging
+            && fit.max_offset > 0.0
+            && let Some(pointer) = ui.ctx().pointer_hover_pos().filter(|p| area.contains(*p))
+        {
+            let edge = fit.arrow_width + 12.0;
+            let step = if pointer.x < area.left() + edge {
+                -DRAG_SCROLL_STEP
+            } else if pointer.x > area.right() - edge {
+                DRAG_SCROLL_STEP
+            } else {
+                0.0
+            };
+            if step != 0.0 {
+                fit.offset = (fit.offset + step).clamp(0.0, fit.max_offset);
+                ui.ctx().request_repaint();
             }
         }
-        self.targets.push(DropTarget {
-            anchor: selected.clone(),
-            rect,
-            tab_strip: Some(strip),
-            tabs: targets,
-            allow_splits: !floating,
-            accepts_tabs: policy.accepts_tabs,
-        });
-        self.contents(ui, selected, Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max));
-        ui.painter().rect_stroke(rect, 0.0, self.style.border, StrokeKind::Inside);
+        if fit.arrow_width > 0.0 {
+            let left = Rect::from_min_size(area.min, vec2(fit.arrow_width, area.height()));
+            let right = Rect::from_min_max(pos2(area.right() - fit.arrow_width, area.top()), area.max);
+            let page = (fit.view * 0.5).max(40.0);
+            for (arrow, glyph, step, enabled, label) in [
+                (left, "‹", -page, fit.offset > 0.0, self.style.scroll_left_label.clone()),
+                (right, "›", page, fit.offset < fit.max_offset, self.style.scroll_right_label.clone()),
+            ] {
+                let response = ui.interact(arrow, self.id.with(("tab-scroll-arrow", first, step > 0.0)), Sense::click());
+                self.register_interaction(ui.ctx(), response.id);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled() && enabled, &label));
+                let painter = ui.painter().with_clip_rect(arrow.intersect(ui.clip_rect()));
+                if enabled && response.hovered() {
+                    painter.rect_filled(arrow, 0.0, self.style.active_background);
+                }
+                let color = if enabled { self.style.text } else { self.style.inactive_text };
+                painter.text(arrow.center(), egui::Align2::CENTER_CENTER, glyph, self.style.font.clone(), color);
+                if enabled && response.clicked() {
+                    fit.offset = (fit.offset + step).clamp(0.0, fit.max_offset);
+                }
+            }
+        }
+        let view = Rect::from_min_max(pos2(area.left() + fit.arrow_width, area.top()), pos2(area.right() - fit.arrow_width, area.bottom()));
+        for index in 0..panels.len() {
+            let Some(panel) = panels.get(index) else { continue };
+            let start: f32 = fit.widths.iter().take(index).sum();
+            let width = fit.widths.get(index).copied().unwrap_or(0.0);
+            let tab = Rect::from_min_size(pos2(view.left() + start - fit.offset, area.top()), vec2(width, area.height()));
+            if let Some((left, width)) = fit.visible(index) {
+                let shown = Rect::from_min_size(pos2(view.left() + left, area.top()), vec2(width, area.height()));
+                self.tab(ui, panel, tab, shown, index == active, group);
+                targets.push((panel.clone(), shown));
+            } else if tab.left() >= view.right() {
+                // Ordering slot only: a drop past the last visible tab lands before this one
+                // rather than after every tab hidden to the right.
+                targets.push((panel.clone(), Rect::from_min_max(pos2(view.right() - 0.5, view.top()), view.max)));
+            }
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(memo_id, StripScroll { offset: fit.offset, active: Some(active) }));
     }
 
     fn menu_label(&mut self, ui: &mut Ui, panel: &P) -> egui::Response {
@@ -667,7 +820,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         response
     }
 
-    fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, active: bool, group: Rect) {
+    /// A tab laid out at `rect`, of which only `shown` is visible and interactive.
+    fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, shown: Rect, active: bool, group: Rect) {
         let policy = (self.permissions)(panel);
         let label = (self.label)(panel);
         let color = if active { self.style.text } else { self.style.inactive_text };
@@ -680,8 +834,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
         let response = tabs::Tab::new(self.id.with(("tab", panel)), &label, active)
             .sense(if policy.movable { Sense::click_and_drag() } else { Sense::click() })
             .focus_stroke(Stroke::new(1.0, self.style.accent))
-            .show_at(ui, rect, |ui, response| {
-                let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            .show_at(ui, shown, |ui, response| {
+                let painter = ui.painter().with_clip_rect(shown.intersect(ui.clip_rect()));
                 painter.rect_filled(rect, 0.0, if active || response.hovered() { self.style.active_background } else { self.style.tab_background });
                 painter.galley(rect.center() - galley.size() * 0.5, galley.clone(), color);
             });

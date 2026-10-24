@@ -1090,3 +1090,156 @@ fn popup_action_labels_use_custom_visual_text_and_logical_accessibility() {
         );
     }
 }
+
+/// One frame of a strip-only layout at `width`, with the given tab sizing and overflow.
+fn strip_frame(
+    ctx: &Context,
+    layout: &Layout<u32>,
+    events: Vec<Event>,
+    width: f32,
+    time: f64,
+    sizing: TabSizing,
+    overflow: TabOverflow,
+) -> DockOutput<u32> {
+    let mut output = DockOutput::default();
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 400.0))),
+        events,
+        focused: true,
+        time: Some(time),
+        ..Default::default()
+    };
+    ctx.run_ui(input, |ui| {
+        let mut style = DockStyle::from_ui(ui);
+        style.tab_sizing = sizing;
+        style.tab_overflow = overflow;
+        output = DockArea::new(Id::new("test-area")).show(
+            ui,
+            layout,
+            &style,
+            |p| format!("Panel {p}"),
+            |_| Permissions::default(),
+            |ui, _| {
+                ui.label("Actual panel content");
+            },
+        );
+    })
+    .textures_delta
+    .clear();
+    output
+}
+
+fn tab_rect(ctx: &Context, panel: u32) -> Option<Rect> {
+    ctx.read_response(Id::new("test-area").with(("tab", &panel))).map(|r| r.rect).filter(|r| r.width() > 0.0)
+}
+
+#[test]
+fn default_style_keeps_natural_widths_and_the_overflow_menu() {
+    let ctx = Context::default();
+    let mut defaults = None;
+    ctx.run_ui(RawInput::default(), |ui| {
+        let style = DockStyle::from_ui(ui);
+        defaults = Some((style.tab_sizing, style.tab_overflow));
+    })
+    .textures_delta
+    .clear();
+    assert_eq!(defaults, Some((TabSizing::Natural, TabOverflow::Menu)));
+    let layout = Layout { root: Some(tabs(&[1, 2], 0)), floating: Vec::new() };
+    strip_frame(&ctx, &layout, Vec::new(), 800.0, 0.0, TabSizing::Natural, TabOverflow::Menu);
+    let one = tab_rect(&ctx, 1).unwrap();
+    assert!(one.width() < 200.0, "hugs its label: {one:?}");
+}
+
+#[test]
+fn fill_tabs_span_the_whole_strip() {
+    let ctx = Context::default();
+    for panels in [&[7][..], &[1, 2, 3][..]] {
+        let layout = Layout { root: Some(tabs(panels, 0)), floating: Vec::new() };
+        for _ in 0..2 {
+            strip_frame(&ctx, &layout, Vec::new(), 600.0, 0.0, TabSizing::Fill, TabOverflow::Scroll);
+        }
+        let rects: Vec<Rect> = panels.iter().map(|p| tab_rect(&ctx, *p).unwrap()).collect();
+        assert!((rects.iter().map(|r| r.width()).sum::<f32>() - 600.0).abs() < 0.5, "{rects:?}");
+        assert!(rects.windows(2).all(|w| (w[0].right() - w[1].left()).abs() < 0.01));
+        assert!(rects.iter().all(|r| (r.width() - rects[0].width()).abs() < 0.5), "even shares");
+    }
+}
+
+#[test]
+fn scrolling_strip_reveals_the_active_tab_without_a_menu() {
+    let ctx = Context::default();
+    let panels: Vec<u32> = (0..12).collect();
+    let layout = Layout { root: Some(tabs(&panels, 10)), floating: Vec::new() };
+    for _ in 0..2 {
+        strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.0, TabSizing::Fill, TabOverflow::Scroll);
+    }
+    let active = tab_rect(&ctx, 10).unwrap();
+    assert!(active.left() >= 16.0 - 0.01 && active.right() <= 300.0 - 16.0 + 0.01, "{active:?}");
+    assert!(tab_rect(&ctx, 0).is_none(), "scrolled out on the left");
+    assert!(ctx.read_response(Id::new("test-area").with(("overflow", &10u32))).is_none());
+    // Natural widths are kept rather than squeezed.
+    let natural = tab_rect(&ctx, 9).unwrap().width();
+    assert!(natural > 50.0, "{natural}");
+
+    // The left arrow pages back toward the first tab.
+    let arrow = ctx.read_response(Id::new("test-area").with(("tab-scroll-arrow", &0u32, false))).unwrap().rect.center();
+    strip_frame(&ctx, &layout, vec![Event::PointerMoved(arrow), pointer_button(arrow, true)], 300.0, 0.1, TabSizing::Fill, TabOverflow::Scroll);
+    strip_frame(&ctx, &layout, vec![pointer_button(arrow, false)], 300.0, 0.2, TabSizing::Fill, TabOverflow::Scroll);
+    strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.3, TabSizing::Fill, TabOverflow::Scroll);
+    assert!(tab_rect(&ctx, 10).is_none_or(|r| r.left() > active.left()), "strip moved right");
+}
+
+#[test]
+fn wheel_scrolls_the_strip() {
+    let ctx = Context::default();
+    let panels: Vec<u32> = (0..12).collect();
+    let layout = Layout { root: Some(tabs(&panels, 0)), floating: Vec::new() };
+    strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.0, TabSizing::Natural, TabOverflow::Scroll);
+    strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.0, TabSizing::Natural, TabOverflow::Scroll);
+    assert!(tab_rect(&ctx, 0).is_some());
+    let over = pos2(150.0, 10.0);
+    let wheel =
+        Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -400.0), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE };
+    strip_frame(&ctx, &layout, vec![Event::PointerMoved(over), wheel], 300.0, 0.1, TabSizing::Natural, TabOverflow::Scroll);
+    for i in 0..60 {
+        strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.2 + f64::from(i) * 0.05, TabSizing::Natural, TabOverflow::Scroll);
+    }
+    assert!(tab_rect(&ctx, 0).is_none(), "first tab scrolled out");
+}
+
+#[test]
+fn drops_on_a_scrolled_strip_insert_at_the_visible_position() {
+    let ctx = Context::default();
+    let mut layout = Layout {
+        root: Some(Node::Split {
+            axis: SplitAxis::Vertical,
+            size: SplitSize::FixedSecond(200.0),
+            first: Box::new(tabs(&(0..12).collect::<Vec<u32>>(), 0)),
+            second: Box::new(tabs(&[99], 0)),
+        }),
+        floating: Vec::new(),
+    };
+    let run = |ctx: &Context, layout: &mut Layout<u32>, events: Vec<Event>| {
+        let out = strip_frame(ctx, layout, events, 300.0, 0.0, TabSizing::Fill, TabOverflow::Scroll);
+        for action in &out.actions {
+            layout.apply(action.clone()).unwrap();
+        }
+        out.actions
+    };
+    run(&ctx, &mut layout, Vec::new());
+    run(&ctx, &mut layout, Vec::new());
+    let visible: Vec<u32> = (0..12).filter(|p| tab_rect(&ctx, *p).is_some()).collect();
+    let last_visible = *visible.last().unwrap();
+    assert!(last_visible < 11, "some tabs hidden: {visible:?}");
+    let source = tab_rect(&ctx, 99).unwrap().center();
+    // Just right of the last visible tab's midpoint, short of the right arrow.
+    let target = pos2(300.0 - 16.0 - 4.0, 10.0);
+    run(&ctx, &mut layout, vec![Event::PointerMoved(source), pointer_button(source, true)]);
+    run(&ctx, &mut layout, vec![Event::PointerMoved(source + vec2(0.0, -8.0))]);
+    run(&ctx, &mut layout, vec![Event::PointerMoved(target)]);
+    let actions = run(&ctx, &mut layout, vec![pointer_button(target, false)]);
+    assert!(actions.iter().any(|a| matches!(a, Action::Move { panel: 99, .. })), "{actions:?}");
+    let Some(Node::Tabs { panels, .. }) = layout.root.as_ref() else { panic!("{layout:?}") };
+    let at = panels.iter().position(|p| *p == 99).unwrap();
+    assert!(at < panels.len() - 1, "landed among the visible tabs, not after every hidden one: {panels:?}");
+}

@@ -8,7 +8,8 @@
 //! double-click on a tab collapses its group to the strip.
 
 use craft_ui::docking::{
-    Action, DockArea, DockStyle, Layout, Location, Node, PanelLimits, Permissions, Placement, Zone,
+    Action, DockArea, DockStyle, Layout, Location, Node, PanelLimits, Permissions, Placement,
+    TabOverflow, TabSizing, Zone,
 };
 use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Id, Stroke, Ui};
@@ -437,6 +438,9 @@ fn style(ui: &Ui) -> DockStyle {
     style.border = Stroke::new(1.0, theme::BORDER);
     style.accent = theme::ACCENT;
     style.font = theme::regular(12.0);
+    // Tabs share their strip's width; strips with too many tabs scroll.
+    style.tab_sizing = TabSizing::Fill;
+    style.tab_overflow = TabOverflow::Scroll;
     style
 }
 

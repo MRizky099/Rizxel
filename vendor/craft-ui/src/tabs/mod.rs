@@ -1,7 +1,7 @@
 //! Tab fitting and accessible tab interactions without owning a dock or document model.
 //!
 //! The caller owns identity, localization, selection, painting, overflow menus and drag actions.
-//! [`fit`] only assigns widths; [`Tab`] returns the complete egui response, including double-click
+//! [`fit`], [`fill`] and [`scroll`] only assign widths; [`Tab`] returns the complete egui response, including double-click
 //! and drag phases, so a panel strip can collapse, reorder or tear off according to its app.
 
 use egui::{Id, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
@@ -98,6 +98,99 @@ fn squeeze(natural: &[f32], indices: &[usize], total: f32, minimum: f32) -> Vec<
             (i, width)
         })
         .collect()
+}
+
+/// Stretch tabs to share `available` points as evenly as their labels allow: every tab gets a
+/// common width, and a tab whose natural width is wider keeps it. Returns `None` when the
+/// natural widths alone do not fit, so the caller can squeeze, overflow or scroll instead.
+///
+/// Dimensions are sanitized like [`fit`]. Widths are in input order and their sum never
+/// exceeds the sanitized available width; with any input it equals it up to rounding.
+pub fn fill(natural: &[f32], available: f32) -> Option<Vec<f32>> {
+    let available = extent(available);
+    let natural: Vec<f32> = natural.iter().map(|&w| extent(w)).collect();
+    if natural.iter().map(|&w| f64::from(w)).sum::<f64>() > f64::from(available) {
+        return None;
+    }
+    // Water-fill: tabs wider than an even share keep their width; the rest share what's left.
+    let mut order: Vec<usize> = (0..natural.len()).collect();
+    order.sort_by(|&a, &b| natural.get(b).unwrap_or(&0.0).total_cmp(natural.get(a).unwrap_or(&0.0)));
+    let mut remaining = f64::from(available);
+    let mut count = natural.len();
+    for &i in &order {
+        let width = f64::from(natural.get(i).copied().unwrap_or(0.0));
+        if count == 0 || width <= remaining / count as f64 {
+            break;
+        }
+        remaining -= width;
+        count -= 1;
+    }
+    let level = if count == 0 { 0.0 } else { (remaining / count as f64).max(0.0) as f32 };
+    let mut left = available;
+    Some(
+        natural
+            .iter()
+            .map(|&w| {
+                let width = w.max(level).min(left);
+                left = (left - width).max(0.0);
+                width
+            })
+            .collect(),
+    )
+}
+
+/// Horizontal scroll state of a tab strip whose tabs keep their natural widths.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TabScroll {
+    /// Width of every tab, in input order.
+    pub widths: Vec<f32>,
+    /// Points scrolled from the strip's start, within `0..=max_offset`.
+    pub offset: f32,
+    pub max_offset: f32,
+    /// Width reserved for each scroll arrow, at both ends; zero when everything fits.
+    pub arrow_width: f32,
+    /// Width of the visible tab area between the arrows.
+    pub view: f32,
+}
+
+impl TabScroll {
+    /// Visible `(start, width)` of tab `index` within the view, relative to the view's left
+    /// edge, or `None` when it is scrolled out of view entirely.
+    pub fn visible(&self, index: usize) -> Option<(f32, f32)> {
+        let start: f32 = self.widths.iter().take(index).sum::<f32>() - self.offset;
+        let width = *self.widths.get(index)?;
+        let left = start.max(0.0);
+        let right = (start + width).min(self.view);
+        (right > left).then_some((left, right - left))
+    }
+}
+
+/// Lay out a scrolling strip. Tabs keep their natural widths; when they don't fit, arrows of
+/// `arrow_width` are reserved at both ends and `offset` is clamped to the scrollable range.
+/// With `reveal`, the offset moves the least needed to show the selected tab in full (its
+/// start wins when it is wider than the view). Dimensions are sanitized like [`fit`].
+pub fn scroll(natural: &[f32], selected: usize, available: f32, offset: f32, arrow_width: f32, reveal: bool) -> TabScroll {
+    let available = extent(available);
+    let widths: Vec<f32> = natural.iter().map(|&w| extent(w)).collect();
+    let total = widths.iter().map(|&w| f64::from(w)).sum::<f64>().min(f64::from(MAX_EXTENT)) as f32;
+    if total <= available {
+        return TabScroll { widths, view: available, ..Default::default() };
+    }
+    let arrow_width = extent(arrow_width).min(available / 2.0);
+    let view = available - 2.0 * arrow_width;
+    let max_offset = (total - view).max(0.0);
+    let mut offset = if offset.is_finite() { offset.clamp(0.0, max_offset) } else { 0.0 };
+    if reveal && let Some(&width) = widths.get(selected) {
+        let start: f32 = widths.iter().take(selected).sum();
+        if start + width > offset + view {
+            offset = start + width - view;
+        }
+        if start < offset {
+            offset = start;
+        }
+        offset = offset.clamp(0.0, max_offset);
+    }
+    TabScroll { widths, offset, max_offset, arrow_width, view }
 }
 
 /// An accessible tab at a caller-supplied rectangle, with caller-supplied painting.
