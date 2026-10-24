@@ -223,16 +223,29 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 ui.set_min_width(240.0);
                 for format in FileFormat::IMPORTS {
                     let label = format!("{} (.{})...", format.label(), format.extension());
-                    let hint = if format == FileFormat::Mtl {
-                        "Replaces the palette and materials of the active document"
-                    } else {
-                        "Opens in a new tab"
+                    let hint = match format {
+                        FileFormat::Mtl => {
+                            "Replaces the palette and materials of the active document"
+                        }
+                        FileFormat::Obj | FileFormat::Stl | FileFormat::Ply => {
+                            "Voxelizer: size, rotation, then a new tab"
+                        }
+                        _ => "Opens in a new tab",
                     };
                     if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
-                        actions::import(state, format);
+                        actions::import(state, &mut ui_state.dialogs, format);
                     }
                     ui.label(egui::RichText::new(hint).size(10.0).color(theme::TEXT_DIM));
                 }
+                ui.separator();
+                if menu_item(ui, icon::MOUNTAINS, "Heightmap (.png, .jpg)...", "", true) {
+                    actions::import_heightmap(&mut ui_state.dialogs);
+                }
+                ui.label(
+                    egui::RichText::new("Grayscale image to terrain, in a new tab")
+                        .size(10.0)
+                        .color(theme::TEXT_DIM),
+                );
             },
         );
         ui.menu_button(icon_label(ui, icon::EXPORT, "Export", None), |ui| {

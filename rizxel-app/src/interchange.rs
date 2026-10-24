@@ -54,6 +54,45 @@ pub struct ExportOptions {
     pub obj_layout: rizxel_io::ObjLayout,
 }
 
+/// A mesh read for the Voxelizer dialog.
+#[derive(Debug, Clone)]
+pub struct PendingMesh {
+    pub path: std::path::PathBuf,
+    pub triangles: Vec<rizxel_engine::Triangle>,
+    pub up: rizxel_io::UpAxis,
+    /// The 256×1 palette texture, for voxel-editor OBJ exports.
+    pub palette: Option<rizxel_math::Palette>,
+}
+
+/// Voxelizer dialog settings.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct VoxelizerSettings {
+    pub voxelize: VoxelizeOptions,
+    /// Quarter turns about X, Y and Z.
+    pub turns: rizxel_io::QuarterTurns,
+}
+
+/// What the Voxelizer would make with some settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoxelizerPreview {
+    pub size: glam::UVec3,
+    pub voxels: usize,
+    pub exact: bool,
+}
+
+impl PendingMesh {
+    /// Voxelizes without building a document (the dialog's live count).
+    pub fn preview(&self, settings: &VoxelizerSettings) -> Result<VoxelizerPreview, RzxlError> {
+        let (size, voxels, exact) =
+            rizxel_io::preview_mesh(&self.triangles, self.up, settings.turns, settings.voxelize)?;
+        Ok(VoxelizerPreview {
+            size,
+            voxels,
+            exact,
+        })
+    }
+}
+
 impl ExportOptions {
     /// The scale used for `format`.
     pub fn scale_for(&self, format: FileFormat) -> f32 {
@@ -382,6 +421,17 @@ impl AppState {
                 rizxel_io::read_qef(&text, &name)?
             }
         };
+        self.open_imported(project, path, &mesh_note)
+    }
+
+    /// Opens an imported project in a new tab (replacing a pristine untitled
+    /// one) and returns the status message.
+    fn open_imported(
+        &mut self,
+        project: rizxel_io::ProjectFile,
+        path: &Path,
+        note: &str,
+    ) -> Result<String, RzxlError> {
         let mut doc = Document::from_project(project, None)?;
         if self.structure.fit_on_import {
             // An undo step of its own, so the original placement is one Ctrl+Z away.
@@ -390,7 +440,7 @@ impl AppState {
         doc.mark_unsaved();
         self.remember_recent(path);
         let summary = format!(
-            "Imported {} ({} voxels, {} layers{mesh_note})",
+            "Imported {} ({} voxels, {} layers{note})",
             path.display(),
             doc.visible_voxel_count(),
             doc.data.layers.len()
@@ -408,6 +458,87 @@ impl AppState {
             self.push_document(doc);
         }
         Ok(summary)
+    }
+
+    /// Reads an OBJ, STL or PLY file for the Voxelizer dialog, without
+    /// voxelizing it yet.
+    pub fn load_mesh(&self, path: &Path) -> Result<PendingMesh, RzxlError> {
+        let format = FileFormat::from_path(path);
+        let (triangles, up, palette) = match format {
+            Some(FileFormat::Obj) => {
+                let text = String::from_utf8_lossy(&read_limited(path)?).into_owned();
+                let mesh = rizxel_io::read_obj(&text, &rizxel_io::sibling_loader(path))?;
+                (mesh.triangles, rizxel_io::UpAxis::Y, mesh.palette)
+            }
+            Some(FileFormat::Stl) => (
+                rizxel_io::read_stl(&read_limited(path)?, rizxel_io::uncolored())?,
+                rizxel_io::UpAxis::Z,
+                None,
+            ),
+            Some(FileFormat::Ply) => (
+                rizxel_io::read_ply(&read_limited(path)?, rizxel_io::uncolored())?,
+                rizxel_io::UpAxis::Z,
+                None,
+            ),
+            _ => {
+                return Err(RzxlError::Invalid(format!(
+                    "not a mesh file (OBJ, STL or PLY): {}",
+                    path.display()
+                )))
+            }
+        };
+        Ok(PendingMesh {
+            path: path.to_path_buf(),
+            triangles,
+            up,
+            palette,
+        })
+    }
+
+    /// Voxelizes a mesh loaded with [`Self::load_mesh`] into a new tab.
+    pub fn import_mesh(
+        &mut self,
+        mesh: &PendingMesh,
+        settings: &VoxelizerSettings,
+    ) -> Result<String, RzxlError> {
+        let (project, info) = rizxel_io::project_from_mesh_turned(
+            mesh.triangles.clone(),
+            mesh.up,
+            settings.turns,
+            mesh.palette.clone(),
+            settings.voxelize,
+            &stem(&mesh.path),
+        )?;
+        let note = if info.exact {
+            ", exact: the mesh's own voxel grid".to_owned()
+        } else {
+            format!(
+                ", voxelized to {} voxels on the longest side",
+                settings.voxelize.resolution
+            )
+        };
+        self.open_imported(project, &mesh.path, &note)
+    }
+
+    /// *Import ▸ Heightmap*: the grayscale PNG or JPEG `path` (scaled down to
+    /// 256 per side) becomes a terrain in a new tab, colored from
+    /// `color` when given.
+    pub fn import_heightmap(
+        &mut self,
+        path: &Path,
+        color: Option<&Path>,
+        options: rizxel_io::HeightmapOptions,
+    ) -> Result<String, RzxlError> {
+        let side = rizxel_math::BoundSize::MAX;
+        let height = rizxel_io::decode_fitted(&read_limited(path)?, side)?;
+        let color = match color {
+            Some(c) => Some(rizxel_io::decode_fitted(&read_limited(c)?, 1024)?),
+            None => None,
+        };
+        let project =
+            rizxel_io::project_from_heightmap(&height, color.as_ref(), options, &stem(path))?;
+        let note = format!(", heightmap {}×{}", height.width, height.height);
+        self.open_imported(project, path, &note)
     }
 
     /// True when the active document can be exported as `format`.
@@ -730,6 +861,45 @@ mod tests {
             1,
             "clone instanced"
         );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn voxelizer_and_heightmap_imports_open_new_tabs() {
+        let d = dir().join("voxelizer");
+        std::fs::create_dir_all(&d).unwrap();
+        let src = sample_state();
+        let stl = d.join("m.stl");
+        src.export_active(&stl, FileFormat::Stl).unwrap();
+        let mut s = AppState::default();
+        let mesh = s.load_mesh(&stl).unwrap();
+        let exact = VoxelizerSettings::default();
+        let p = mesh.preview(&exact).unwrap();
+        assert!(p.exact);
+        assert_eq!(p.voxels, src.doc().unwrap().visible_voxel_count());
+        let coarse = VoxelizerSettings {
+            voxelize: VoxelizeOptions {
+                detect_grid: false,
+                resolution: 4,
+            },
+            turns: [0, 1, 0],
+        };
+        let q = mesh.preview(&coarse).unwrap();
+        assert!(!q.exact && q.size.max_element() == 4);
+        let msg = s.import_mesh(&mesh, &coarse).unwrap();
+        assert!(msg.contains("voxelized to 4"), "{msg}");
+        assert!(s.load_mesh(&d.join("m.vox")).is_err());
+
+        // Heightmap: a 2×1 PNG, black and white.
+        let png =
+            rizxel_io::png_io::encode_rgba(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255]).unwrap();
+        let hm = d.join("terrain.png");
+        std::fs::write(&hm, png).unwrap();
+        let msg = s
+            .import_heightmap(&hm, None, rizxel_io::HeightmapOptions { max_height: 6 })
+            .unwrap();
+        assert!(msg.contains("6 voxels"), "{msg}");
+        assert_eq!(s.doc().unwrap().data.bounds.y(), 6);
         std::fs::remove_dir_all(&d).ok();
     }
 

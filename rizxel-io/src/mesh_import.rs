@@ -43,19 +43,70 @@ pub struct MeshImportInfo {
     pub voxel_size: f32,
 }
 
+/// Quarter turns (counter-clockwise, looking down each axis) about X, then
+/// Y, then Z, applied after the up axis is converted.
+pub type QuarterTurns = [u8; 3];
+
+/// `triangles` from a file with `up` in Rizxel's Y-up frame, then turned.
+pub fn oriented(mut triangles: Vec<Triangle>, up: UpAxis, turns: QuarterTurns) -> Vec<Triangle> {
+    let rotate = |p: Vec3| -> Vec3 {
+        let mut p = if up == UpAxis::Z {
+            Vec3::new(p.x, p.z, -p.y)
+        } else {
+            p
+        };
+        for _ in 0..turns[0] % 4 {
+            p = Vec3::new(p.x, -p.z, p.y);
+        }
+        for _ in 0..turns[1] % 4 {
+            p = Vec3::new(p.z, p.y, -p.x);
+        }
+        for _ in 0..turns[2] % 4 {
+            p = Vec3::new(-p.y, p.x, p.z);
+        }
+        p
+    };
+    for t in &mut triangles {
+        t.p = t.p.map(rotate);
+    }
+    triangles
+}
+
+/// What [`project_from_mesh_turned`] would make, without building it: the
+/// grid size, the number of voxels and whether the grid is exact.
+pub fn preview_mesh(
+    triangles: &[Triangle],
+    up: UpAxis,
+    turns: QuarterTurns,
+    options: VoxelizeOptions,
+) -> Result<(glam::UVec3, usize, bool), RzxlError> {
+    let grid =
+        voxelize(&oriented(triangles.to_vec(), up, turns), options).map_err(RzxlError::Invalid)?;
+    Ok((grid.size, grid.cells.len(), grid.exact))
+}
+
 /// Voxelizes `triangles` into a one-layer project named `name`.
 pub fn project_from_mesh(
-    mut triangles: Vec<Triangle>,
+    triangles: Vec<Triangle>,
     up: UpAxis,
     palette_texture: Option<Palette>,
     options: VoxelizeOptions,
     name: &str,
 ) -> Result<(ProjectFile, MeshImportInfo), RzxlError> {
-    if up == UpAxis::Z {
-        for t in &mut triangles {
-            t.p = t.p.map(|p| Vec3::new(p.x, p.z, -p.y));
-        }
-    }
+    project_from_mesh_turned(triangles, up, [0; 3], palette_texture, options, name)
+}
+
+/// [`project_from_mesh`] with the mesh turned by `turns` first (the
+/// Voxelizer dialog).
+pub fn project_from_mesh_turned(
+    triangles: Vec<Triangle>,
+    up: UpAxis,
+    turns: QuarterTurns,
+    palette_texture: Option<Palette>,
+    options: VoxelizeOptions,
+    name: &str,
+) -> Result<(ProjectFile, MeshImportInfo), RzxlError> {
+    let triangles = oriented(triangles, up, turns);
     let grid = voxelize(&triangles, options).map_err(RzxlError::Invalid)?;
     let bounds = bounds_for(grid.size, "The voxelized mesh")?;
 
@@ -173,6 +224,45 @@ mod tests {
         let mut got: Vec<_> = back.iter().collect();
         got.sort_by_key(|(q, _)| (q.z, q.y, q.x));
         assert_eq!(got, shifted);
+    }
+
+    #[test]
+    fn quarter_turns_rotate_without_mirroring() {
+        let bounds = BoundSize::new(4, 1, 1);
+        let mut v = VoxelVolume::new(bounds);
+        for x in 0..4 {
+            v.set(IVec3::new(x, 0, 0), 9);
+        }
+        let e = build_obj_export(&v, bounds, &Palette::default(), "m", 0.1).unwrap();
+        let tris = read_obj(&e.obj, &|_| None).unwrap().triangles;
+        let size =
+            |turns| preview_mesh(&tris, UpAxis::Y, turns, VoxelizeOptions::default()).unwrap();
+        assert_eq!(size([0, 0, 0]), (glam::UVec3::new(4, 1, 1), 4, true));
+        // A rod along X stands up after a quarter turn about Z.
+        assert_eq!(size([0, 0, 1]).0, glam::UVec3::new(1, 4, 1));
+        assert_eq!(size([0, 1, 0]).0, glam::UVec3::new(1, 1, 4));
+        assert_eq!(size([1, 0, 0]).0, glam::UVec3::new(4, 1, 1));
+        // Rotations keep handedness: X × Y = Z after any turn.
+        let t = oriented(
+            vec![Triangle {
+                p: [Vec3::ZERO, Vec3::X, Vec3::Y],
+                color: Rgba8::WHITE,
+            }],
+            UpAxis::Y,
+            [1, 2, 3],
+        );
+        let [a, b, c] = t[0].p;
+        assert!(((b - a).cross(c - a).length() - 1.0).abs() < 1e-5);
+        let (p, _) = project_from_mesh_turned(
+            tris,
+            UpAxis::Y,
+            [0, 0, 1],
+            None,
+            VoxelizeOptions::default(),
+            "m",
+        )
+        .unwrap();
+        assert_eq!(p.bounds, BoundSize::new(1, 4, 1));
     }
 
     #[test]

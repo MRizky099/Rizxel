@@ -4,6 +4,8 @@
 
 use rizxel_app::{AppState, FileFormat, RZXL_EXTENSION};
 
+use crate::panels::export::{Dialogs, HeightmapDialog, VoxelizerDialog};
+
 fn rzxl_dialog() -> rfd::FileDialog {
     rfd::FileDialog::new().add_filter("Rizxel Project", &[RZXL_EXTENSION])
 }
@@ -49,8 +51,9 @@ pub fn open_path(state: &mut AppState, path: &std::path::Path) {
     }
 }
 
-/// File ▸ Import ▸ `format`.
-pub fn import(state: &mut AppState, format: FileFormat) {
+/// File ▸ Import ▸ `format`. Meshes (OBJ, STL, PLY) open the Voxelizer
+/// dialog first.
+pub fn import(state: &mut AppState, dialogs: &mut Dialogs, format: FileFormat) {
     let title = format!("Import {}", format.label());
     let Some(path) = format_filter(rfd::FileDialog::new(), format)
         .set_title(title)
@@ -58,7 +61,35 @@ pub fn import(state: &mut AppState, format: FileFormat) {
     else {
         return;
     };
-    open_path(state, &path);
+    if !matches!(format, FileFormat::Obj | FileFormat::Stl | FileFormat::Ply) {
+        open_path(state, &path);
+        return;
+    }
+    match state.load_mesh(&path) {
+        Ok(mesh) => {
+            dialogs.voxelizer = Some(VoxelizerDialog::new(mesh, dialogs.voxelizer_settings));
+        }
+        Err(e) => {
+            log::error!("import {}: {e}", path.display());
+            state.status_message = Some(format!("Failed to import: {e}"));
+        }
+    }
+}
+
+/// File ▸ Import ▸ Heightmap: picks the image, then opens its dialog.
+pub fn import_heightmap(dialogs: &mut Dialogs) {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("Import Heightmap")
+        .add_filter("Image", &rizxel_app::IMAGE_EXTENSIONS)
+        .pick_file()
+    else {
+        return;
+    };
+    dialogs.heightmap = Some(HeightmapDialog {
+        path,
+        color: None,
+        options: rizxel_app::HeightmapOptions::default(),
+    });
 }
 
 /// File ▸ Export ▸ `format`.

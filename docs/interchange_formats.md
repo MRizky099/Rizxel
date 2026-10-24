@@ -14,6 +14,7 @@ These formats are supported for exchange with other tools:
 | Qubicle `.qbt` | New tab. Matrices as layers; models and compounds as groups. | Matrices per visible layer, groups as compounds. |
 | Qubicle `.qef` | New tab. One layer; up to 255 colors keep their order. | Merged visible layers at the full bounds size, every palette color. |
 | Stanford `.ply` | New tab. ASCII or binary, Z-up, voxelized like STL, with vertex colors. | Binary little-endian, Z-up, vertex colors, 1 voxel = 0.1. |
+| Heightmap (PNG, JPEG) | File ▸ Import ▸ Heightmap. New tab: brightness sets column heights; optional color image. | — |
 | glTF 2.0 `.glb` / `.gltf` | — | One node per visible layer, groups as parent nodes, linked clones as instances of one mesh. Vertex colors or a palette texture; layer materials as PBR. |
 
 Code: `rizxel-io/src/format_{vox,gox,obj,mtl,stl,gltf,qb,qef,qbt,ply}.rs`, `qubicle.rs`, `mesh_import.rs`, and
@@ -126,6 +127,32 @@ Checked against the original (`rizxel-io` test
 
 Rizxel merges same-color faces greedily across the whole model, so it writes
 fewer triangles (1012 against MagicaVoxel's 1124 for the knight).
+
+## Voxelizer dialog
+
+File ▸ Import ▸ OBJ, STL or PLY opens the Voxelizer before the new tab:
+
+- **Grid**: *Use the mesh's own voxel grid* (on by default) imports
+  voxel-editor exports exactly. Off, or for other meshes, the mesh is
+  scaled so its longest side spans *Size* voxels (1–256).
+- **Rotation**: quarter turns about X, Y and Z (applied in that order,
+  after the file's up axis is converted), never a mirror.
+- **Preview**: the result's size and voxel count update live.
+
+Open… and drag and drop still import meshes directly with the defaults.
+Headless: `convert --resolution N --turn y input.stl output.rzxl`.
+
+## Heightmap import
+
+File ▸ Import ▸ Heightmap reads a PNG or JPEG. Image X runs along +X and
+image Y (down) along +Z, like a map seen from the top. A pixel's
+brightness (Rec. 601 luma, transparent counts as black) sets its column
+height, `round(luma / 255 × max height)` voxels standing on Y = 0; black
+columns stay empty. Images over 256 pixels per side are scaled down. An
+optional color image (any size, sampled at the same relative position,
+reduced to the palette) colors the columns; otherwise they use the
+default palette's highlighted color. Headless:
+`convert --heightmap 32 terrain.png terrain.rzxl`.
 
 ## Export Slices
 

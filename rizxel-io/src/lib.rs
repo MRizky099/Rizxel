@@ -15,6 +15,7 @@
 //! - [`mesh_import`]: voxelizes imported OBJ/STL meshes into a project.
 //! - [`format_palette`]: GIMP `.gpl` and `.hex` palette files.
 //! - [`slices`]: Export Slices (one PNG per voxel slice).
+//! - [`heightmap`]: grayscale image -> voxel terrain.
 //! - [`image_io`]: PNG and JPEG reference images.
 
 pub mod format_gltf;
@@ -29,6 +30,7 @@ pub mod format_qef;
 pub mod format_rzxl;
 pub mod format_stl;
 pub mod format_vox;
+pub mod heightmap;
 pub mod image_io;
 pub mod interchange;
 pub mod mesh_export;
@@ -66,10 +68,15 @@ pub use format_rzxl::{
 };
 pub use format_stl::{read_stl, write_stl, DEFAULT_STL_SCALE, STL_EXTENSION};
 pub use format_vox::{read_vox, write_vox, VOX_EXTENSION};
+pub use heightmap::{project_from_heightmap, HeightmapOptions};
 pub use image_io::{
-    check_reference, decode_reference, import_image, ImportedImage, MAX_REFERENCE_SIDE,
+    check_reference, decode_fitted, decode_reference, import_image, ImportedImage,
+    MAX_REFERENCE_SIDE,
 };
 pub use interchange::{evaluate_layer, ExportGroup, ExportLayer, ExportScene};
 pub use mesh_export::Pivot;
-pub use mesh_import::{project_from_mesh, uncolored, MeshImportInfo, UpAxis};
+pub use mesh_import::{
+    oriented, preview_mesh, project_from_mesh, project_from_mesh_turned, uncolored, MeshImportInfo,
+    QuarterTurns, UpAxis,
+};
 pub use slices::{export_slices, Slice, SliceAxis, MAX_SLICE_SCALE};

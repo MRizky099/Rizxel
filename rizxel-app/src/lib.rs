@@ -41,15 +41,19 @@ pub use document::{
 };
 pub use favorites::Favorites;
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
-pub use interchange::{is_image_path, ExportOptions, FileFormat, IMAGE_EXTENSIONS};
+pub use interchange::{
+    is_image_path, ExportOptions, FileFormat, PendingMesh, VoxelizerPreview, VoxelizerSettings,
+    IMAGE_EXTENSIONS,
+};
 pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
+pub use rizxel_engine::VoxelizeOptions;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::png_io::RgbaImage;
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
-pub use rizxel_io::{GltfColors, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
+pub use rizxel_io::{GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
 pub use transform_session::{pivot_point, TransformSession};
 
