@@ -17,7 +17,7 @@ use crate::RzxlError;
 pub const MTL_EXTENSION: &str = "mtl";
 /// Header comment of exported OBJ/MTL files (app @ author, like
 /// MagicaVoxel's `# MagicaVoxel @ Ephtracy`).
-pub const EXPORT_HEADER: &str = "# Rizxel @ Abati Technology";
+pub const EXPORT_HEADER: &str = "# Rizxel @ MRizky099";
 /// Name of the single material in exported libraries.
 pub const PALETTE_MATERIAL: &str = "palette";
 
@@ -247,7 +247,7 @@ mod tests {
         let mtl = write_palette_mtl("chr_knight.png");
         assert_eq!(
             mtl,
-            "# Rizxel @ Abati Technology\r\n\r\nnewmtl palette\r\nillum 1\r\n\
+            "# Rizxel @ MRizky099\r\n\r\nnewmtl palette\r\nillum 1\r\n\
              Ka 0.000 0.000 0.000\r\nKd 1.000 1.000 1.000\r\nKs 0.000 0.000 0.000\r\n\
              map_Kd chr_knight.png\r\n"
         );

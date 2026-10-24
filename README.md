@@ -154,4 +154,4 @@ repository: the architecture plan (`rizxel_native_architecture_plan.md`), one
 
 ## License
 
-MIT OR Apache-2.0. © Abati Technology.
+MIT OR Apache-2.0. © 2026 Muhammad Rizky Abdillah (MRizky099).
