@@ -1,9 +1,16 @@
 //! Phase 5b: selections (undoable, per layer), selection-aware Move and
 //! Extrude, Fill, Shape, and a randomized undo/redo round trip over all of
-//! them (extended in Phase 8 with copy, cut, paste and the transforms).
+//! them (extended in Phase 8 with copy, cut, paste and the transforms, and in
+//! Phase 10 with the selection operations, Mask Mode and the structure and
+//! palette operations, in Phase 10b with the layer hierarchy and the
+//! reference images, and in Phase 10c with box selection, selection to a
+//! new layer, lines and curves and the Transform tool).
 
 use glam::IVec3;
-use rizxel_app::{Clipboard, Document, Edit, Layer, Selection, VoxelChange};
+use rizxel_app::{
+    Clipboard, CoreOp, Document, Edit, Layer, LayerDrop, PaletteSort, Selection, VoxelChange,
+};
+use rizxel_engine::tools::BooleanOp;
 use rizxel_engine::tools::{
     apply_op, extrude_changes, extruded_cells, fill_cells, fuzzy_select, move_selection_changes,
     select_box, selection_box, selection_region, shape_box, shape_cells, Transform,
@@ -349,15 +356,232 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
                 axis: rng.below(3) as usize,
             });
         }
-        _ => {
+        13 => {
             let _ = d.mirror(rng.below(3) as usize);
         }
+        // Phase 10: grow / shrink the selection, select by color.
+        14 => {
+            let steps = 1 + rng.below(2) as u32;
+            if rng.below(2) == 0 {
+                d.grow_selection(steps);
+            } else {
+                d.shrink_selection(steps);
+            }
+        }
+        15 => {
+            let mode = MaskMode::ALL[rng.below(3) as usize];
+            d.select_by_color(2 + rng.below(2) as Voxel, 0, mode);
+        }
+        // Structure operations.
+        16 => {
+            if rng.below(2) == 0 {
+                let _ = d.separate_parts(1 + rng.below(3) as usize);
+            } else {
+                d.plane.axis = rng.below(3) as usize;
+                d.plane.coord = rng.below(6);
+                let _ = d.split_at_plane();
+            }
+        }
+        17 => {
+            let op = match rng.below(3) {
+                0 => CoreOp::FillHollows,
+                1 => CoreOp::Hollow,
+                _ => CoreOp::HollowAdvanced(1 + rng.below(2) as u32),
+            };
+            let _ = d.core_op(op);
+        }
+        18 => {
+            let other = rng.below(d.data.layers.len() as u64) as usize;
+            let _ = d.boolean(other, BooleanOp::ALL[rng.below(3) as usize]);
+        }
+        19 => {
+            let _ = d.fit_bounds_to_content();
+        }
+        // Palette operations (they remap voxels on every layer).
+        20 => {
+            let key = [PaletteSort::Hue, PaletteSort::Luminance][rng.below(2) as usize];
+            d.sort_palette(key);
+        }
+        21 => {
+            d.remap_color(2 + rng.below(6) as usize, 2 + rng.below(6) as usize);
+        }
+        22 => {
+            d.palette_gradient(1 + rng.below(20) as usize, 1 + rng.below(20) as usize);
+        }
+        23 => {
+            // Snapping to a small palette with a repeated color leaves
+            // duplicates for the next Remove Duplicates.
+            if rng.below(2) == 0 {
+                d.remove_duplicate_colors();
+            } else {
+                let c = rizxel_math::Rgba8::rgb(rng.below(256) as u8, 40, 9);
+                let colors = [c, rizxel_math::Rgba8::rgb(9, rng.below(256) as u8, 90), c];
+                d.snap_to_palette(&colors);
+            }
+        }
+        // Phase 10b: layer hierarchy.
+        24 => {
+            let i = rng.below(d.data.layers.len() as u64) as usize;
+            if d.data.layers[i].kind().is_group() && rng.below(2) == 0 {
+                d.ungroup(i);
+            } else {
+                d.group_layer(i);
+            }
+        }
+        25 => {
+            let n = d.data.layers.len() as u64;
+            let (from, row) = (rng.below(n) as usize, rng.below(n) as usize);
+            match rng.below(4) {
+                0 => d.drop_layer(from, LayerDrop::Above(row)),
+                1 => d.drop_layer(from, LayerDrop::Below(row)),
+                2 => d.drop_layer(from, LayerDrop::Into(row)),
+                _ => {
+                    d.active_layer = from;
+                    d.move_active_layer(rng.below(2) == 0)
+                }
+            };
+        }
+        26 => {
+            let groups: Vec<usize> = (0..d.data.layers.len())
+                .filter(|&i| d.data.layers[i].kind().is_group())
+                .collect();
+            if !groups.is_empty() {
+                let g = groups[rng.below(groups.len() as u64) as usize];
+                match rng.below(3) {
+                    0 => {
+                        d.active_layer = g;
+                        d.duplicate_active_layer();
+                    }
+                    1 => {
+                        d.merge_group(g);
+                    }
+                    _ => {
+                        d.delete_group_with_contents(g);
+                    }
+                }
+            }
+        }
+        // Phase 10b: reference images.
+        27 => {
+            let n = d.data.references.len();
+            let i = rng.below(n.max(1) as u64) as usize;
+            match rng.below(6) {
+                0 | 1 => {
+                    let plane = rizxel_math::RefPlane::ALL[rng.below(3) as usize];
+                    let image = rizxel_math::ImageData::new(vec![1, 2, 3], 4, 2);
+                    d.add_reference("ref", image, plane);
+                }
+                2 => {
+                    d.remove_reference(i);
+                }
+                3 => {
+                    let z = rng.below(9) as f32;
+                    let merge = rng.below(2) == 0;
+                    d.update_reference(i, merge, |r| {
+                        r.offset.z = z;
+                        r.opacity = z / 8.0;
+                        r.rotation = (r.rotation + 1) % 4;
+                    });
+                }
+                4 => {
+                    d.move_reference(i, rng.below(n.max(1) as u64) as usize);
+                }
+                _ => {
+                    if rng.below(2) == 0 {
+                        d.toggle_all_references();
+                    } else {
+                        d.duplicate_reference(i);
+                    }
+                }
+            }
+        }
+        // Phase 10c: an open box selection, resized, then applied or
+        // cancelled.
+        28 => {
+            let mode = MaskMode::ALL[rng.below(3) as usize];
+            let all = rng.below(2) == 0;
+            d.begin_box_select(selection_box(rng.cell(6), rng.cell(6)), all, mode);
+            let area = selection_box(rng.cell(8), rng.cell(8));
+            d.set_box_area(area, rng.below(2) == 0);
+            if rng.below(5) == 0 {
+                d.cancel_box_select();
+            } else {
+                d.apply_box_select();
+            }
+        }
+        // Selection to a new layer, cut or copied.
+        29 => {
+            if d.selection().is_some_and(|s| s.is_empty()) {
+                let area = selection_box(rng.cell(6), rng.cell(6));
+                let cells = select_box(&[&d.data.layers[layer].volume], &area);
+                d.select(cells, MaskMode::Set);
+            } else {
+                let _ = d.selection_to_new_layer(rng.below(2) == 0);
+            }
+        }
+        // A line, polyline or curve stamped with a random brush.
+        30 => {
+            use rizxel_engine::tools::{bezier_path, connect, line_stroke, polyline_path};
+            use rizxel_engine::{Connectivity, ToolContext, ToolOptions};
+            let points: Vec<IVec3> = (0..2 + rng.below(3)).map(|_| rng.cell(10)).collect();
+            let path = if rng.below(2) == 0 {
+                polyline_path(&points)
+            } else {
+                bezier_path(&points, 0.35)
+            };
+            let path = connect(path, Connectivity::ALL[rng.below(3) as usize]);
+            let mut options = ToolOptions::default();
+            options.brush.size = [1 + rng.below(2) as u32; 3];
+            options.brush.symmetry.x = rng.below(3) == 0;
+            let op = [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Paint][rng.below(3) as usize];
+            let changes = line_stroke(
+                &ToolContext {
+                    volume: &d.data.layers[layer].volume,
+                    bounds: d.data.bounds,
+                    color,
+                    op,
+                    options: &options,
+                    hit: None,
+                },
+                &path,
+            );
+            d.begin_edit();
+            d.edit_voxels(layer, &changes);
+            d.commit_edit();
+        }
+        // A Transform tool session: rotated, scaled and moved, then
+        // applied (maybe clipped) or cancelled.
+        31 => {
+            use rizxel_engine::tools::TransformParams;
+            use rizxel_engine::Pivot;
+            let pivot = [Pivot::Center, Pivot::MinCorner, Pivot::Cursor][rng.below(3) as usize];
+            let cell = rng.cell(8);
+            if d.begin_transform(pivot, cell).is_ok() {
+                let mut p = TransformParams::default();
+                let axis = rng.below(3) as usize;
+                p.rotate[axis] = [0.0, 90.0, -90.0, 30.0, 45.0][rng.below(5) as usize];
+                p.scale[rng.below(3) as usize] = [1.0, 2.0, 0.5, 1.5][rng.below(4) as usize];
+                p.offset[rng.below(3) as usize] = rng.below(5) - 2;
+                d.set_transform(p, pivot, cell);
+                match rng.below(4) {
+                    0 => {
+                        d.cancel_transform();
+                    }
+                    _ => {
+                        if d.apply_transform(rng.below(2) == 0).is_err() {
+                            d.cancel_transform();
+                        }
+                    }
+                }
+            }
+        }
+        _ => unreachable!("op {op}"),
     }
     op as usize
 }
 
 /// Number of operation kinds [`random_op`] picks from.
-const OPS: usize = 14;
+const OPS: usize = 32;
 
 #[test]
 fn random_tool_sequences_undo_and_redo_exactly() {
@@ -370,9 +594,12 @@ fn random_tool_sequences_undo_and_redo_exactly() {
         d.data.layers[1].selection = (0..3).map(|x| IVec3::new(x, 3, 0)).collect();
         let initial = d.data.clone();
         for _ in 0..60 {
-            d.active_layer = rng.below(2) as usize;
+            d.active_layer = rng.below(d.data.layers.len() as u64) as usize;
+            // Mask Mode (Phase 10) on for about a quarter of the operations.
+            d.mask_selection = rng.below(4) == 0;
             let before = d.data.clone();
             let op = random_op(&mut d, &mut rng);
+            assert!(d.data.structure_is_valid(), "seed {seed}: tree rules");
             // Every operation is a single undo step.
             if d.data != before {
                 effective[op] += 1;
@@ -388,6 +615,13 @@ fn random_tool_sequences_undo_and_redo_exactly() {
         assert_eq!(d.data, initial, "seed {seed}: undo all");
         while d.redo() {}
         assert_eq!(d.data, last, "seed {seed}: redo all");
+        // The History panel's jumps land on the same states.
+        let (entries, position) = d.history_entries();
+        assert_eq!(position, entries.len());
+        d.jump_to(0);
+        assert_eq!(d.data, initial, "seed {seed}: jump to start");
+        d.jump_to(entries.len());
+        assert_eq!(d.data, last, "seed {seed}: jump to end");
     }
     assert!(
         effective.iter().all(|&n| n > 0),

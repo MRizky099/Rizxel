@@ -4,14 +4,18 @@
 //! only through the methods below, so all behavior is testable without a window.
 
 pub mod autosave;
+pub mod box_select;
 pub mod clipboard;
 pub mod close;
 pub mod document;
+pub mod favorites;
 pub mod history;
 pub mod interchange;
+pub mod layer_tree;
 pub mod paths;
 pub mod recent;
 pub mod selection;
+pub mod transform_session;
 
 use std::path::Path;
 use std::time::Instant;
@@ -22,25 +26,31 @@ use glam::camera::rh::{
 };
 use glam::{IVec3, Mat4, Vec3};
 use rizxel_engine::tools::Transform;
-use rizxel_engine::{RayHit, Tool, ToolOptions, VoxelOp};
+use rizxel_engine::{MaskMode, RayHit, Tool, ToolOptions, VoxelOp};
 use rizxel_io::RzxlError;
 use rizxel_math::BoundSize;
 
 pub use autosave::{RecoveryEntry, RecoveryMeta, AUTOSAVE_EDITS, AUTOSAVE_INTERVAL};
+pub use box_select::{BoxSelect, LastBox};
 pub use clipboard::Clipboard;
 pub use close::{CloseAction, CloseChoice, CloseRequest, CloseStep};
 pub use document::{
-    DocData, Document, EditBlock, FloatingPaste, Layer, LayerProps, SliceOutcome, TransformError,
-    TransparentMesh, ViewMeshes, GHOST_ALPHA, MAX_MATERIAL_SLOT,
+    CoreOp, DocData, Document, EditBlock, FloatingPaste, Layer, LayerDrop, LayerProps, OpError,
+    PaletteSort, SliceOutcome, TransformError, TransparentMesh, ViewMeshes, GHOST_ALPHA,
+    MASKED_MESSAGE, MAX_MATERIAL_SLOT,
 };
+pub use favorites::Favorites;
 pub use history::{ClippedVoxel, Edit, History, VoxelChange};
-pub use interchange::FileFormat;
+pub use interchange::{is_image_path, FileFormat, IMAGE_EXTENSIONS};
+pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
 pub use rizxel_engine::Mesh;
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
-pub use rizxel_io::RZXL_EXTENSION;
+pub use rizxel_io::png_io::RgbaImage;
+pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use selection::Selection;
+pub use transform_session::{pivot_point, TransformSession};
 
 /// File extension of mesh exports.
 pub const OBJ_EXTENSION: &str = "obj";
@@ -565,7 +575,33 @@ pub struct AppState {
     autosave: autosave::Autosave,
     /// Voxels copied or cut, shared by every open document.
     pub clipboard: Option<Clipboard>,
+    /// Settings of the *Layer* and *Model* structure operations.
+    pub structure: StructureOptions,
+    /// Favorite colors `0`–`9`: palette indices, shared by every document
+    /// and kept in the app settings (not in files).
+    pub favorites: Favorites,
     untitled_counter: u32,
+}
+
+/// Settings of the structure operations, shown in their menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructureOptions {
+    /// *Separate Parts*: parts smaller than this stay in the layer.
+    pub min_part_voxels: usize,
+    /// *Advanced Hollow*: shell thickness in voxels.
+    pub hollow_thickness: u32,
+    /// Imports run *Fit Bounds to Content* right away.
+    pub fit_on_import: bool,
+}
+
+impl Default for StructureOptions {
+    fn default() -> Self {
+        Self {
+            min_part_voxels: 1,
+            hollow_thickness: 2,
+            fit_on_import: false,
+        }
+    }
 }
 
 impl Default for AppState {
@@ -588,6 +624,8 @@ impl Default for AppState {
             recent: RecentFiles::default(),
             autosave: autosave::Autosave::default(),
             clipboard: None,
+            structure: StructureOptions::default(),
+            favorites: Favorites::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -601,6 +639,7 @@ impl AppState {
         let mut state = Self::default();
         if let Some(p) = &paths {
             state.recent = RecentFiles::load(&p.recent_file());
+            state.favorites = Favorites::load(&p.favorites_file());
         }
         state.paths = paths;
         state
@@ -655,8 +694,9 @@ impl AppState {
         self.push_document(Document::new(name));
     }
 
-    pub fn push_document(&mut self, doc: Document) {
+    pub fn push_document(&mut self, mut doc: Document) {
         self.cancel_active_edit();
+        doc.mask_selection = self.options.mask_selection;
         self.documents.push(doc);
         self.active_doc = self.documents.len() - 1;
     }
@@ -797,6 +837,8 @@ impl AppState {
             && self.documents[0].path.is_none()
             && !self.documents[0].is_dirty();
         if replace_pristine {
+            let mut doc = doc;
+            doc.mask_selection = self.options.mask_selection;
             self.documents[0] = doc;
             self.active_doc = 0;
         } else {
@@ -978,7 +1020,7 @@ impl AppState {
 
     pub fn select_all(&mut self) {
         if let Some(d) = self.doc_mut() {
-            d.select_all();
+            d.labeled("Select All", Document::select_all);
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selected {n} voxels"));
         }
@@ -986,10 +1028,63 @@ impl AppState {
 
     pub fn invert_selection(&mut self) {
         if let Some(d) = self.doc_mut() {
-            d.invert_selection();
+            d.labeled("Invert Selection", Document::invert_selection);
             let n = d.selection().map_or(0, Selection::len);
             self.status_message = Some(format!("Selection inverted: {n} voxels"));
         }
+    }
+
+    /// *Selection ▸ Grow* by `steps` cells.
+    pub fn grow_selection(&mut self, steps: u32) {
+        if let Some(d) = self.doc_mut() {
+            d.labeled("Grow Selection", |d| d.grow_selection(steps));
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selection grown: {n} voxels"));
+        }
+    }
+
+    /// *Selection ▸ Shrink* by `steps` cells.
+    pub fn shrink_selection(&mut self, steps: u32) {
+        if let Some(d) = self.doc_mut() {
+            d.labeled("Shrink Selection", |d| d.shrink_selection(steps));
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selection shrunk: {n} voxels"));
+        }
+    }
+
+    /// *Selection ▸ By Color*: selects the active layer's voxels of the
+    /// selected palette color, within the Fuzzy Select threshold.
+    pub fn select_by_color(&mut self) {
+        let threshold = self.options.fuzzy_select.threshold;
+        if let Some(d) = self.doc_mut() {
+            let color = d.selected_color as rizxel_math::Voxel;
+            d.labeled("Select by Color", |d| {
+                d.select_by_color(color, threshold, MaskMode::Set)
+            });
+            let n = d.selection().map_or(0, Selection::len);
+            self.status_message = Some(format!("Selected {n} voxels of color {color}"));
+        }
+    }
+
+    /// Mask Mode on or off for every open document: tools then leave the
+    /// selected voxels alone.
+    pub fn set_mask_selection(&mut self, on: bool) {
+        self.options.mask_selection = on;
+        for d in &mut self.documents {
+            d.mask_selection = on;
+        }
+        self.status_message = Some(
+            if on {
+                "Mask Mode on: the selection is protected"
+            } else {
+                "Mask Mode off"
+            }
+            .to_owned(),
+        );
+    }
+
+    pub fn toggle_mask_selection(&mut self) {
+        self.set_mask_selection(!self.options.mask_selection);
     }
 
     pub fn deselect(&mut self) {
@@ -1001,8 +1096,10 @@ impl AppState {
     /// Deletes the selected voxels of the active layer (`Delete`).
     pub fn delete_selected(&mut self) {
         let Some(doc) = self.doc_mut() else { return };
-        let removed = doc.delete_selected();
+        let protected = doc.selection_protected();
+        let removed = doc.labeled("Delete", Document::delete_selected);
         self.status_message = Some(match doc.editable_layer(doc.active_layer) {
+            _ if protected => MASKED_MESSAGE.to_owned(),
             Err(e) if removed == 0 && e != EditBlock::Hidden => e.message().to_owned(),
             _ => format!("Deleted {removed} selected voxels"),
         });
@@ -1031,9 +1128,11 @@ impl AppState {
             return false;
         };
         let block = doc.editable_layer(doc.active_layer).err();
-        let clip = doc.cut();
+        let protected = doc.selection_protected();
+        let clip = doc.labeled("Cut", Document::cut);
         self.status_message = Some(match (&clip, block) {
             (Some(c), _) => format!("Cut {} voxels", c.cells.len()),
+            (None, _) if protected => MASKED_MESSAGE.to_owned(),
             (None, Some(e)) if e != EditBlock::Hidden => e.message().to_owned(),
             (None, _) => "Nothing to cut".to_owned(),
         });
@@ -1086,7 +1185,7 @@ impl AppState {
         let Some(doc) = self.doc_mut() else {
             return false;
         };
-        doc.paste_to_new_layer(&clip);
+        doc.labeled("Paste to New Layer", |d| d.paste_to_new_layer(&clip));
         self.status_message = Some(format!(
             "Pasted {} voxels into a new layer",
             clip.cells.len()
@@ -1097,7 +1196,7 @@ impl AppState {
     /// Places the floating paste of the active document.
     pub fn commit_paste(&mut self) {
         if let Some(doc) = self.doc_mut().filter(|d| d.floating_paste().is_some()) {
-            let n = doc.commit_paste();
+            let n = doc.labeled("Paste", Document::commit_paste);
             self.status_message = Some(format!("Pasted {n} voxels"));
         }
     }
@@ -1150,10 +1249,177 @@ impl AppState {
         f: impl FnOnce(&mut Document) -> Result<usize, TransformError>,
     ) {
         let Some(doc) = self.doc_mut() else { return };
-        self.status_message = Some(match f(doc) {
+        self.status_message = Some(match doc.labeled(label, f) {
             Ok(n) => format!("{label}: {n} voxels changed"),
             Err(e) => format!("{label}: {}", e.message()),
         });
+    }
+
+    // ----------------------------------------------------- structure ops
+
+    fn run_op(&mut self, label: &str, f: impl FnOnce(&mut Document) -> Result<String, OpError>) {
+        let Some(doc) = self.doc_mut() else { return };
+        self.status_message = Some(match doc.labeled(label, f) {
+            Ok(done) => format!("{label}: {done}"),
+            Err(e) => format!("{label}: {}", e.message()),
+        });
+    }
+
+    /// *Layer ▸ Group Layer* (`Ctrl+G`): wraps the active layer (a group
+    /// with its contents) in a new group.
+    pub fn group_active_layer(&mut self) {
+        let Some(d) = self.doc_mut() else { return };
+        let index = d.active_layer;
+        if d.group_layer(index).is_none() {
+            self.status_message = Some(format!(
+                "Group Layer: groups nest at most {} levels deep",
+                rizxel_io::MAX_GROUP_DEPTH
+            ));
+        }
+    }
+
+    /// *Layer ▸ Ungroup* (`Ctrl+Shift+G`): dissolves the active group, or
+    /// the group holding the active layer.
+    pub fn ungroup_active_layer(&mut self) {
+        let Some(d) = self.doc_mut() else { return };
+        let index = d.active_layer;
+        let group = match d.active_layer() {
+            Some(l) if l.kind().is_group() => Some(index),
+            Some(_) => d.data.tree().parent(index),
+            None => None,
+        };
+        if !group.is_some_and(|g| d.ungroup(g)) {
+            self.status_message = Some("Ungroup: the active layer is not in a group".to_owned());
+        }
+    }
+
+    /// *Selection ▸ To New Layer (Cut)* (`Ctrl+Shift+J`) or *(Copy)*
+    /// (`Ctrl+J`): the selected voxels go into a new layer above.
+    pub fn selection_to_new_layer(&mut self, cut: bool) {
+        let label = if cut {
+            "To New Layer (Cut)"
+        } else {
+            "To New Layer (Copy)"
+        };
+        self.run_op(label, |d| {
+            d.selection_to_new_layer(cut).map(|_| {
+                let n = d.selection().map_or(0, Selection::len);
+                format!("{n} voxels in a new layer")
+            })
+        });
+    }
+
+    /// *Layer ▸ Separate Parts*.
+    pub fn separate_parts(&mut self) {
+        let min = self.structure.min_part_voxels;
+        self.run_op("Separate Parts", |d| {
+            d.separate_parts(min).map(|n| format!("{n} new layers"))
+        });
+    }
+
+    /// *Layer ▸ Split at Work Plane*.
+    pub fn split_at_plane(&mut self) {
+        self.run_op("Split at Work Plane", |d| {
+            d.split_at_plane().map(|_| "new layer above".to_owned())
+        });
+    }
+
+    /// *Model ▸ Fit Bounds to Content*.
+    pub fn fit_bounds(&mut self) {
+        self.run_op("Fit Bounds", |d| {
+            d.fit_bounds_to_content()
+                .map(|b| format!("{}×{}×{}", b.x(), b.y(), b.z()))
+        });
+    }
+
+    /// *Model ▸ Core* on the active layer.
+    pub fn core_op(&mut self, op: CoreOp) {
+        let label = match op {
+            CoreOp::FillHollows => "Fill Hollows",
+            CoreOp::Hollow => "Hollow",
+            CoreOp::HollowAdvanced(_) => "Advanced Hollow",
+        };
+        self.run_op(label, |d| {
+            d.core_op(op).map(|n| format!("{n} voxels changed"))
+        });
+    }
+
+    /// *Layer ▸ Boolean*: the active layer `op` layer `other`.
+    pub fn boolean(&mut self, other: usize, op: rizxel_engine::tools::BooleanOp) {
+        self.run_op(op.label(), |d| {
+            d.boolean(other, op).map(|n| format!("{n} voxels changed"))
+        });
+    }
+
+    // ------------------------------------------------------------ palette
+
+    /// Stores the selected palette index as favorite `slot` (`Ctrl+Shift+digit`).
+    pub fn store_favorite(&mut self, slot: usize) {
+        let Some(index) = self.doc().map(|d| d.selected_color) else {
+            return;
+        };
+        if self.favorites.set(slot, index) {
+            if let Some(p) = &self.paths {
+                if let Err(e) = self.favorites.save(&p.favorites_file()) {
+                    log::warn!("favorites: {e}");
+                }
+            }
+            self.status_message = Some(format!("Favorite {slot}: color {index}"));
+        }
+    }
+
+    /// Selects favorite `slot`'s color (`Ctrl+digit`).
+    pub fn recall_favorite(&mut self, slot: usize) {
+        let Some(index) = self.favorites.get(slot) else {
+            self.status_message = Some(format!(
+                "Favorite {slot} is empty: Ctrl+Shift+{slot} stores the selected color"
+            ));
+            return;
+        };
+        if let Some(d) = self.doc_mut() {
+            if !d.select_color(index) {
+                self.status_message = Some(format!(
+                    "Favorite {slot}: color {index} is not in this palette"
+                ));
+            }
+        }
+    }
+
+    /// *Palette ▸ Load* (`snap`: *Load and Snap Model*) from a `.gpl` or
+    /// `.hex` file; skipped lines are reported in the status bar.
+    pub fn load_palette_file(&mut self, path: &Path, snap: bool) -> Result<(), RzxlError> {
+        let file = rizxel_io::load_palette_file(path)?;
+        let Some(doc) = self.doc_mut() else {
+            return Ok(());
+        };
+        if snap {
+            doc.labeled("Load and Snap Palette", |d| d.snap_to_palette(&file.colors));
+        } else {
+            doc.labeled("Load Palette", |d| d.load_palette(&file.colors));
+        }
+        let mut msg = format!(
+            "Loaded {} colors from {}",
+            file.colors.len(),
+            path.display()
+        );
+        if !file.warnings.is_empty() {
+            msg.push_str(&format!(" (skipped: {})", file.warnings.join("; ")));
+        }
+        self.status_message = Some(msg);
+        Ok(())
+    }
+
+    /// *Palette ▸ Save*: slots `1..` of the active palette as `.gpl` / `.hex`.
+    pub fn save_palette_file(&mut self, path: &Path) -> Result<(), RzxlError> {
+        let Some(doc) = self.doc() else { return Ok(()) };
+        let colors = &doc.data.palette.colors()[rizxel_math::FIRST_COLOR_INDEX as usize..];
+        rizxel_io::save_palette_file(path, &doc.name, colors)?;
+        self.status_message = Some(format!(
+            "Saved {} colors to {}",
+            colors.len(),
+            path.display()
+        ));
+        Ok(())
     }
 
     // ------------------------------------------------------------- slice

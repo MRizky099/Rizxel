@@ -40,4 +40,9 @@ impl AppPaths {
     pub fn recent_file(&self) -> PathBuf {
         self.root.join("recent.json")
     }
+
+    /// Favorite colors (`0`–`9`).
+    pub fn favorites_file(&self) -> PathBuf {
+        self.root.join("favorites.json")
+    }
 }

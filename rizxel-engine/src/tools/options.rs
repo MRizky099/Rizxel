@@ -16,16 +16,29 @@ pub enum BrushShape {
     Cube,
     Sphere,
     Cylinder,
+    /// Square base tapering to a point: away from the pressed face (Shape),
+    /// up the Y axis (Brush).
+    Pyramid,
+    /// Round base tapering to a point, oriented like the pyramid.
+    Cone,
 }
 
 impl BrushShape {
-    pub const ALL: [BrushShape; 3] = [BrushShape::Cube, BrushShape::Sphere, BrushShape::Cylinder];
+    pub const ALL: [BrushShape; 5] = [
+        BrushShape::Cube,
+        BrushShape::Sphere,
+        BrushShape::Cylinder,
+        BrushShape::Pyramid,
+        BrushShape::Cone,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
             BrushShape::Cube => "Cube",
             BrushShape::Sphere => "Sphere",
             BrushShape::Cylinder => "Cylinder",
+            BrushShape::Pyramid => "Pyramid",
+            BrushShape::Cone => "Cone",
         }
     }
 }
@@ -70,6 +83,42 @@ impl DragMode {
     }
 }
 
+/// Point the Transform tool rotates and scales about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum Pivot {
+    /// Center of the transformed box.
+    #[default]
+    Center,
+    /// Minimum corner of the box.
+    MinCorner,
+    /// A chosen voxel (the hovered one when picked; typed values move it).
+    Cursor,
+}
+
+impl Pivot {
+    pub const ALL: [Pivot; 3] = [Pivot::Center, Pivot::MinCorner, Pivot::Cursor];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Pivot::Center => "Center",
+            Pivot::MinCorner => "Min corner",
+            Pivot::Cursor => "Cursor",
+        }
+    }
+}
+
+/// Transform tool settings (the transform itself lives in the document).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TransformOptions {
+    pub pivot: Pivot,
+    /// Voxel used by [`Pivot::Cursor`].
+    pub pivot_cell: glam::IVec3,
+    /// Type sizes in voxels instead of scale percentages.
+    pub size_mode: bool,
+    /// Drop the voxels that leave the bounds instead of refusing Apply.
+    pub clip_to_bounds: bool,
+}
+
 /// When the Cursor tool shows layer names (Goxel cursor "Show names").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum NamesMode {
@@ -102,6 +151,35 @@ pub struct CursorOptions {
     pub show_names: NamesMode,
 }
 
+/// How the cells of a line (and of a size-1 brush stroke) connect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum Connectivity {
+    /// One cell per step of the longest axis (26-connected).
+    Diagonal,
+    /// Diagonal without "L-corners": no cell whose path neighbours already
+    /// touch (Aseprite's pixel-perfect rule, in 3D).
+    #[default]
+    PixelPerfect,
+    /// Every step changes one axis (6-connected): watertight from any side.
+    Solid,
+}
+
+impl Connectivity {
+    pub const ALL: [Connectivity; 3] = [
+        Connectivity::Diagonal,
+        Connectivity::PixelPerfect,
+        Connectivity::Solid,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Connectivity::Diagonal => "Diagonal",
+            Connectivity::PixelPerfect => "Pixel perfect",
+            Connectivity::Solid => "Solid",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrushOptions {
     pub shape: BrushShape,
@@ -112,11 +190,20 @@ pub struct BrushOptions {
     /// Edge softness: 0 = hard edges.
     pub antialiasing: u32,
     pub symmetry: Symmetry,
+    /// Line connectivity: for Line tool paths, and for freehand strokes
+    /// when the size is 1.
+    pub connect: Connectivity,
 }
 
 impl BrushOptions {
     pub const MAX_SIZE: u32 = 128;
     pub const MAX_ANTIALIASING: u32 = 16;
+
+    /// True when the stroke is one voxel wide (freehand strokes then use
+    /// [`BrushOptions::connect`]).
+    pub fn single_voxel(&self) -> bool {
+        self.size == [1; 3]
+    }
 }
 
 impl Default for BrushOptions {
@@ -127,8 +214,41 @@ impl Default for BrushOptions {
             surface_paint: false,
             antialiasing: 0,
             symmetry: Symmetry::default(),
+            connect: Connectivity::default(),
         }
     }
+}
+
+/// What a Line tool drag draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LineMode {
+    /// Drag from start to end.
+    #[default]
+    Line,
+    /// Each click adds a segment; Enter, double-click or right-click ends.
+    Polyline,
+    /// Drag start to end, then drag to bend (quadratic), and again for a
+    /// cubic curve.
+    Curve,
+}
+
+impl LineMode {
+    pub const ALL: [LineMode; 3] = [LineMode::Line, LineMode::Polyline, LineMode::Curve];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            LineMode::Line => "Line",
+            LineMode::Polyline => "Polyline",
+            LineMode::Curve => "Curve",
+        }
+    }
+}
+
+/// Line tool settings; the stroke itself uses the Brush's shape, size,
+/// symmetry and connectivity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LineOptions {
+    pub mode: LineMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -207,8 +327,31 @@ pub struct ColorPickerOptions {
     pub sample_all_layers: bool,
 }
 
+/// How the Selection tool builds its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SelectionMode {
+    /// Drag a box; release selects (Phase 5b).
+    Drag,
+    /// Click or drag places a box that stays open: handles and typed values
+    /// resize it, `Enter` applies it (Qubicle's *Box Select*).
+    #[default]
+    Box,
+}
+
+impl SelectionMode {
+    pub const ALL: [SelectionMode; 2] = [SelectionMode::Drag, SelectionMode::Box];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            SelectionMode::Drag => "Drag",
+            SelectionMode::Box => "Box",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SelectionOptions {
+    pub mode: SelectionMode,
     pub mask: MaskMode,
     /// Select voxels of every visible layer inside the box, not only the
     /// active layer's. The selection itself always belongs to the active layer.
@@ -317,20 +460,25 @@ impl Default for FillOptions {
 pub struct ToolOptions {
     pub cursor: CursorOptions,
     pub brush: BrushOptions,
+    pub line: LineOptions,
     pub shape: ShapeOptions,
     pub plane: PlaneOptions,
     pub moving: MoveOptions,
+    pub transform: TransformOptions,
     pub color_picker: ColorPickerOptions,
     pub selection: SelectionOptions,
     pub fuzzy_select: FuzzySelectOptions,
     pub extrude: ExtrudeOptions,
     pub fill: FillOptions,
+    /// Mask Mode: every tool leaves the selected voxels alone (the
+    /// selection is protected instead of being the region to edit).
+    pub mask_selection: bool,
 }
 
 impl Tool {
     /// Whether the Add/Subtract/Join/Paint operation applies to this tool.
     pub const fn uses_voxel_op(self) -> bool {
-        matches!(self, Tool::Brush | Tool::Shape)
+        matches!(self, Tool::Brush | Tool::Line | Tool::Shape)
     }
 }
 

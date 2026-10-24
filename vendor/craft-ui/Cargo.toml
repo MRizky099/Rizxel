@@ -1,0 +1,28 @@
+# Vendored copy of `craft-ui` from storytold/craft-libs; see README.md.
+[package]
+name = "craft-ui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/storytold/craft-libs"
+description = "Reusable egui controls and icon catalogs for Craft frontends"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+egui = { version = "0.36", default-features = false }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
+serde_json = "1"
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+# Upstream also enables `wgpu` here for its GPU-rendered integration tests, which are not
+# vendored (see README.md).
+egui_kittest = "0.36"

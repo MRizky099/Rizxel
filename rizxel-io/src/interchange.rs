@@ -48,6 +48,20 @@ pub struct ExportLayer {
     pub name: String,
     pub visible: bool,
     pub volume: VoxelVolume,
+    /// Index into [`ExportScene::groups`] of the group holding the layer.
+    pub group: Option<usize>,
+}
+
+/// A layer group of a scene being exported (`.vox` writes group nodes).
+#[derive(Debug, Clone)]
+pub struct ExportGroup {
+    pub name: String,
+    pub visible: bool,
+    /// Index of the enclosing group in [`ExportScene::groups`].
+    pub parent: Option<usize>,
+    /// Number of [`ExportScene::layers`] drawn below the group: among its
+    /// siblings the group sits between layer `order - 1` and layer `order`.
+    pub order: usize,
 }
 
 /// What exporters that bake geometry receive.
@@ -58,6 +72,8 @@ pub struct ExportScene {
     pub palette: Palette,
     /// Bottom to top.
     pub layers: Vec<ExportLayer>,
+    /// Groups, bottom to top; exporters that bake geometry ignore them.
+    pub groups: Vec<ExportGroup>,
 }
 
 impl ExportScene {
@@ -128,6 +144,7 @@ pub fn build_project(
         active_layer: layers.len() - 1,
         layers,
         bounds,
+        references: Vec::new(),
     };
     project.validate()?;
     Ok(project)

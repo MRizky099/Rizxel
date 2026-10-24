@@ -17,7 +17,8 @@
 //! Selections (Phase 5b) belong to the active layer. Move and Extrude act on
 //! the selection when there is one and carry it along in the same undo
 //! step; Fill stays inside it. `Esc` deselects, `Delete` removes the
-//! selected voxels.
+//! selected voxels. In Mask Mode (`Shift+M`) the selection is protected
+//! instead: every tool edits the whole layer around it.
 //!
 //! The Plane tool never writes voxels (Goxel / Qubicle behaviour): a click
 //! places the document's [`WorkPlane`] on the clicked face. While the plane
@@ -30,6 +31,16 @@
 //! edited, by every tool; dragging the thick bounds frame (any tool) or
 //! anywhere with the Plane tool moves the slice along its normal. Slice
 //! moves are view state, never undo steps.
+//!
+//! The Selection tool's *Box* mode (Phase 10c, [`box_select`]) leaves the
+//! dragged box open: its face arrows and faces move it, `Enter` (or a
+//! click outside it, or switching tools) applies it, `Esc` cancels it.
+//! The Line tool ([`line`]) keeps its own open line across clicks, and the
+//! Transform tool ([`transform`]) its gizmo drags.
+
+mod box_select;
+mod line;
+mod transform;
 
 use std::collections::HashSet;
 
@@ -38,14 +49,14 @@ use glam::{IVec3, Vec2, Vec3};
 use rizxel_app::{AppState, Document, Selection, VoxelChange};
 use rizxel_engine::raycast::{dominant_axis, raycast_face, raycast_floor, raycast_grid};
 use rizxel_engine::tools::{
-    apply_op, brush_center, brush_positions, brush_stroke, drag_axis, extrude_changes,
-    extrude_region, extruded_cells, fill_cells, fuzzy_select, mirror, move_changes,
-    move_selection_changes, pick_voxel, resize_bounds, select_box, selection_box, selection_region,
-    shape_box, shape_cells, MAX_FLOOD_CELLS,
+    apply_op, brush_center, brush_positions, brush_stroke, connect, drag_axis, extrude_changes,
+    extrude_region, extruded_cells, fill_cells, fuzzy_select, line_cells, line_stroke, mirror,
+    move_changes, move_selection_changes, pick_voxel, resize_bounds, select_box, selection_box,
+    selection_region, shape_box, shape_cells_toward, MAX_FLOOD_CELLS,
 };
 use rizxel_engine::{
-    DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool, ToolContext,
-    VoxelOp, WorkPlane,
+    Connectivity, DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool,
+    ToolContext, VoxelOp, WorkPlane,
 };
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
 
@@ -78,6 +89,13 @@ pub struct ToolInput {
     /// Pick target while a floating paste follows the cursor: the model
     /// without the paste, keyed by `(document id, edit count)`.
     paste_pick: Option<((u64, u64), VoxelVolume)>,
+    /// Open line, polyline or curve of the Line tool.
+    line: Option<line::LineSession>,
+    /// Last brush stamp `(document id, layer, center)`: `Ctrl`+click draws
+    /// a line from it.
+    last_stamp: Option<(u64, usize, IVec3)>,
+    /// Transform gizmo drag in progress.
+    transform: Option<transform::TransformDrag>,
 }
 
 /// `(document id, revision, hit voxel, hit normal, options, selection
@@ -105,6 +123,9 @@ struct Drag {
 enum DragKind {
     Brush {
         last: IVec3,
+        /// Stamp centers so far, when the stroke is redrawn as one
+        /// connected path (size 1 with Pixel perfect or Solid).
+        path: Option<Vec<IVec3>>,
     },
     /// Plane tool with Slice on: moves the plane along its normal.
     PlaneMove {
@@ -136,6 +157,25 @@ enum DragKind {
         current: IVec3,
         mode: MaskMode,
         moved: bool,
+        /// Box mode: the drag sizes the document's open box.
+        boxed: bool,
+    },
+    /// Box mode: a face arrow being dragged along its axis.
+    BoxFace {
+        axis: usize,
+        positive: bool,
+        start: VoxelBox,
+        /// Face center (voxel space) whose screen axis measures the drag.
+        pivot: Vec3,
+    },
+    /// Box mode: the box dragged by a face, in its plane or (`Alt`) along
+    /// its normal.
+    BoxMove {
+        axis: usize,
+        start: VoxelBox,
+        /// Grabbed point on the face (voxel space).
+        from: Vec3,
+        along_normal: bool,
     },
     /// Shape tool: shape between the anchor and the hovered cell.
     Shape {
@@ -260,7 +300,7 @@ fn pick_drag(drag: &Drag, ray: &Ray) -> Option<RayHit> {
 
 /// Whether a tool snaps onto the work plane.
 fn draws_on_plane(tool: Tool) -> bool {
-    matches!(tool, Tool::Brush | Tool::Cursor | Tool::Shape)
+    matches!(tool, Tool::Brush | Tool::Line | Tool::Cursor | Tool::Shape)
 }
 
 /// Mask mode of a selection click: `Shift` adds, `Ctrl` subtracts,
@@ -322,14 +362,29 @@ impl ToolInput {
         }
         self.paste_pick = None;
 
+        // Leaving the Selection tool (or its Box mode) applies the open box.
+        if !box_select::box_mode(state) && has_open_box(state) {
+            box_select::apply(state, MaskMode::Set);
+        }
+        if let Some(doc) = state.doc_mut() {
+            doc.sync_box_select();
+        }
+        self.sync_line(state);
+        self.sync_transform(state);
+
         // A drag survives only on its own document and while its
         // transaction is open (undo or a tab switch may have closed it).
         if let Some(drag) = &self.drag {
+            let boxed = matches!(
+                drag.kind,
+                DragKind::BoxFace { .. } | DragKind::BoxMove { .. }
+            );
             let alive = drag.doc_id == doc_id
                 && (matches!(
                     drag.kind,
                     DragKind::Resize { .. } | DragKind::PlaneMove { .. } | DragKind::Select { .. }
-                ) || state.doc().is_some_and(Document::is_editing));
+                ) || (boxed && has_open_box(state))
+                    || state.doc().is_some_and(Document::is_editing));
             if !alive {
                 self.drag = None;
             }
@@ -359,7 +414,17 @@ impl ToolInput {
                 self.finish(state);
             }
         } else if !f.ui.ctx().egui_wants_keyboard_input() {
+            self.transform_keys(f, state);
+            self.line_keys(f, state);
+            box_select::keys(f, state, mods);
             selection_keys(f, state);
+        }
+        // The open box previews the mode of the modifiers held now.
+        if self.drag.is_none() && box_select::box_mode(state) && !mods.alt {
+            let mode = mask_mode(mods, state.options.selection.mask);
+            if let Some(doc) = state.doc_mut() {
+                doc.set_box_mode(mode);
+            }
         }
 
         let hover = f.response.hover_pos();
@@ -398,10 +463,19 @@ impl ToolInput {
         }
         state.cursor_voxel = hit.map(|h| if is_voxel(&h) { h.voxel } else { h.adjacent() });
 
+        // Box mode: a face arrow or the surface of the box under the cursor.
+        let box_grab = match (&self.drag, hover, state.doc()) {
+            (None, Some(p), Some(doc)) if box_select::box_mode(state) => {
+                box_select::grab_at(f, doc, p)
+            }
+            _ => None,
+        };
         // Plane edge or (while slicing, any tool) bounds frame under the
         // cursor: grab handle for moving the plane.
         let edge = match (&self.drag, hover, state.doc()) {
-            (None, Some(p), Some(doc)) if tool == Tool::Plane || doc.plane.slice => {
+            (None, Some(p), Some(doc))
+                if box_grab.is_none() && (tool == Tool::Plane || doc.plane.slice) =>
+            {
                 plane_edge_at(f, doc, p)
             }
             _ => None,
@@ -411,9 +485,24 @@ impl ToolInput {
             && self.drag.is_none()
             && f.response.hovered()
             && hover.is_some_and(|p| !f.blocked.iter().any(|r| r.contains(p)));
-        if press {
+        // The Line tool handles its own presses and drags (the plane edge
+        // still moves the plane).
+        let line_tool = state.tool == Tool::Line && !mods.alt && self.drag.is_none();
+        if line_tool {
+            self.line_frame(f, state, press && edge.is_none(), mods, &mut preview);
+        }
+        // So does the Transform tool (`Alt` is one of its drag modifiers).
+        let transform_tool = state.tool == Tool::Transform && self.drag.is_none();
+        if transform_tool {
+            self.transform_frame(f, state, press && edge.is_none(), mods, &mut preview);
+        }
+        let own_input = line_tool || transform_tool;
+        if press && (!own_input || edge.is_some()) {
             if let Some(p) = hover {
-                self.press(f, state, p, hit, edge, mods);
+                match box_grab {
+                    Some(grab) => self.begin_box_drag(state, p, grab, mods),
+                    None => self.press(f, state, p, hit, edge, mods),
+                }
             }
         }
 
@@ -432,6 +521,12 @@ impl ToolInput {
                     "Move: offset ({}, {}, {}), {pending} voxels changed",
                     offset.x, offset.y, offset.z
                 ),
+                DragKind::Select { boxed: true, .. }
+                | DragKind::BoxFace { .. }
+                | DragKind::BoxMove { .. } => state
+                    .doc()
+                    .and_then(box_select::feedback)
+                    .unwrap_or_default(),
                 DragKind::Select {
                     anchor,
                     current,
@@ -464,8 +559,27 @@ impl ToolInput {
             } else {
                 "Drag the plane edge to move the plane".to_owned()
             });
-        } else if let Some(hit) = hit {
+        } else if let Some(grab) = box_grab {
+            f.ui.ctx().set_cursor_icon(match grab {
+                box_select::BoxGrab::Face { .. } => egui::CursorIcon::Grab,
+                box_select::BoxGrab::Body { .. } => egui::CursorIcon::Move,
+            });
+            state.tool_feedback = Some(
+                state
+                    .doc()
+                    .and_then(box_select::feedback)
+                    .unwrap_or_else(|| "Drag an arrow or a face to re-open the box".to_owned()),
+            );
+        } else if let Some(hit) =
+            hit.filter(|_| !transform_tool && !(line_tool && self.line.is_some()))
+        {
             self.hover_preview(f, state, &hit, mods, &mut preview);
+        }
+        // An open box reports itself wherever the pointer is.
+        if self.drag.is_none() && box_grab.is_none() && box_select::box_mode(state) {
+            if let Some(text) = state.doc().and_then(box_select::feedback) {
+                state.tool_feedback = Some(text);
+            }
         }
 
         // The arrow is a hint: it appears where the plane edge is hovered and
@@ -490,6 +604,9 @@ impl ToolInput {
             work_plane_overlay(f, doc, arrow_at, &mut preview);
         }
         self.selection_overlay(f, state, &mut preview);
+        if let Some(doc) = state.doc().filter(|_| box_select::box_mode(state)) {
+            box_select::overlay(f, doc, box_grab, &mut preview);
+        }
         if let Some(drag) = &self.drag {
             drag_marquee(f, drag, &mut preview);
         }
@@ -579,7 +696,10 @@ impl ToolInput {
             return;
         }
         match tool {
-            Tool::Cursor => {}
+            // The Line tool takes its presses in `line_frame`.
+            // The Line and Transform tools take their presses in their
+            // own frame functions.
+            Tool::Cursor | Tool::Line | Tool::Transform => {}
             Tool::ColorPicker => pick_color(f, state, pos, mods.command),
             Tool::Plane => {
                 let slicing = state.doc().is_some_and(|d| d.plane.slice);
@@ -592,14 +712,20 @@ impl ToolInput {
             Tool::Brush | Tool::Move | Tool::Extrude | Tool::Shape => {
                 self.begin_drag(f, state, tool, pos, hit, mods)
             }
+            Tool::Selection if box_select::box_mode(state) && has_open_box(state) => {
+                // A click outside the open box applies it.
+                let mode = mask_mode(mods, state.options.selection.mask);
+                box_select::apply(state, mode);
+            }
             Tool::Selection => self.begin_select(state, pos, hit, mods),
             Tool::FuzzySelect => fuzzy_click(state, hit, mods),
             Tool::Fill => fill_click(state, hit),
         }
     }
 
-    /// Selection tool press: starts a box at the pressed voxel. A press off
-    /// the model in Set mode deselects.
+    /// Selection tool press: starts a box at the pressed voxel (in Box
+    /// mode also on the floor, and the box stays open after the drag). A
+    /// press off the model in Set mode deselects.
     fn begin_select(
         &mut self,
         state: &mut AppState,
@@ -608,13 +734,29 @@ impl ToolInput {
         mods: Modifiers,
     ) {
         let mode = mask_mode(mods, state.options.selection.mask);
+        let boxed = box_select::box_mode(state);
+        let all_layers = state.options.selection.all_layers;
         let Some(doc) = state.doc_mut() else { return };
-        let Some(hit) = hit.filter(is_voxel) else {
+        // Box mode starts on the floor cell too.
+        let hit = hit.filter(|h| boxed || is_voxel(h)).map(|h| {
+            if is_voxel(&h) {
+                h
+            } else {
+                RayHit {
+                    voxel: h.adjacent(),
+                    ..h
+                }
+            }
+        });
+        let Some(hit) = hit else {
             if mode == MaskMode::Set && doc.clear_selection() {
                 state.status_message = Some("Selection cleared".to_owned());
             }
             return;
         };
+        if boxed {
+            doc.begin_box_select(selection_box(hit.voxel, hit.voxel), all_layers, mode);
+        }
         // While slicing, the box is drawn on the slice.
         let axis = if doc.plane.slice {
             doc.plane.axis.min(2)
@@ -636,6 +778,7 @@ impl ToolInput {
                 current: hit.voxel,
                 mode,
                 moved: false,
+                boxed,
             },
         });
     }
@@ -668,11 +811,24 @@ impl ToolInput {
         }
         let bounds = doc.data.bounds;
         let center = bounds.0.as_vec3() * 0.5;
+        // Ctrl+click draws a line from the last stamp on this layer.
+        let line_from = self
+            .last_stamp
+            .filter(|&(id, l, _)| mods.command && id == doc.id() && l == layer)
+            .map(|(_, _, c)| c);
         let kind = match tool {
             Tool::Brush => {
                 let Some(hit) = hit else { return };
+                let center = brush_center(&hit, op);
+                let brush = &options.brush;
+                let connected = brush.single_voxel() && brush.connect != Connectivity::Diagonal;
+                let start = match line_from {
+                    Some(from) => line_cells(from, center),
+                    None => vec![center],
+                };
                 DragKind::Brush {
-                    last: brush_center(&hit, op),
+                    last: center,
+                    path: connected.then_some(start),
                 }
             }
             Tool::Move if resize => DragKind::Resize {
@@ -684,7 +840,7 @@ impl ToolInput {
                 pivot: hit.map_or(center, |h| h.voxel.as_vec3() + Vec3::splat(0.5)),
                 offset: IVec3::ZERO,
                 target: IVec3::ZERO,
-                selected: doc.selection().filter(|s| !s.is_empty()).cloned(),
+                selected: doc.region_selection().cloned(),
             },
             Tool::Shape => {
                 let Some(hit) = hit else { return };
@@ -717,7 +873,7 @@ impl ToolInput {
                 } else {
                     doc.merged_visible_volume()
                 };
-                let selection = doc.selection().filter(|s| !s.is_empty()).cloned();
+                let selection = doc.region_selection().cloned();
                 let region = match &selection {
                     Some(sel) => selection_region(&colors, sel.cells(), hit.normal),
                     None => extrude_region(&colors, &hit, &options.extrude, &doc.data.palette),
@@ -756,10 +912,21 @@ impl ToolInput {
             op,
             kind,
         });
-        // Apply the press itself (first stamp, 1×1 plane, base extrude).
-        if let Some(DragKind::Brush { last }) = self.drag.as_ref().map(|d| &d.kind) {
+        // Apply the press itself (first stamp or the Ctrl+click line, 1×1
+        // plane, base extrude).
+        if let Some(DragKind::Brush { last, path }) = self.drag.as_ref().map(|d| &d.kind) {
             let last = *last;
-            write(state, layer, op, |ctx| brush_stroke(ctx, None, last));
+            let connect_mode = options.brush.connect;
+            match (path, line_from) {
+                (Some(path), _) => {
+                    let p = connect(path.clone(), connect_mode);
+                    write(state, layer, op, |ctx| line_stroke(ctx, &p));
+                }
+                (None, Some(from)) => {
+                    write(state, layer, op, |ctx| brush_stroke(ctx, Some(from), last));
+                }
+                (None, None) => write(state, layer, op, |ctx| brush_stroke(ctx, None, last)),
+            }
         }
         self.drag_frame(f, state, pos);
     }
@@ -825,6 +992,7 @@ impl ToolInput {
                 axis,
                 current,
                 moved,
+                boxed,
                 ..
             } => {
                 *moved |= delta.length() > 3.0;
@@ -837,6 +1005,25 @@ impl ToolInput {
                 {
                     *current = cell;
                 }
+                if *boxed {
+                    if let Some(doc) = state.doc_mut() {
+                        doc.set_box_area(selection_box(*anchor, *current), false);
+                    }
+                }
+            }
+            DragKind::BoxFace {
+                axis,
+                positive,
+                start,
+                pivot,
+            } => box_select::drag_face(f, state, delta, (*axis, *positive, *start, *pivot)),
+            DragKind::BoxMove {
+                axis,
+                start,
+                from,
+                along_normal,
+            } => {
+                box_select::drag_body(f, state, &ray, delta, (*axis, *start, *from, *along_normal))
             }
             DragKind::Shape {
                 anchor,
@@ -862,12 +1049,13 @@ impl ToolInput {
                     }
                     return;
                 }
+                let up = *grow;
                 rewrite(state, layer, op, |ctx| {
-                    let cells = shape_cells(&new, &ctx.options.shape, ctx.bounds);
+                    let cells = shape_cells_toward(&new, &ctx.options.shape, ctx.bounds, up);
                     apply_op(ctx.volume, cells, ctx.op, ctx.color)
                 });
             }
-            DragKind::Brush { last } => {
+            DragKind::Brush { last, path } => {
                 let Some(hit) = pick_with(
                     &ray,
                     drag.snapshot.bounds(),
@@ -883,9 +1071,17 @@ impl ToolInput {
                     return;
                 }
                 let from = std::mem::replace(last, center);
-                write(state, layer, op, |ctx| {
-                    brush_stroke(ctx, Some(from), center)
-                });
+                match path {
+                    // The whole stroke is redrawn so corners can go.
+                    Some(path) => {
+                        path.extend(line_cells(from, center).into_iter().skip(1));
+                        let p = connect(path.clone(), state.options.brush.connect);
+                        rewrite(state, layer, op, |ctx| line_stroke(ctx, &p));
+                    }
+                    None => write(state, layer, op, |ctx| {
+                        brush_stroke(ctx, Some(from), center)
+                    }),
+                }
             }
             DragKind::PlaneMove {
                 pivot,
@@ -1006,6 +1202,9 @@ impl ToolInput {
 
     fn finish(&mut self, state: &mut AppState) {
         let Some(drag) = self.drag.take() else { return };
+        if let DragKind::Brush { last, .. } = drag.kind {
+            self.last_stamp = Some((drag.doc_id, drag.layer, last));
+        }
         if let DragKind::PlaneMove {
             moved: false,
             click: Some(hit),
@@ -1016,6 +1215,20 @@ impl ToolInput {
             if let Some(doc) = state.doc_mut() {
                 let bounds = doc.data.bounds;
                 doc.plane.slice_at(&hit, bounds);
+            }
+            return;
+        }
+        if matches!(
+            drag.kind,
+            DragKind::Select { boxed: true, .. }
+                | DragKind::BoxFace { .. }
+                | DragKind::BoxMove { .. }
+        ) {
+            // The box stays open; a large one updates now.
+            if let Some(doc) = state.doc_mut() {
+                if doc.box_select().is_some_and(|b| b.stale) {
+                    doc.refresh_box_select();
+                }
             }
             return;
         }
@@ -1067,10 +1280,10 @@ impl ToolInput {
             _ => None,
         };
         let changed = doc.pending_changes();
-        let done = match carried {
+        let done = doc.labeled(drag.tool.label(), |doc| match carried {
             Some(sel) => doc.commit_edit_with_selection(drag.layer, sel),
             None => doc.commit_edit(),
-        };
+        });
         if done {
             state.status_message = Some(format!("{}: {changed} voxels changed", drag.tool.label()));
         }
@@ -1091,6 +1304,12 @@ impl ToolInput {
                 } else {
                     doc.plane.coord = start;
                 }
+            }
+            DragKind::Select { boxed: true, .. } => {
+                doc.cancel_box_select();
+            }
+            DragKind::BoxFace { start, .. } | DragKind::BoxMove { start, .. } => {
+                doc.set_box_area(start, true);
             }
             DragKind::Select { .. } => {}
             _ => doc.cancel_edit(),
@@ -1127,7 +1346,7 @@ impl ToolInput {
             _ => paint.gamma_multiply(0.55),
         };
         match tool {
-            Tool::Brush => {
+            Tool::Brush | Tool::Line => {
                 let cells = ghost_cells(
                     brush_positions(brush_center(hit, op), &state.options.brush, bounds),
                     &clip,
@@ -1153,7 +1372,7 @@ impl ToolInput {
             }
             Tool::Extrude if is_voxel(hit) => {
                 let opts = &state.options.extrude;
-                let selection = doc.selection().filter(|s| !s.is_empty());
+                let selection = doc.region_selection();
                 let key = (
                     doc.id(),
                     doc.revision(),
@@ -1215,7 +1434,8 @@ impl ToolInput {
     /// progress. Large selections draw only their box.
     fn selection_overlay(&mut self, f: &Frame, state: &mut AppState, out: &mut Preview) {
         let Some(doc) = state.doc() else { return };
-        let Some(sel) = doc.selection().filter(|s| !s.is_empty()) else {
+        // An open box shows the selection it would make.
+        let Some(sel) = doc.shown_selection().filter(|s| !s.is_empty()) else {
             return;
         };
         let ppp = f.pixels_per_point;
@@ -1277,6 +1497,21 @@ impl ToolInput {
             ));
         }
     }
+}
+
+/// Option bar: opens the transform when needed and sets its parameters.
+pub fn set_transform_params(state: &mut AppState, params: rizxel_engine::tools::TransformParams) {
+    transform::set_params(state, params);
+}
+
+/// Option bar *Apply* of the open transform.
+pub fn apply_transform(state: &mut AppState) {
+    transform::apply(state, false);
+}
+
+/// True when the active document has an open box selection.
+fn has_open_box(state: &AppState) -> bool {
+    state.doc().is_some_and(|d| d.box_select().is_some())
 }
 
 /// `Esc` deselects and `Delete`/`Backspace` deletes the selected voxels of
@@ -1388,10 +1623,7 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
     let limit = doc
         .edit_clip()
         .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
-    let allowed = doc
-        .selection()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.cells().clone());
+    let allowed = doc.region_selection().map(|s| s.cells().clone());
     let merged;
     let source = if opts.current_layer_only {
         &doc.data.layers[layer].volume
@@ -1414,7 +1646,7 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
             return;
         }
     };
-    let n = doc.edit_voxels(layer, &changes);
+    let n = doc.labeled("Fill", |doc| doc.edit_voxels(layer, &changes));
     state.status_message = Some(format!("Fill: {n} voxels changed"));
 }
 
@@ -1428,7 +1660,7 @@ fn write(
 ) {
     let options = state.options;
     let symmetry = match state.tool {
-        Tool::Brush => options.brush.symmetry,
+        Tool::Brush | Tool::Line => options.brush.symmetry,
         Tool::Shape => options.shape.symmetry,
         _ => Symmetry::default(),
     };
@@ -1652,7 +1884,10 @@ fn box_outline(lo: Vec3, hi: Vec3, color: Color32, width: f32, out: &mut Preview
 fn drag_marquee(f: &Frame, drag: &Drag, out: &mut Preview) {
     let area = match drag.kind {
         DragKind::Select {
-            anchor, current, ..
+            anchor,
+            current,
+            boxed: false,
+            ..
         } => selection_box(anchor, current),
         DragKind::Shape {
             area: Some(area), ..

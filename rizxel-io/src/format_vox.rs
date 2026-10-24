@@ -21,6 +21,8 @@
 //! - One model per non-empty Rizxel layer (shapes, clones and crops are
 //!   baked), all the size of the bounds.
 //! - Each model gets a transform carrying the layer's name and hidden flag.
+//! - Rizxel groups become named `nGRP` nodes, nested as in the Layers
+//!   panel, so they come back as groups on import.
 //! - The palette is written as the `RGBA` chunk.
 //! - Rizxel Y-up is converted to MagicaVoxel Z-up with a proper rotation,
 //!   so nothing is mirrored.
@@ -226,6 +228,9 @@ struct GroupOut {
     name: String,
     hidden: bool,
     parent: Option<LayerId>,
+    /// Instances found before the group: keeps groups and models in scene
+    /// order.
+    at: usize,
 }
 
 /// Parses a `.vox` file into a project named `name`.
@@ -404,21 +409,23 @@ pub fn read_vox(bytes: &[u8], name: &str) -> Result<ProjectFile, RzxlError> {
     entries.extend(src.iter().take(255).copied());
     let palette = Palette::new(entries);
 
-    let mut layers: Vec<ImportLayer> = groups
-        .iter()
-        .map(|g| ImportLayer {
-            data: LayerData {
-                kind: LayerKind::Group { collapsed: false },
-                visible: !g.hidden,
-                parent: g.parent,
-                ..LayerData::new(g.id, g.name.clone())
-            },
-            volume: None,
-        })
-        .collect();
+    let group_layer = |g: &GroupOut| ImportLayer {
+        data: LayerData {
+            kind: LayerKind::Group { collapsed: false },
+            visible: !g.hidden,
+            parent: g.parent,
+            ..LayerData::new(g.id, g.name.clone())
+        },
+        volume: None,
+    };
+    let mut pending_groups = groups.iter().peekable();
+    let mut layers: Vec<ImportLayer> = Vec::new();
     // First instance per (model, rotation) owns the voxels; later ones link.
     let mut owners: HashMap<(usize, Rot), (LayerId, IVec3)> = HashMap::new();
     for (k, inst) in instances.iter().enumerate() {
+        while let Some(g) = pending_groups.next_if(|g| g.at <= k) {
+            layers.push(group_layer(g));
+        }
         let id = next_id;
         next_id += 1;
         let name = inst
@@ -452,6 +459,7 @@ pub fn read_vox(bytes: &[u8], name: &str) -> Result<ProjectFile, RzxlError> {
         };
         layers.push(ImportLayer { data, volume });
     }
+    layers.extend(pending_groups.map(group_layer));
     build_project(name, bounds, palette, Vec::new(), layers)
 }
 
@@ -529,6 +537,7 @@ impl Walk<'_> {
                         name: name.unwrap_or_else(|| format!("Group {gid}")),
                         hidden,
                         parent: group,
+                        at: self.instances.len(),
                     });
                     Some(gid)
                 };
@@ -594,12 +603,113 @@ impl Writer {
     }
 }
 
+/// A non-empty layer written as model `k` (its position in the kept
+/// list); `index` is its position in [`ExportScene::layers`].
+struct KeptLayer<'a> {
+    index: usize,
+    name: &'a str,
+    visible: bool,
+    volume: &'a VoxelVolume,
+    group: Option<usize>,
+}
+
+/// A child node of a scene group.
+#[derive(Clone, Copy)]
+enum SceneItem {
+    Model(usize),
+    Group(usize),
+}
+
+/// Writes the transform / shape / group chunks below the scene root.
+struct SceneWriter<'a> {
+    w: &'a mut Writer,
+    scene: &'a ExportScene,
+    layers: &'a [KeptLayer<'a>],
+    items: &'a HashMap<Option<usize>, Vec<(usize, SceneItem)>>,
+    next_id: i32,
+    /// `_t` of every model transform.
+    translation: String,
+    /// Groups already written (guards against cyclic `parent` links).
+    written: HashSet<usize>,
+}
+
+impl SceneWriter<'_> {
+    /// Writes the children of `parent` and returns their transform ids.
+    fn children(&mut self, parent: Option<usize>, depth: usize) -> Result<Vec<i32>, RzxlError> {
+        if depth > MAX_SCENE_DEPTH / 2 {
+            return Err(invalid("groups are nested too deep for .vox"));
+        }
+        let mut ids = Vec::new();
+        for &(_, item) in self.items.get(&parent).map_or(&[][..], Vec::as_slice) {
+            let id = self.next_id;
+            self.next_id += 2;
+            ids.push(id);
+            let (name, visible) = match item {
+                SceneItem::Model(k) => (self.layers[k].name, self.layers[k].visible),
+                SceneItem::Group(g) => {
+                    let group = &self.scene.groups[g];
+                    (group.name.as_str(), group.visible)
+                }
+            };
+            let mut attrs = vec![("_name", name.to_owned())];
+            if !visible {
+                attrs.push(("_hidden", "1".to_owned()));
+            }
+            let frame: Vec<(&str, String)> = match item {
+                SceneItem::Model(_) => vec![("_t", self.translation.clone())],
+                SceneItem::Group(_) => Vec::new(),
+            };
+            self.w.chunk(b"nTRN", |c| {
+                c.i32(id);
+                c.dict(&attrs);
+                c.i32(id + 1);
+                c.i32(-1);
+                c.i32(0);
+                c.i32(1);
+                c.dict(&frame);
+            });
+            match item {
+                SceneItem::Model(k) => self.w.chunk(b"nSHP", |c| {
+                    c.i32(id + 1);
+                    c.dict(&[]);
+                    c.i32(1);
+                    c.i32(k as i32);
+                    c.dict(&[]);
+                }),
+                SceneItem::Group(g) => {
+                    if !self.written.insert(g) {
+                        return Err(invalid("cyclic groups"));
+                    }
+                    let kids = self.children(Some(g), depth + 1)?;
+                    self.w.chunk(b"nGRP", |c| {
+                        c.i32(id + 1);
+                        c.dict(&[]);
+                        c.i32(kids.len() as i32);
+                        for kid in &kids {
+                            c.i32(*kid);
+                        }
+                    });
+                }
+            }
+        }
+        Ok(ids)
+    }
+}
+
 /// Encodes a scene as a `.vox` file. Fails when no layer has voxels.
 pub fn write_vox(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
-    let layers: Vec<_> = scene
+    let layers: Vec<KeptLayer> = scene
         .layers
         .iter()
-        .filter(|l| !l.volume.is_empty())
+        .enumerate()
+        .filter(|(_, l)| !l.volume.is_empty())
+        .map(|(index, l)| KeptLayer {
+            index,
+            name: &l.name,
+            visible: l.visible,
+            volume: &l.volume,
+            group: l.group,
+        })
         .collect();
     if layers.is_empty() {
         return Err(invalid("nothing to export: no layer contains voxels"));
@@ -626,8 +736,9 @@ pub fn write_vox(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
             }
         });
     }
-    // Scene: root transform -> group -> (transform -> shape) per model. Each
-    // translation equals the integer half size, so model space == world.
+    // Scene: root transform -> group -> (transform -> shape) per model,
+    // and (transform -> group) per Rizxel group. Each model translation
+    // equals the integer half size, so model space == world.
     let half = size / 2;
     let t = format!("{} {} {}", half.x, half.y, half.z);
     w.chunk(b"nTRN", |c| {
@@ -639,37 +750,43 @@ pub fn write_vox(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
         c.i32(1);
         c.dict(&[]);
     });
+    // Children of the scene root (`None`) and of each group, in draw order.
+    let mut items: HashMap<Option<usize>, Vec<(usize, SceneItem)>> = HashMap::new();
+    for (k, l) in layers.iter().enumerate() {
+        let parent = l.group.filter(|&g| g < scene.groups.len());
+        items
+            .entry(parent)
+            .or_default()
+            .push((2 * l.index + 1, SceneItem::Model(k)));
+    }
+    for (g, group) in scene.groups.iter().enumerate() {
+        let parent = group.parent.filter(|&p| p < scene.groups.len() && p != g);
+        items
+            .entry(parent)
+            .or_default()
+            .push((2 * group.order, SceneItem::Group(g)));
+    }
+    for list in items.values_mut() {
+        list.sort_by_key(|&(key, _)| key);
+    }
+    let mut scene_writer = SceneWriter {
+        w: &mut w,
+        scene,
+        layers: &layers,
+        items: &items,
+        next_id: 2,
+        translation: t,
+        written: HashSet::new(),
+    };
+    let top = scene_writer.children(None, 0)?;
     w.chunk(b"nGRP", |c| {
         c.i32(1);
         c.dict(&[]);
-        c.i32(layers.len() as i32);
-        for k in 0..layers.len() {
-            c.i32(2 + 2 * k as i32);
+        c.i32(top.len() as i32);
+        for id in &top {
+            c.i32(*id);
         }
     });
-    for (k, l) in layers.iter().enumerate() {
-        let id = 2 + 2 * k as i32;
-        let mut attrs = vec![("_name", l.name.clone())];
-        if !l.visible {
-            attrs.push(("_hidden", "1".to_owned()));
-        }
-        w.chunk(b"nTRN", |c| {
-            c.i32(id);
-            c.dict(&attrs);
-            c.i32(id + 1);
-            c.i32(-1);
-            c.i32(0);
-            c.i32(1);
-            c.dict(&[("_t", t.clone())]);
-        });
-        w.chunk(b"nSHP", |c| {
-            c.i32(id + 1);
-            c.dict(&[]);
-            c.i32(1);
-            c.i32(k as i32);
-            c.dict(&[]);
-        });
-    }
     w.chunk(b"LAYR", |c| {
         c.i32(0);
         c.dict(&[]);
@@ -695,7 +812,7 @@ pub fn write_vox(scene: &ExportScene) -> Result<Vec<u8>, RzxlError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interchange::ExportLayer;
+    use crate::interchange::{ExportGroup, ExportLayer};
     use crate::volume_from_runs;
     use rizxel_math::BoundSize;
 
@@ -716,18 +833,22 @@ mod tests {
                     name: "Body".into(),
                     visible: true,
                     volume: a,
+                    group: None,
                 },
                 ExportLayer {
                     name: "Hat".into(),
                     visible: false,
                     volume: b,
+                    group: None,
                 },
                 ExportLayer {
                     name: "Empty".into(),
                     visible: true,
                     volume: VoxelVolume::new(bounds),
+                    group: None,
                 },
             ],
+            groups: Vec::new(),
         }
     }
 
@@ -760,6 +881,48 @@ mod tests {
         for i in 1..s.palette.len() {
             assert_eq!(p.palette.get(i), s.palette.get(i));
         }
+    }
+
+    #[test]
+    fn groups_are_written_as_nested_group_nodes() {
+        // Body, then [Hat, [Empty] Inner] Outer: the empty layer is skipped
+        // but its group stays.
+        let mut s = scene();
+        s.layers[1].group = Some(1);
+        s.layers[2].group = Some(0);
+        s.groups = vec![
+            ExportGroup {
+                name: "Inner".into(),
+                visible: true,
+                parent: Some(1),
+                order: 3,
+            },
+            ExportGroup {
+                name: "Outer".into(),
+                visible: false,
+                parent: None,
+                order: 3,
+            },
+        ];
+        let p = read_vox(&write_vox(&s).unwrap(), "t").unwrap();
+        let by_name = |n: &str| p.layers.iter().find(|l| l.name == n).unwrap();
+        let (outer, inner, hat) = (by_name("Outer"), by_name("Inner"), by_name("Hat"));
+        assert!(outer.kind.is_group() && inner.kind.is_group());
+        assert_eq!(outer.parent, None);
+        assert_eq!(inner.parent, Some(outer.id));
+        assert_eq!(hat.parent, Some(outer.id));
+        assert_eq!(by_name("Body").parent, None);
+        assert!(
+            !outer.visible && !hat.visible,
+            "hidden groups hide their contents"
+        );
+        assert_eq!(p.layers.iter().filter(|l| !l.kind.is_group()).count(), 2);
+        // Cyclic group links are refused instead of looping.
+        s.groups[1].parent = Some(0);
+        assert!(
+            write_vox(&s).is_ok(),
+            "both groups unreachable from the root"
+        );
     }
 
     #[test]

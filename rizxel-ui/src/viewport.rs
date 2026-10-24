@@ -28,9 +28,11 @@ use glam::{IVec3, Mat3, Mat4, Vec3};
 use rizxel_app::{
     AppState, Document, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget,
 };
-use rizxel_math::{BoundSize, VoxelBox};
+use rizxel_math::{BoundSize, ImageData, VoxelBox};
 
-use crate::render::{GpuMesh, LineInstance, SceneFrame, ViewportCallback};
+use crate::render::{
+    GpuMesh, LineInstance, RefPixels, ReferenceDraw, SceneFrame, ViewportCallback,
+};
 use crate::theme;
 use crate::tool_input::{self, ToolInput};
 
@@ -77,6 +79,10 @@ pub struct MeshCache {
     /// when the key changes, so every new mesh needs a fresh one: a moved
     /// slice plane changes the mesh without changing the revision.
     next_build: u64,
+    /// Decoded reference images by [`ImageData::key`]. Holding the
+    /// `ImageData` keeps its bytes alive, so a key is never reused for
+    /// another image while it is cached.
+    images: HashMap<usize, (ImageData, Arc<RefPixels>)>,
 }
 
 impl MeshCache {
@@ -143,10 +149,59 @@ impl MeshCache {
         meshes
     }
 
-    /// Drops meshes of documents that are no longer open.
+    /// Drops meshes of documents that are no longer open, and decoded
+    /// images no open document uses.
     pub fn retain_open(&mut self, documents: &[Document]) {
         self.entries
             .retain(|id, _| documents.iter().any(|d| d.id() == *id));
+        self.images.retain(|key, _| {
+            documents
+                .iter()
+                .any(|d| d.data.references.iter().any(|r| r.image.key() == *key))
+        });
+    }
+
+    /// Decoded pixels of a reference image (decoded once per image).
+    fn pixels(&mut self, image: &ImageData) -> Option<Arc<RefPixels>> {
+        if let Some((_, pixels)) = self.images.get(&image.key()) {
+            return Some(pixels.clone());
+        }
+        match rizxel_app::decode_reference(image) {
+            Ok(rgba) => {
+                let pixels = Arc::new(RefPixels {
+                    width: rgba.width,
+                    height: rgba.height,
+                    pixels: rgba.pixels,
+                });
+                self.images
+                    .insert(image.key(), (image.clone(), pixels.clone()));
+                Some(pixels)
+            }
+            Err(e) => {
+                log::warn!("reference image: {e}");
+                None
+            }
+        }
+    }
+
+    /// `doc`'s visible reference images in world space, in draw order.
+    /// Slice Mode filters apply.
+    pub fn references(&mut self, doc: &Document, bmin: Vec3) -> Vec<ReferenceDraw> {
+        let slicing = doc.plane.slice;
+        doc.data
+            .references
+            .iter()
+            .filter(|r| r.visible && r.opacity > 0.0 && r.slice.shows(slicing))
+            .filter_map(|r| {
+                Some(ReferenceDraw {
+                    key: r.image.key(),
+                    pixels: self.pixels(&r.image)?,
+                    corners: r.corners().map(|c| c + bmin),
+                    opacity: r.opacity,
+                    on_top: r.depth == rizxel_math::DepthMode::OnTop,
+                })
+            })
+            .collect()
     }
 }
 
@@ -353,6 +408,9 @@ pub fn show(
     if let Some(meshes) = voxels {
         frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
         frame.voxels = Some(meshes.opaque);
+    }
+    if let Some(doc) = state.doc() {
+        frame.references = meshes.references(doc, bmin);
     }
     match target_format {
         Some(format) => {
@@ -592,6 +650,7 @@ fn scene_frame(
             .doc()
             .map(|d| d.data.materials.clone())
             .unwrap_or_default(),
+        references: Vec::new(),
     }
 }
 
@@ -1221,6 +1280,43 @@ mod tests {
         keys.push(full.key);
         let unique: std::collections::HashSet<_> = keys.iter().collect();
         assert_eq!(unique.len(), keys.len());
+    }
+
+    #[test]
+    fn references_are_placed_in_world_space_and_filtered() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([9, 8, 7, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let image = ImageData::new(png.into_inner(), 4, 2);
+        let mut doc = Document::new("t");
+        doc.set_bounds(BoundSize::new(8, 4, 6), false);
+        doc.add_reference("a", image.clone(), rizxel_math::RefPlane::Xy);
+        doc.add_reference("b", image, rizxel_math::RefPlane::Xz);
+        doc.update_reference(1, false, |r| {
+            r.depth = rizxel_math::DepthMode::OnTop;
+            r.slice = rizxel_math::SliceFilter::SliceOnly;
+        });
+        let (bmin, _) = bounds_box(doc.data.bounds);
+        let mut cache = MeshCache::default();
+        let draws = cache.references(&doc, bmin);
+        assert_eq!(draws.len(), 1, "the slice-only one is hidden");
+        // The XY image fills the z = 0 face: top-left at (min.x, 4, min.z).
+        assert_eq!(draws[0].corners[0], bmin + Vec3::new(0.0, 4.0, 0.0));
+        assert_eq!(draws[0].corners[2], bmin + Vec3::new(8.0, 0.0, 0.0));
+        assert_eq!((draws[0].pixels.width, draws[0].pixels.height), (4, 2));
+        assert!(!draws[0].on_top);
+        // Both share the decoded pixels.
+        doc.plane.slice = true;
+        let draws = cache.references(&doc, bmin);
+        assert_eq!(draws.len(), 2);
+        assert!(Arc::ptr_eq(&draws[0].pixels, &draws[1].pixels));
+        assert!(draws[1].on_top);
+        doc.toggle_all_references();
+        assert!(cache.references(&doc, bmin).is_empty());
+        // Closing the document frees the decoded image.
+        cache.retain_open(&[]);
+        assert!(cache.images.is_empty());
     }
 
     #[test]

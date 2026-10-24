@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use glam::IVec3;
-use rizxel_math::{BoundSize, Material, Palette, Rgba8, Voxel};
+use rizxel_math::{BoundSize, Material, Palette, ReferenceImage, Rgba8, Voxel};
 
 use crate::document::{DocData, Layer, LayerProps};
 use crate::selection::Selection;
@@ -98,6 +98,25 @@ pub enum Edit {
         old: Selection,
         new: Selection,
     },
+    InsertReference {
+        index: usize,
+        reference: ReferenceImage,
+    },
+    RemoveReference {
+        index: usize,
+        reference: ReferenceImage,
+    },
+    /// Any property of one reference image (placement, visibility, ...).
+    SetReference {
+        index: usize,
+        old: ReferenceImage,
+        new: ReferenceImage,
+    },
+    /// Reorders the reference images (draw order).
+    MoveReference {
+        from: usize,
+        to: usize,
+    },
 }
 
 impl Edit {
@@ -145,6 +164,17 @@ impl Edit {
                     l.selection = new.clone();
                 }
             }
+            Edit::InsertReference { index, reference } => {
+                data.references.insert(*index, reference.clone());
+            }
+            Edit::RemoveReference { index, .. } => {
+                data.references.remove(*index);
+            }
+            Edit::SetReference { index, new, .. } => data.references[*index] = new.clone(),
+            Edit::MoveReference { from, to } => {
+                let r = data.references.remove(*from);
+                data.references.insert(*to, r);
+            }
         }
     }
 
@@ -189,6 +219,63 @@ impl Edit {
                     l.selection = old.clone();
                 }
             }
+            Edit::InsertReference { index, .. } => {
+                data.references.remove(*index);
+            }
+            Edit::RemoveReference { index, reference } => {
+                data.references.insert(*index, reference.clone());
+            }
+            Edit::SetReference { index, old, .. } => data.references[*index] = old.clone(),
+            Edit::MoveReference { from, to } => {
+                let r = data.references.remove(*to);
+                data.references.insert(*from, r);
+            }
+        }
+    }
+
+    /// Short name for the undo history list. Batches name their first
+    /// edit; callers that know better label the step (see
+    /// [`History::label_next`]).
+    pub fn label(&self) -> String {
+        match self {
+            Edit::InsertLayer { layer, .. } => format!("Add Layer \"{}\"", layer.name),
+            Edit::RemoveLayer { layer, .. } => format!("Delete Layer \"{}\"", layer.name),
+            Edit::RenameLayer { new, .. } => format!("Rename Layer to \"{new}\""),
+            Edit::SetLayerVisible { new: true, .. } => "Show Layer".to_owned(),
+            Edit::SetLayerVisible { new: false, .. } => "Hide Layer".to_owned(),
+            Edit::SetLayerLocked { new: true, .. } => "Lock Layer".to_owned(),
+            Edit::SetLayerLocked { new: false, .. } => "Unlock Layer".to_owned(),
+            Edit::MoveLayer { .. } => "Move Layer".to_owned(),
+            Edit::Batch(edits) => match edits.as_slice() {
+                [] => "Nothing".to_owned(),
+                [one] => one.label(),
+                [first, ..] if edits.iter().all(|e| e.label() == first.label()) => first.label(),
+                [first, rest @ ..] => format!("{} (+{})", first.label(), rest.len()),
+            },
+            Edit::SetBounds { new, .. } => {
+                format!("Bounds {}×{}×{}", new.x(), new.y(), new.z())
+            }
+            Edit::SetPaletteColor { index, .. } => format!("Palette Color {index}"),
+            Edit::Voxels { changes, .. } => format!("Edit {} Voxels", changes.len()),
+            Edit::SetLayerProps { .. } => "Layer Properties".to_owned(),
+            Edit::SetMaterials { .. } => "Materials".to_owned(),
+            Edit::SetPalette { .. } => "Palette".to_owned(),
+            Edit::SetSelection { new, .. } if new.is_empty() => "Deselect".to_owned(),
+            Edit::SetSelection { new, .. } => format!("Select {} Voxels", new.len()),
+            Edit::InsertReference { reference, .. } => {
+                format!("Add Reference \"{}\"", reference.name)
+            }
+            Edit::RemoveReference { reference, .. } => {
+                format!("Delete Reference \"{}\"", reference.name)
+            }
+            Edit::SetReference { old, new, .. } if old.visible != new.visible => if new.visible {
+                "Show Reference"
+            } else {
+                "Hide Reference"
+            }
+            .to_owned(),
+            Edit::SetReference { new, .. } => format!("Reference \"{}\"", new.name),
+            Edit::MoveReference { .. } => "Move Reference".to_owned(),
         }
     }
 
@@ -229,6 +316,16 @@ impl Edit {
             (Edit::SetMaterials { new, .. }, Edit::SetMaterials { new: n, .. })
                 if new.len() == n.len() =>
             {
+                *new = n.clone();
+                true
+            }
+            // Reference drags (offset, size, opacity) become one step.
+            (
+                Edit::SetReference { index, new, .. },
+                Edit::SetReference {
+                    index: i, new: n, ..
+                },
+            ) if index == i => {
                 *new = n.clone();
                 true
             }
@@ -310,6 +407,15 @@ struct Step {
     /// Work plane while slicing when the step was recorded; undo and redo
     /// move the slice back there (Qubicle Slice Mode).
     plane: Option<WorkPlane>,
+    /// Name given by the operation that recorded it; otherwise
+    /// [`Edit::label`] names the step.
+    label: Option<String>,
+}
+
+impl Step {
+    fn label(&self) -> String {
+        self.label.clone().unwrap_or_else(|| self.edit.label())
+    }
 }
 
 /// Linear undo/redo stack.
@@ -321,6 +427,8 @@ pub struct History {
     /// Slice recorded with the steps pushed from now on (`None` when not
     /// slicing). Set by the document before it records edits.
     pub tag: Option<WorkPlane>,
+    /// Name of the next step recorded ([`History::label_next`]).
+    next_label: Option<String>,
 }
 
 impl History {
@@ -444,10 +552,38 @@ impl History {
         self.undo.push(Step {
             edit,
             plane: self.tag,
+            label: self.next_label.take(),
         });
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
+    }
+
+    /// Names the next recorded step (a tool or menu command). A step
+    /// merged into the previous one keeps that one's name.
+    pub fn label_next(&mut self, label: impl Into<String>) {
+        self.next_label = Some(label.into());
+    }
+
+    /// Drops a [`History::label_next`] name nothing used (the operation
+    /// recorded no step).
+    pub fn forget_label(&mut self) {
+        self.next_label = None;
+    }
+
+    /// Names of every step, oldest first: the done steps, then the undone
+    /// ones that redo would re-apply. [`History::position`] splits them.
+    pub fn entries(&self) -> Vec<String> {
+        self.undo
+            .iter()
+            .chain(self.redo.iter().rev())
+            .map(Step::label)
+            .collect()
+    }
+
+    /// Number of done steps: the state sits after `entries()[position - 1]`.
+    pub fn position(&self) -> usize {
+        self.undo.len()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -502,6 +638,7 @@ mod tests {
             layers: vec![Layer::new("A", BoundSize::default())],
             bounds: BoundSize::default(),
             materials: Vec::new(),
+            references: Vec::new(),
         }
     }
 
@@ -598,6 +735,47 @@ mod tests {
         e.apply(&mut d);
         h.push(e, false);
         assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn steps_are_listed_by_name_around_the_position() {
+        let mut d = data();
+        let mut h = History::default();
+        let rename = |old: &str, new: &str| Edit::RenameLayer {
+            index: 0,
+            old: old.into(),
+            new: new.into(),
+        };
+        for (edit, label) in [
+            (rename("A", "B"), None),
+            (rename("B", "C"), Some("Custom")),
+            (Edit::Batch(vec![rename("C", "D"), rename("D", "E")]), None),
+        ] {
+            edit.apply(&mut d);
+            if let Some(l) = label {
+                h.label_next(l);
+            }
+            h.push(edit, false);
+        }
+        // A name nobody used is forgotten.
+        h.label_next("Unused");
+        h.forget_label();
+        assert_eq!(
+            h.entries(),
+            [
+                "Rename Layer to \"B\"",
+                "Custom",
+                "Rename Layer to \"D\" (+1)"
+            ]
+        );
+        assert_eq!(h.position(), 3);
+        h.undo(&mut d);
+        h.undo(&mut d);
+        // Undone steps stay listed, in order, after the position.
+        assert_eq!(h.entries().len(), 3);
+        assert_eq!(h.entries()[2], "Rename Layer to \"D\" (+1)");
+        assert_eq!(h.position(), 1);
+        assert_eq!(d.layers[0].name, "B");
     }
 
     #[test]

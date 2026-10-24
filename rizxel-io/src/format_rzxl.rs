@@ -15,6 +15,8 @@
 //! - **3**: layer ids, opacity, groups (`parent`), linked clones, shape
 //!   layers, crop boxes, per-layer materials and the project material list,
 //!   plus a `generator` string.
+//! - **4**: reference images ([`ProjectFile::references`]), each with its
+//!   PNG or JPEG file embedded in base64.
 //!
 //! Compatibility rules:
 //! - Every field added after version 1 has a serde default, so older bodies
@@ -25,7 +27,8 @@
 //!   and silently losing data on the next save.
 //! - Every decoded project passes [`ProjectFile::validate`]: ids, references,
 //!   group cycles, value ranges and size caps are checked, so the document
-//!   layer never sees dangling links or hostile sizes.
+//!   layer never sees dangling links or hostile sizes. [`read_rzxl`] also
+//!   decodes every embedded reference image to check it.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -33,12 +36,15 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use rizxel_math::{
-    BoundSize, IVec3, LayerId, LayerKind, Material, Palette, Voxel, VoxelVolume, EMPTY_VOXEL,
+    BoundSize, IVec3, LayerId, LayerKind, Material, Palette, ReferenceImage, Voxel, VoxelVolume,
+    EMPTY_VOXEL,
 };
+
+use crate::image_io::{check_reference, MAX_REFERENCE_SIDE};
 use serde::{Deserialize, Serialize};
 
 pub const RZXL_MAGIC: [u8; 4] = *b"RZXL";
-pub const RZXL_VERSION: u32 = 3;
+pub const RZXL_VERSION: u32 = 4;
 pub const RZXL_EXTENSION: &str = "rzxl";
 
 /// Hard limit on the decompressed body to guard against corrupt/malicious files.
@@ -56,6 +62,10 @@ pub const MAX_NAME_CHARS: usize = 256;
 /// Largest absolute coordinate accepted in clone offsets, shape areas and
 /// crop boxes (well beyond `BoundSize::MAX`, far from `i32` overflow).
 pub const MAX_COORD: i32 = 4 * BoundSize::MAX as i32;
+/// Most reference images a project may hold.
+pub const MAX_REFERENCES: usize = 64;
+/// Most bytes of embedded image files in one project.
+pub const MAX_REFERENCE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RzxlError {
@@ -153,6 +163,9 @@ pub struct ProjectFile {
     pub layers: Vec<LayerData>,
     pub active_layer: usize,
     pub bounds: BoundSize,
+    /// Reference images, in draw order (version 4+).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ReferenceImage>,
 }
 
 /// `generator` value written by this build.
@@ -244,6 +257,8 @@ impl ProjectFile {
             }
         }
 
+        self.validate_references()?;
+
         let parents: HashMap<LayerId, Option<LayerId>> =
             self.layers.iter().map(|l| (l.id, l.parent)).collect();
         for (i, l) in self.layers.iter().enumerate() {
@@ -282,6 +297,47 @@ impl ProjectFile {
                 }
                 parent = parents.get(&p).copied().flatten();
             }
+        }
+        Ok(())
+    }
+
+    /// Reference image caps: count, ids, names, sizes and placement. The
+    /// image bytes themselves are decoded by [`read_rzxl`].
+    fn validate_references(&self) -> Result<(), RzxlError> {
+        let fail = |msg: String| Err(RzxlError::Invalid(msg));
+        if self.references.len() > MAX_REFERENCES {
+            return fail(format!(
+                "{} reference images (limit {MAX_REFERENCES})",
+                self.references.len()
+            ));
+        }
+        let mut ids = HashSet::new();
+        let mut bytes = 0usize;
+        for (i, r) in self.references.iter().enumerate() {
+            let at = format!("reference image {i} ({:?})", r.name);
+            if r.id == 0 || !ids.insert(r.id) {
+                return fail(format!("{at} has id 0 or reuses id {}", r.id));
+            }
+            if r.name.chars().count() > MAX_NAME_CHARS {
+                return fail(format!("{at} name is too long"));
+            }
+            let (w, h) = (r.image.width, r.image.height);
+            if w == 0 || h == 0 || w > MAX_REFERENCE_SIDE || h > MAX_REFERENCE_SIDE {
+                return fail(format!(
+                    "{at} is {w}×{h} pixels (sides 1..={MAX_REFERENCE_SIDE})"
+                ));
+            }
+            if !r.is_valid() || !r.within(MAX_COORD as f32) {
+                return fail(format!(
+                    "{at} has an invalid placement, size, rotation or opacity"
+                ));
+            }
+            bytes = bytes.saturating_add(r.image.bytes().len());
+        }
+        if bytes > MAX_REFERENCE_BYTES {
+            return fail(format!(
+                "reference images hold {bytes} bytes (limit {MAX_REFERENCE_BYTES})"
+            ));
         }
         Ok(())
     }
@@ -416,6 +472,10 @@ pub fn read_rzxl<R: Read>(mut r: R) -> Result<ProjectFile, RzxlError> {
     let mut project: ProjectFile = serde_json::from_slice(&json)?;
     project.migrate(version);
     project.validate()?;
+    for (i, r) in project.references.iter().enumerate() {
+        check_reference(&r.image)
+            .map_err(|e| invalid(format!("reference image {i} ({:?}): {e}", r.name)))?;
+    }
     Ok(project)
 }
 
@@ -439,7 +499,7 @@ pub fn load_rzxl(path: &Path) -> Result<ProjectFile, RzxlError> {
 mod tests {
     use super::*;
 
-    use rizxel_math::{ShapeKind, VoxelBox};
+    use rizxel_math::{DepthMode, ImageData, RefPlane, ShapeKind, SliceFilter, VoxelBox};
 
     fn layer(
         id: LayerId,
@@ -490,6 +550,7 @@ mod tests {
             ],
             active_layer: 1,
             bounds: BoundSize::new(16, 32, 64),
+            references: Vec::new(),
         }
     }
 
@@ -534,11 +595,111 @@ mod tests {
         p
     }
 
+    /// `w`×`h` PNG.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        crate::png_io::encode_rgba(w, h, &vec![200; (w * h * 4) as usize]).unwrap()
+    }
+
+    /// Project with two reference images (front and side).
+    fn with_references() -> ProjectFile {
+        let mut p = rich_sample();
+        let front = ImageData::new(png(8, 4), 8, 4);
+        let side = ImageData::new(png(3, 5), 3, 5);
+        p.references = vec![
+            ReferenceImage::fitted(1, "Front", front, RefPlane::Xy, p.bounds),
+            ReferenceImage {
+                rotation: 1,
+                flip_v: true,
+                opacity: 0.8,
+                depth: DepthMode::OnTop,
+                slice: SliceFilter::SliceOnly,
+                ..ReferenceImage::fitted(7, "Side", side, RefPlane::Yz, p.bounds)
+            },
+        ];
+        p.references[1].snap_to_face(p.bounds, 2);
+        p
+    }
+
+    #[test]
+    fn version_4_references_roundtrip() {
+        let mut buf = Vec::new();
+        write_rzxl(&mut buf, &with_references()).unwrap();
+        assert_eq!(&buf[4..8], &4u32.to_le_bytes());
+        let back = read_rzxl(buf.as_slice()).unwrap();
+        assert_eq!(back, with_references());
+        assert_eq!(back.references[1].image.bytes(), png(3, 5).as_slice());
+    }
+
+    #[test]
+    fn version_3_body_loads_without_references() {
+        let mut p = rich_sample();
+        p.references.clear();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("references"), "empty lists are not written");
+        let back = read_rzxl(raw_file(3, &json).as_slice()).unwrap();
+        assert!(back.references.is_empty());
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn hostile_references_are_rejected() {
+        // Bad base64 never decodes.
+        let json = serde_json::to_string(&with_references()).unwrap();
+        let bad = json.replacen(r#""data":""#, r#""data":"*"#, 1);
+        assert!(matches!(
+            read_rzxl(raw_file(4, &bad).as_slice()).unwrap_err(),
+            RzxlError::Json(_)
+        ));
+        // Truncated image bytes, and a stated size that is not the image's.
+        let mut p = with_references();
+        let cut = png(8, 4)[..30].to_vec();
+        p.references[0].image = ImageData::new(cut, 8, 4);
+        let json = serde_json::to_string(&p).unwrap();
+        let err = read_rzxl(raw_file(4, &json).as_slice())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Front"), "{err}");
+        let mut p = with_references();
+        p.references[0].image = ImageData::new(png(8, 4), 8, 5);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(read_rzxl(raw_file(4, &json).as_slice()).is_err());
+
+        type Breaker = fn(&mut ProjectFile);
+        let cases: [(&str, Breaker); 6] = [
+            ("pixels", |p| {
+                p.references[0].image.width = MAX_REFERENCE_SIDE + 1
+            }),
+            ("pixels", |p| p.references[0].image.height = 0),
+            ("reuses id", |p| p.references[1].id = 1),
+            ("invalid placement", |p| p.references[0].size.x = -1.0),
+            ("invalid placement", |p| {
+                p.references[0].offset.z = f32::INFINITY
+            }),
+            ("limit 64", |p| {
+                let r = p.references[0].clone();
+                p.references = (1..=MAX_REFERENCES as u32 + 1)
+                    .map(|id| ReferenceImage { id, ..r.clone() })
+                    .collect();
+            }),
+        ];
+        for (expect, breaker) in cases {
+            let mut p = with_references();
+            breaker(&mut p);
+            let msg = p.validate().unwrap_err().to_string();
+            assert!(msg.contains(expect), "{expect:?} not in {msg:?}");
+            assert!(write_rzxl(Vec::new(), &p).is_err(), "{expect}");
+        }
+        // Opacity outside 0..=1 is refused by the same check.
+        let mut p = with_references();
+        p.references[1].opacity = 2.0;
+        assert!(p.validate().is_err());
+    }
+
     #[test]
     fn version_3_features_roundtrip() {
         let mut buf = Vec::new();
         write_rzxl(&mut buf, &rich_sample()).unwrap();
-        assert_eq!(&buf[4..8], &3u32.to_le_bytes());
+        assert_eq!(&buf[4..8], &4u32.to_le_bytes());
         let back = read_rzxl(buf.as_slice()).unwrap();
         assert_eq!(back, rich_sample());
         assert!(back.generator.starts_with("Rizxel "));

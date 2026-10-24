@@ -1,0 +1,9 @@
+craft-libs
+Copyright (c) 2026 ArtCraft Team and the craft-libs contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+This folder holds only the craft-ui crate, which bundles no third-party assets. The
+third-party material listed in upstream's NOTICE belongs to other craft-libs crates.
+
+Modified for Rizxel by its contributors; see README.md for the changes.

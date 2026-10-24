@@ -1,4 +1,5 @@
-//! Shape tool: a cube, sphere or cylinder dragged out from an anchor cell.
+//! Shape tool: a cube, sphere, cylinder, pyramid or cone dragged out from
+//! an anchor cell. Pyramids and cones point away from the pressed face.
 //!
 //! The drag spans a rectangle on the plane of the pressed face (anchor to
 //! the hovered cell, projected onto that plane). The shape then grows away
@@ -33,13 +34,24 @@ pub fn shape_box(anchor: IVec3, current: IVec3, grow: IVec3, planar: bool) -> Vo
     VoxelBox::from_corners(anchor, end)
 }
 
-/// Cells of the shape inscribed in `area` (cylinders stand along Y), after
-/// antialiasing and symmetry.
+/// Cells of the shape inscribed in `area` (cylinders stand along Y,
+/// pyramids and cones point to +Y), after antialiasing and symmetry.
 pub fn shape_cells(area: &VoxelBox, opts: &ShapeOptions, bounds: BoundSize) -> Vec<IVec3> {
+    shape_cells_toward(area, opts, bounds, IVec3::Y)
+}
+
+/// [`shape_cells`] with pyramids and cones pointing toward `up` (a unit
+/// axis vector: the drag's grow direction).
+pub fn shape_cells_toward(
+    area: &VoxelBox,
+    opts: &ShapeOptions,
+    bounds: BoundSize,
+    up: IVec3,
+) -> Vec<IVec3> {
     if !area.is_valid() {
         return Vec::new();
     }
-    let cells = soft_box_shape(area.min, area.max, opts.shape, opts.antialiasing);
+    let cells = soft_box_shape(area.min, area.max, opts.shape, opts.antialiasing, up);
     apply_symmetry(cells, bounds, opts.symmetry)
 }
 
@@ -78,6 +90,42 @@ mod tests {
         let cylinder = count(n, BrushShape::Cylinder) as f32;
         let expected = std::f32::consts::PI * r * r * n as f32;
         assert!((cylinder - expected).abs() < expected * 0.08, "{cylinder}");
+    }
+
+    #[test]
+    fn pyramids_and_cones_taper_toward_up() {
+        let bounds = BoundSize::new(16, 16, 16);
+        let opts = |shape| ShapeOptions {
+            shape,
+            ..ShapeOptions::default()
+        };
+        let area = VoxelBox::from_corners(IVec3::ZERO, IVec3::splat(4));
+        let at =
+            |cells: &[IVec3], axis: usize, c: i32| cells.iter().filter(|p| p[axis] == c).count();
+        let pyramid = shape_cells_toward(&area, &opts(BrushShape::Pyramid), bounds, IVec3::Y);
+        // 5x5 base, shrinking to a single tip voxel.
+        assert_eq!(at(&pyramid, 1, 0), 25);
+        assert_eq!(at(&pyramid, 1, 4), 1);
+        let sizes: Vec<usize> = (0..5).map(|y| at(&pyramid, 1, y)).collect();
+        assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
+        // Pointing down puts the base on top.
+        let down = shape_cells_toward(&area, &opts(BrushShape::Pyramid), bounds, IVec3::NEG_Y);
+        assert_eq!(at(&down, 1, 4), 25);
+        assert_eq!(at(&down, 1, 0), 1);
+        // Along X; a cone is rounder than the pyramid on the same base.
+        let cone = shape_cells_toward(&area, &opts(BrushShape::Cone), bounds, IVec3::X);
+        assert_eq!(at(&cone, 0, 4), 1);
+        assert!((9..25).contains(&at(&cone, 0, 0)));
+        assert!(cone.len() < pyramid.len());
+        // A single cell is always filled.
+        let one = VoxelBox::from_corners(IVec3::ZERO, IVec3::ZERO);
+        for shape in BrushShape::ALL {
+            assert_eq!(
+                shape_cells(&one, &opts(shape), bounds).len(),
+                1,
+                "{shape:?}"
+            );
+        }
     }
 
     #[test]

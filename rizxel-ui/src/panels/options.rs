@@ -1,15 +1,15 @@
-//! Option bar: history, voxel operations, per-tool parameters and view mode.
+//! Option bar: history, voxel operations and per-tool parameters.
 //!
 //! The parameters after the Paint button follow the active tool. Their set
-//! mirrors Goxel's tool panels (`src/tools/*.c`). The whole left part scrolls
-//! horizontally when the window is too narrow; the Model/Render toggle stays
-//! pinned to the right.
+//! mirrors Goxel's tool panels (`src/tools/*.c`). The bar scrolls
+//! horizontally when the window is too narrow. The Model/Render switch lives
+//! in the title bar.
 
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
-use rizxel_app::{AppState, ViewMode};
+use rizxel_app::AppState;
 use rizxel_engine::{
-    BrushShape, DragMode, ExtrudeOptions, FillMode, MaskMode, NamesMode, Symmetry, Tool, VoxelOp,
-    WorkPlane,
+    BrushShape, Connectivity, DragMode, ExtrudeOptions, FillMode, LineMode, MaskMode, NamesMode,
+    SelectionMode, Symmetry, Tool, VoxelOp, WorkPlane,
 };
 
 use crate::icons::{self, Icon, Icons};
@@ -19,34 +19,15 @@ use crate::widgets::{hscroll_strip, vertical_divider};
 const BUTTON_SIZE: f32 = 32.0;
 const ICON_SIZE: f32 = 20.0;
 const DIVIDER_HEIGHT: f32 = 20.0;
-/// Gap between the scrolling strip and the pinned view toggle.
-const TOGGLE_GAP: f32 = 8.0;
-const VIEW_MODES: [(ViewMode, &str); 2] =
-    [(ViewMode::Model, "Model"), (ViewMode::Render, "Render")];
 
 pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let height = ui.max_rect().height();
-    let toggle_width = segmented_width(ui, &VIEW_MODES);
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        hscroll_strip(
-            ui,
-            "option_bar",
-            height,
-            toggle_width + TOGGLE_GAP,
-            theme::HOVER,
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                common_controls(ui, state, icons);
-                vertical_divider(ui, DIVIDER_HEIGHT);
-                tool_parameters(ui, state);
-                ui.add_space(8.0);
-            },
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            segmented(ui, "view_mode", &mut state.view_mode, &VIEW_MODES);
-        });
+    hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        common_controls(ui, state, icons);
+        vertical_divider(ui, DIVIDER_HEIGHT);
+        tool_parameters(ui, state);
+        ui.add_space(8.0);
     });
 }
 
@@ -187,6 +168,26 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             antialiasing(ui, &mut b.antialiasing);
             gap(ui);
             symmetry(ui, "brush_sym", &mut b.symmetry);
+            gap(ui);
+            ui.add_enabled_ui(b.single_voxel(), |ui| {
+                connectivity(ui, "brush_connect", &mut b.connect)
+                    .on_disabled_hover_text("Line connectivity applies to size 1 strokes");
+            });
+        }
+        Tool::Line => {
+            let modes = LineMode::ALL.map(|m| (m, m.label()));
+            segmented(ui, "line_mode", &mut opts.line.mode, &modes);
+            gap(ui);
+            let b = &mut opts.brush;
+            connectivity(ui, "line_connect", &mut b.connect);
+            gap(ui);
+            caption(ui, "Brush");
+            shape_combo(ui, "line_shape", &mut b.shape);
+            for (axis, value) in ["X", "Y", "Z"].into_iter().zip(b.size.iter_mut()) {
+                labeled_drag(ui, axis, value, 1..=rizxel_engine::BrushOptions::MAX_SIZE);
+            }
+            gap(ui);
+            symmetry(ui, "line_sym", &mut b.symmetry);
         }
         Tool::Shape => {
             let s = &mut opts.shape;
@@ -213,6 +214,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 );
             });
         }
+        Tool::Transform => transform_rows(ui, state),
         Tool::ColorPicker => {
             ui.checkbox(
                 &mut opts.color_picker.sample_all_layers,
@@ -222,10 +224,17 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::Selection => {
             let s = &mut opts.selection;
+            let modes = SelectionMode::ALL.map(|m| (m, m.label()));
+            segmented(ui, "sel_mode", &mut s.mode, &modes);
+            gap(ui);
             mask_mode(ui, "sel_mask", &mut s.mask);
             gap(ui);
             ui.checkbox(&mut s.all_layers, "All layers")
                 .on_hover_text("Select the voxels of every visible layer inside the box");
+            let all_layers = s.all_layers;
+            if s.mode == SelectionMode::Box {
+                box_rows(ui, state, all_layers);
+            }
             selection_actions(ui, state);
         }
         Tool::FuzzySelect => {
@@ -302,10 +311,238 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
     }
 }
 
-/// Deselect / Delete buttons of the selection tools.
+/// Transform tool: typed rotation, scale (or size), move and pivot, live on
+/// the open transform (the first change opens one); Apply / Cancel.
+fn transform_rows(ui: &mut Ui, state: &mut AppState) {
+    use rizxel_engine::tools::{TransformParams, MAX_SCALE, MIN_SCALE};
+    let Some(doc) = state.doc() else { return };
+    let session = doc.transform_session();
+    let target = session
+        .map(|s| s.size)
+        .or_else(|| doc.transform_target_box().map(|b| b.size()));
+    let Some(source_size) = target else {
+        caption(ui, "Select voxels, or pick a layer that has some");
+        return;
+    };
+    let open = session.is_some();
+    let old = session.map(|s| s.params).unwrap_or_default();
+    let mut p = old;
+    let opts = &mut state.options.transform;
+
+    caption(ui, "Rotate");
+    for axis in 0..3 {
+        caption_small(ui, ["X", "Y", "Z"][axis]);
+        ui.add(
+            egui::DragValue::new(&mut p.rotate[axis])
+                .speed(1.0)
+                .range(-360.0..=360.0)
+                .suffix("°"),
+        );
+    }
+    gap(ui);
+    let modes = [(false, "%"), (true, "Size")];
+    segmented(ui, "transform_size_mode", &mut opts.size_mode, &modes);
+    for axis in 0..3 {
+        caption_small(ui, ["X", "Y", "Z"][axis]);
+        if opts.size_mode {
+            let src = source_size[axis].max(1);
+            let mut size = (src as f32 * p.scale[axis]).round() as i32;
+            let max = (src as f32 * MAX_SCALE) as i32;
+            if ui
+                .add(egui::DragValue::new(&mut size).speed(0.1).range(1..=max))
+                .changed()
+            {
+                p.scale[axis] = size as f32 / src as f32;
+            }
+        } else {
+            let mut percent = p.scale[axis] * 100.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut percent)
+                        .speed(1.0)
+                        .range(MIN_SCALE * 100.0..=MAX_SCALE * 100.0)
+                        .suffix("%"),
+                )
+                .changed()
+            {
+                p.scale[axis] = percent / 100.0;
+            }
+        }
+    }
+    gap(ui);
+    caption(ui, "Move");
+    for axis in 0..3 {
+        caption_small(ui, ["X", "Y", "Z"][axis]);
+        ui.add(egui::DragValue::new(&mut p.offset[axis]).speed(0.1));
+    }
+    gap(ui);
+    caption(ui, "Pivot");
+    let old_pivot = (opts.pivot, opts.pivot_cell);
+    egui::ComboBox::from_id_salt("transform_pivot")
+        .width(90.0)
+        .selected_text(opts.pivot.label())
+        .show_ui(ui, |ui| {
+            for pv in rizxel_engine::Pivot::ALL {
+                ui.selectable_value(&mut opts.pivot, pv, pv.label());
+            }
+        })
+        .response
+        .on_hover_text("Cursor: click a voxel off the gizmo to place it");
+    if opts.pivot == rizxel_engine::Pivot::Cursor {
+        for axis in 0..3 {
+            caption_small(ui, ["X", "Y", "Z"][axis]);
+            ui.add(egui::DragValue::new(&mut opts.pivot_cell[axis]).speed(0.1));
+        }
+    }
+    gap(ui);
+    ui.checkbox(&mut opts.clip_to_bounds, "Clip to bounds")
+        .on_hover_text("Drop the voxels that end up outside the bounds instead of refusing Apply");
+    let pivot_changed = (opts.pivot, opts.pivot_cell) != old_pivot;
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    let mut apply = false;
+    let mut cancel = false;
+    ui.add_enabled_ui(open, |ui| {
+        apply = ui
+            .button("Apply")
+            .on_hover_text("Apply the transform (Enter)")
+            .clicked();
+        cancel = ui
+            .button("Cancel")
+            .on_hover_text("Restore the voxels (Esc)")
+            .clicked();
+    });
+    if ui
+        .button("Reset")
+        .on_hover_text("Back to no rotation, 100% and no move")
+        .clicked()
+    {
+        p = TransformParams::default();
+    }
+    p.scale = p
+        .scale
+        .clamp(glam::Vec3::splat(MIN_SCALE), glam::Vec3::splat(MAX_SCALE));
+    if p != old || (open && pivot_changed) {
+        crate::tool_input::set_transform_params(state, p);
+    }
+    if apply {
+        crate::tool_input::apply_transform(state);
+    } else if cancel {
+        if let Some(doc) = state.doc_mut() {
+            doc.cancel_transform();
+        }
+        state.status_message = Some("Transform cancelled".to_owned());
+    }
+}
+
+fn caption_small(ui: &mut Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(11.0)
+            .color(theme::TEXT_MUTED),
+    );
+}
+
+/// Box mode: position (min corner) and size of the open box, typed values
+/// move or resize it live; Apply / Cancel.
+fn box_rows(ui: &mut Ui, state: &mut AppState, all_layers: bool) {
+    let mask = state.options.selection.mask;
+    let Some(doc) = state.doc_mut() else { return };
+    doc.set_box_all_layers(all_layers);
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    let Some(area) = doc.box_select().map(|b| b.area) else {
+        caption(ui, "Click a voxel to place a box");
+        return;
+    };
+    let limit = doc.box_limit();
+    let (mut min, mut size) = (area.min, area.size());
+    caption(ui, "Position");
+    for axis in 0..3 {
+        axis_drag(
+            ui,
+            ["X", "Y", "Z"][axis],
+            &mut min[axis],
+            0..=limit.max[axis] - 1,
+        );
+    }
+    gap(ui);
+    caption(ui, "Size");
+    for axis in 0..3 {
+        axis_drag(
+            ui,
+            ["X", "Y", "Z"][axis],
+            &mut size[axis],
+            1..=limit.size()[axis].max(1),
+        );
+    }
+    if (min, size) != (area.min, area.size()) {
+        doc.set_box_area(
+            rizxel_math::VoxelBox {
+                min,
+                max: min + size,
+            },
+            false,
+        );
+    }
+    gap(ui);
+    let mut message = None;
+    if ui
+        .button("Apply")
+        .on_hover_text("Select the voxels in the box (Enter)")
+        .clicked()
+    {
+        doc.set_box_mode(mask);
+        doc.apply_box_select();
+        message = Some(format!(
+            "Selected: {} voxels",
+            doc.selection().map_or(0, |s| s.len())
+        ));
+    }
+    if ui
+        .button("Cancel")
+        .on_hover_text("Close the box and keep the selection (Esc)")
+        .clicked()
+    {
+        doc.cancel_box_select();
+        message = Some("Box selection cancelled".to_owned());
+    }
+    if message.is_some() {
+        state.status_message = message;
+    }
+}
+
+fn axis_drag(ui: &mut Ui, label: &str, value: &mut i32, range: std::ops::RangeInclusive<i32>) {
+    ui.label(
+        egui::RichText::new(label)
+            .size(11.0)
+            .color(theme::TEXT_MUTED),
+    );
+    ui.add(egui::DragValue::new(value).speed(0.1).range(range));
+}
+
+/// Deselect / Delete / To New Layer buttons of the selection tools.
 fn selection_actions(ui: &mut Ui, state: &mut AppState) {
     vertical_divider(ui, DIVIDER_HEIGHT);
     let count = state.selected_voxels();
+    let mut to_layer = None;
+    ui.add_enabled_ui(count > 0, |ui| {
+        if ui
+            .button("Cut to Layer")
+            .on_hover_text("Move the selected voxels into a new layer above (Ctrl+Shift+J)")
+            .clicked()
+        {
+            to_layer = Some(true);
+        }
+        if ui
+            .button("Copy to Layer")
+            .on_hover_text("Copy the selected voxels into a new layer above (Ctrl+J)")
+            .clicked()
+        {
+            to_layer = Some(false);
+        }
+    });
+    if let Some(cut) = to_layer {
+        state.selection_to_new_layer(cut);
+    }
     let mut message = None;
     ui.add_enabled_ui(count > 0, |ui| {
         let Some(doc) = state.doc_mut() else { return };
@@ -430,14 +667,25 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
                     if out.locked_skipped > 0 {
                         m.push_str(&format!(", {} locked layer(s) skipped", out.locked_skipped));
                     }
+                    m.push_str(". Fit shrinks the bounds to what is left");
                     m
                 });
             }
             ui.checkbox(&mut cap_value, "Cap")
                 .on_hover_text("Close the cut with the current color");
         });
-        // Switching axis keeps the plane inside the bounds.
-        doc.plane = p.clamped(bounds);
+        if ui
+            .button("Fit")
+            .on_hover_text("Fit Bounds to Content: move the model to the origin and shrink the bounds around it")
+            .clicked()
+        {
+            message = Some(match doc.fit_bounds_to_content() {
+                Ok(b) => format!("Fit Bounds: {}×{}×{}", b.x(), b.y(), b.z()),
+                Err(e) => format!("Fit Bounds: {}", e.message()),
+            });
+        }
+        // Switching axis keeps the plane inside the (maybe fitted) bounds.
+        doc.plane = p.clamped(doc.data.bounds);
     }
     state.options.plane.cap = cap_value;
     if message.is_some() {
@@ -471,6 +719,21 @@ fn shape_combo(ui: &mut Ui, id: &str, shape: &mut BrushShape) {
                 ui.selectable_value(shape, s, s.label());
             }
         });
+}
+
+fn connectivity(ui: &mut Ui, id: &str, value: &mut Connectivity) -> egui::Response {
+    egui::ComboBox::from_id_salt(id)
+        .width(96.0)
+        .selected_text(value.label())
+        .show_ui(ui, |ui| {
+            for c in Connectivity::ALL {
+                ui.selectable_value(value, c, c.label());
+            }
+        })
+        .response
+        .on_hover_text(
+            "Pixel perfect: no L-corners. Solid: every step along one axis, no diagonal gaps",
+        )
 }
 
 fn antialiasing(ui: &mut Ui, value: &mut u32) {
@@ -531,13 +794,18 @@ fn segment_widths<T>(ui: &Ui, items: &[(T, &str)]) -> (Vec<f32>, f32) {
     (widths, height + SEG_PAD.y * 2.0)
 }
 
-fn segmented_width<T>(ui: &Ui, items: &[(T, &str)]) -> f32 {
+pub(crate) fn segmented_width<T>(ui: &Ui, items: &[(T, &str)]) -> f32 {
     segment_widths(ui, items).0.iter().sum()
 }
 
 /// Segmented control sized to its labels (`px-3 py-1` in the HTML), used for
 /// Model/Render and the single-choice tool options.
-fn segmented<T: PartialEq + Copy>(ui: &mut Ui, id: &str, value: &mut T, items: &[(T, &str)]) {
+pub(crate) fn segmented<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut T,
+    items: &[(T, &str)],
+) {
     let labels: Vec<&str> = items.iter().map(|(_, l)| *l).collect();
     let active: Vec<bool> = items.iter().map(|(item, _)| item == value).collect();
     if let Some(i) = segments(ui, id, &labels, &active) {

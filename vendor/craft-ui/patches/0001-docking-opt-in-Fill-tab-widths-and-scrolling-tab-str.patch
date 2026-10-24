@@ -1,0 +1,677 @@
+From 5f2dcc3b375358b54e02f71b3f35b61844b06826 Mon Sep 17 00:00:00 2001
+From: MRizky099 <mrizky793@gmail.com>
+Date: Sat, 24 Oct 2026 08:02:06 +0700
+Subject: [PATCH] docking: opt-in Fill tab widths and scrolling tab strips
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+DockStyle gains `tab_sizing` (Natural | Fill) and `tab_overflow`
+(Menu | Scroll). Fill stretches a group's tabs to share the strip evenly,
+keeping wider labels at their natural width. Scroll keeps label widths and
+scrolls the strip with the wheel or ‹ › arrows; the active tab scrolls into
+view when it changes and a dragged tab near an end auto-scrolls. Tabs
+scrolled out of view get no hit area; a drop past the last visible tab
+inserts before the first hidden one. Pure helpers `tabs::fill` and
+`tabs::scroll` sit next to `tabs::fit`, with unit tests. Defaults stay
+Natural and Menu, so existing apps are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ crates/ui/src/docking/mod.rs     |   2 +-
+ crates/ui/src/docking/surface.rs | 196 +++++++++++++++++++++++++++----
+ crates/ui/src/docking/tests.rs   | 153 ++++++++++++++++++++++++
+ crates/ui/src/tabs/mod.rs        |  95 ++++++++++++++-
+ crates/ui/src/tabs/tests.rs      |  77 ++++++++++++
+ 5 files changed, 500 insertions(+), 23 deletions(-)
+
+diff --git a/crates/ui/src/docking/mod.rs b/crates/ui/src/docking/mod.rs
+index a7bf3f9..a2be3dd 100644
+--- a/crates/ui/src/docking/mod.rs
++++ b/crates/ui/src/docking/mod.rs
+@@ -10,7 +10,7 @@ mod surface;
+ mod targets;
+ 
+ pub use model::{Action, DockError, Floating, Layout, Location, MAX_DEPTH, MAX_PANELS, Node, Permissions, Placement, StackEntry, Zone};
+-pub use surface::{DockArea, DockContent, DockOutput, DockStyle, PanelLimits, begin_drag, cancel_drag};
++pub use surface::{DockArea, DockContent, DockOutput, DockStyle, PanelLimits, TabOverflow, TabSizing, begin_drag, cancel_drag};
+ pub use targets::{DropProposal, DropTarget, drop_zone, resolve_drop, zone_rect};
+ 
+ #[cfg(test)]
+diff --git a/crates/ui/src/docking/surface.rs b/crates/ui/src/docking/surface.rs
+index b0e5bad..11d4f1e 100644
+--- a/crates/ui/src/docking/surface.rs
++++ b/crates/ui/src/docking/surface.rs
+@@ -23,6 +23,10 @@ pub struct DockStyle {
+     pub border: Stroke,
+     pub accent: Color32,
+     pub font: FontId,
++    /// How tabs share a strip's width. `Natural` keeps label widths.
++    pub tab_sizing: TabSizing,
++    /// What a strip does when its tabs don't fit. `Menu` squeezes, then lists the rest in a menu.
++    pub tab_overflow: TabOverflow,
+     /// Localize these action labels in the application adapter.
+     pub float_label: String,
+     pub close_label: String,
+@@ -30,6 +34,29 @@ pub struct DockStyle {
+     pub panels_label: String,
+     pub resize_label: String,
+     pub resize_window_label: String,
++    pub scroll_left_label: String,
++    pub scroll_right_label: String,
++}
++
++/// Width of the tabs on a group strip.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum TabSizing {
++    /// Each tab is as wide as its label plus padding.
++    #[default]
++    Natural,
++    /// Tabs stretch to share the whole strip evenly; a wider label keeps its width.
++    Fill,
++}
++
++/// Strip behaviour when its tabs are wider than the strip.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum TabOverflow {
++    /// Squeeze tabs to a minimum width, then move the rest into a "…" menu.
++    #[default]
++    Menu,
++    /// Keep label widths and scroll the strip with the wheel or the arrows at its ends. The
++    /// active tab scrolls into view when it changes; a dragged tab near an end auto-scrolls.
++    Scroll,
+ }
+ 
+ impl DockStyle {
+@@ -47,12 +74,16 @@ impl DockStyle {
+             border: visuals.widgets.noninteractive.bg_stroke,
+             accent: visuals.selection.stroke.color,
+             font: FontId::proportional(12.0),
++            tab_sizing: TabSizing::Natural,
++            tab_overflow: TabOverflow::Menu,
+             float_label: "Float panel".into(),
+             close_label: "Close panel".into(),
+             move_label: "Move to group".into(),
+             panels_label: "Panels".into(),
+             resize_label: "Resize panels".into(),
+             resize_window_label: "Resize panel window".into(),
++            scroll_left_label: "Scroll tabs left".into(),
++            scroll_right_label: "Scroll tabs right".into(),
+         }
+     }
+ 
+@@ -115,6 +146,19 @@ struct Drag<P> {
+     grab: Vec2,
+ }
+ 
++/// Scroll position of one group's strip, kept in egui temp memory under its first panel.
++#[derive(Clone, Copy, Debug, Default)]
++struct StripScroll {
++    offset: f32,
++    /// Active tab when last shown; a change scrolls the new one into view.
++    active: Option<usize>,
++}
++
++/// Width of a scrolling strip's arrow buttons.
++const SCROLL_ARROW_WIDTH: f32 = 16.0;
++/// Auto-scroll distance per frame while a dragged tab hovers near a strip end.
++const DRAG_SCROLL_STEP: f32 = 8.0;
++
+ #[derive(Clone)]
+ struct GroupDrag<P> {
+     panel: P,
+@@ -413,7 +457,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
+                     };
+                     let panel_rect = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), (top + header + share).min(rect.bottom())));
+                     let title_rect = Rect::from_min_max(panel_rect.min, pos2(panel_rect.right(), (top + header).min(panel_rect.bottom())));
+-                    self.tab(ui, &entry.panel, title_rect, entry.open, panel_rect);
++                    self.tab(ui, &entry.panel, title_rect, title_rect, entry.open, panel_rect);
+                     let collapse = Rect::from_min_max(pos2((title_rect.right() - 18.0).max(title_rect.left()), title_rect.top()), title_rect.max);
+                     let response = ui.interact(collapse, self.id.with(("collapse", &entry.panel)), Sense::click());
+                     response.widget_info(|| {
+@@ -612,13 +656,65 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
+                     + 24.0
+             })
+             .collect();
+-        let fit = tabs::fit(&widths, active, (strip.width() - header_width).max(0.0), 40.0, 22.0);
+-        let mut x = strip.left();
++        let available = (strip.width() - header_width).max(0.0);
++        let filled = match self.style.tab_sizing {
++            TabSizing::Fill => tabs::fill(&widths, available),
++            TabSizing::Natural => None,
++        };
+         let mut targets = Vec::new();
++        if let Some(filled) = filled {
++            let mut x = strip.left();
++            for (index, width) in filled.iter().enumerate() {
++                let Some(panel) = panels.get(index) else { continue };
++                let tab = Rect::from_min_size(pos2(x, strip.top()), vec2(*width, strip.height()));
++                self.tab(ui, panel, tab, tab, index == active, rect);
++                targets.push((panel.clone(), tab));
++                x += width;
++            }
++        } else if self.style.tab_overflow == TabOverflow::Scroll {
++            let area = Rect::from_min_max(strip.min, pos2(strip.left() + available, strip.bottom()));
++            self.scrolling_tabs(ui, panels, active, &widths, area, rect, &mut targets);
++        } else {
++            self.menu_tabs(ui, panels, active, &widths, strip, available, rect, &mut targets);
++        }
++        // Include hidden tab identities for source-group detection without creating hit areas.
++        for panel in panels {
++            if !targets.iter().any(|(p, _)| p == panel) {
++                targets.push((panel.clone(), Rect::NOTHING));
++            }
++        }
++        self.targets.push(DropTarget {
++            anchor: selected.clone(),
++            rect,
++            tab_strip: Some(strip),
++            tabs: targets,
++            allow_splits: !floating,
++            accepts_tabs: policy.accepts_tabs,
++        });
++        self.contents(ui, selected, Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max));
++        ui.painter().rect_stroke(rect, 0.0, self.style.border, StrokeKind::Inside);
++    }
++
++    /// Squeezed tabs followed by a "…" menu with the ones that don't fit.
++    #[allow(clippy::too_many_arguments)]
++    fn menu_tabs(
++        &mut self,
++        ui: &mut Ui,
++        panels: &[P],
++        active: usize,
++        widths: &[f32],
++        strip: Rect,
++        available: f32,
++        group: Rect,
++        targets: &mut Vec<(P, Rect)>,
++    ) {
++        let Some(selected) = panels.get(active) else { return };
++        let fit = tabs::fit(widths, active, available, 40.0, 22.0);
++        let mut x = strip.left();
+         for (index, width) in &fit.shown {
+             let Some(panel) = panels.get(*index) else { continue };
+             let tab = Rect::from_min_size(pos2(x, strip.top()), vec2(*width, strip.height()));
+-            self.tab(ui, panel, tab, *index == active, rect);
++            self.tab(ui, panel, tab, tab, *index == active, group);
+             targets.push((panel.clone(), tab));
+             x += width;
+         }
+@@ -641,22 +737,79 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
+                 });
+             });
+         }
+-        // Include hidden tab identities for source-group detection without creating hit areas.
+-        for panel in panels {
+-            if !targets.iter().any(|(p, _)| p == panel) {
+-                targets.push((panel.clone(), Rect::NOTHING));
++    }
++
++    /// Tabs at label width in a strip that scrolls with the wheel, the end arrows, or a dragged
++    /// tab held near an end. Tabs scrolled out of view get no hit area and no drop slot.
++    #[allow(clippy::too_many_arguments)]
++    fn scrolling_tabs(&mut self, ui: &mut Ui, panels: &[P], active: usize, widths: &[f32], area: Rect, group: Rect, targets: &mut Vec<(P, Rect)>) {
++        let Some(first) = panels.first() else { return };
++        let memo_id = self.id.with(("tab-scroll", first));
++        let memo: StripScroll = ui.ctx().data(|d| d.get_temp(memo_id)).unwrap_or_default();
++        let hovered = ui.rect_contains_pointer(area);
++        let mut offset = memo.offset;
++        if hovered {
++            let delta = ui.input(|i| i.smooth_scroll_delta);
++            offset -= if delta.x != 0.0 { delta.x } else { delta.y };
++        }
++        let mut fit = tabs::scroll(widths, active, area.width(), offset, SCROLL_ARROW_WIDTH, memo.active != Some(active));
++        let dragging = ui.ctx().data(|d| d.get_temp::<Drag<P>>(self.id.with("drag")).is_some());
++        if dragging
++            && fit.max_offset > 0.0
++            && let Some(pointer) = ui.ctx().pointer_hover_pos().filter(|p| area.contains(*p))
++        {
++            let edge = fit.arrow_width + 12.0;
++            let step = if pointer.x < area.left() + edge {
++                -DRAG_SCROLL_STEP
++            } else if pointer.x > area.right() - edge {
++                DRAG_SCROLL_STEP
++            } else {
++                0.0
++            };
++            if step != 0.0 {
++                fit.offset = (fit.offset + step).clamp(0.0, fit.max_offset);
++                ui.ctx().request_repaint();
+             }
+         }
+-        self.targets.push(DropTarget {
+-            anchor: selected.clone(),
+-            rect,
+-            tab_strip: Some(strip),
+-            tabs: targets,
+-            allow_splits: !floating,
+-            accepts_tabs: policy.accepts_tabs,
+-        });
+-        self.contents(ui, selected, Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max));
+-        ui.painter().rect_stroke(rect, 0.0, self.style.border, StrokeKind::Inside);
++        if fit.arrow_width > 0.0 {
++            let left = Rect::from_min_size(area.min, vec2(fit.arrow_width, area.height()));
++            let right = Rect::from_min_max(pos2(area.right() - fit.arrow_width, area.top()), area.max);
++            let page = (fit.view * 0.5).max(40.0);
++            for (arrow, glyph, step, enabled, label) in [
++                (left, "‹", -page, fit.offset > 0.0, self.style.scroll_left_label.clone()),
++                (right, "›", page, fit.offset < fit.max_offset, self.style.scroll_right_label.clone()),
++            ] {
++                let response = ui.interact(arrow, self.id.with(("tab-scroll-arrow", first, step > 0.0)), Sense::click());
++                self.register_interaction(ui.ctx(), response.id);
++                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled() && enabled, &label));
++                let painter = ui.painter().with_clip_rect(arrow.intersect(ui.clip_rect()));
++                if enabled && response.hovered() {
++                    painter.rect_filled(arrow, 0.0, self.style.active_background);
++                }
++                let color = if enabled { self.style.text } else { self.style.inactive_text };
++                painter.text(arrow.center(), egui::Align2::CENTER_CENTER, glyph, self.style.font.clone(), color);
++                if enabled && response.clicked() {
++                    fit.offset = (fit.offset + step).clamp(0.0, fit.max_offset);
++                }
++            }
++        }
++        let view = Rect::from_min_max(pos2(area.left() + fit.arrow_width, area.top()), pos2(area.right() - fit.arrow_width, area.bottom()));
++        for index in 0..panels.len() {
++            let Some(panel) = panels.get(index) else { continue };
++            let start: f32 = fit.widths.iter().take(index).sum();
++            let width = fit.widths.get(index).copied().unwrap_or(0.0);
++            let tab = Rect::from_min_size(pos2(view.left() + start - fit.offset, area.top()), vec2(width, area.height()));
++            if let Some((left, width)) = fit.visible(index) {
++                let shown = Rect::from_min_size(pos2(view.left() + left, area.top()), vec2(width, area.height()));
++                self.tab(ui, panel, tab, shown, index == active, group);
++                targets.push((panel.clone(), shown));
++            } else if tab.left() >= view.right() {
++                // Ordering slot only: a drop past the last visible tab lands before this one
++                // rather than after every tab hidden to the right.
++                targets.push((panel.clone(), Rect::from_min_max(pos2(view.right() - 0.5, view.top()), view.max)));
++            }
++        }
++        ui.ctx().data_mut(|d| d.insert_temp(memo_id, StripScroll { offset: fit.offset, active: Some(active) }));
+     }
+ 
+     fn menu_label(&mut self, ui: &mut Ui, panel: &P) -> egui::Response {
+@@ -667,7 +820,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
+         response
+     }
+ 
+-    fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, active: bool, group: Rect) {
++    /// A tab laid out at `rect`, of which only `shown` is visible and interactive.
++    fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, shown: Rect, active: bool, group: Rect) {
+         let policy = (self.permissions)(panel);
+         let label = (self.label)(panel);
+         let color = if active { self.style.text } else { self.style.inactive_text };
+@@ -680,8 +834,8 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
+         let response = tabs::Tab::new(self.id.with(("tab", panel)), &label, active)
+             .sense(if policy.movable { Sense::click_and_drag() } else { Sense::click() })
+             .focus_stroke(Stroke::new(1.0, self.style.accent))
+-            .show_at(ui, rect, |ui, response| {
+-                let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
++            .show_at(ui, shown, |ui, response| {
++                let painter = ui.painter().with_clip_rect(shown.intersect(ui.clip_rect()));
+                 painter.rect_filled(rect, 0.0, if active || response.hovered() { self.style.active_background } else { self.style.tab_background });
+                 painter.galley(rect.center() - galley.size() * 0.5, galley.clone(), color);
+             });
+diff --git a/crates/ui/src/docking/tests.rs b/crates/ui/src/docking/tests.rs
+index 54d37df..e589b7f 100644
+--- a/crates/ui/src/docking/tests.rs
++++ b/crates/ui/src/docking/tests.rs
+@@ -1090,3 +1090,156 @@ fn popup_action_labels_use_custom_visual_text_and_logical_accessibility() {
+         );
+     }
+ }
++
++/// One frame of a strip-only layout at `width`, with the given tab sizing and overflow.
++fn strip_frame(
++    ctx: &Context,
++    layout: &Layout<u32>,
++    events: Vec<Event>,
++    width: f32,
++    time: f64,
++    sizing: TabSizing,
++    overflow: TabOverflow,
++) -> DockOutput<u32> {
++    let mut output = DockOutput::default();
++    let input = RawInput {
++        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 400.0))),
++        events,
++        focused: true,
++        time: Some(time),
++        ..Default::default()
++    };
++    ctx.run_ui(input, |ui| {
++        let mut style = DockStyle::from_ui(ui);
++        style.tab_sizing = sizing;
++        style.tab_overflow = overflow;
++        output = DockArea::new(Id::new("test-area")).show(
++            ui,
++            layout,
++            &style,
++            |p| format!("Panel {p}"),
++            |_| Permissions::default(),
++            |ui, _| {
++                ui.label("Actual panel content");
++            },
++        );
++    })
++    .textures_delta
++    .clear();
++    output
++}
++
++fn tab_rect(ctx: &Context, panel: u32) -> Option<Rect> {
++    ctx.read_response(Id::new("test-area").with(("tab", &panel))).map(|r| r.rect).filter(|r| r.width() > 0.0)
++}
++
++#[test]
++fn default_style_keeps_natural_widths_and_the_overflow_menu() {
++    let ctx = Context::default();
++    let mut defaults = None;
++    ctx.run_ui(RawInput::default(), |ui| {
++        let style = DockStyle::from_ui(ui);
++        defaults = Some((style.tab_sizing, style.tab_overflow));
++    })
++    .textures_delta
++    .clear();
++    assert_eq!(defaults, Some((TabSizing::Natural, TabOverflow::Menu)));
++    let layout = Layout { root: Some(tabs(&[1, 2], 0)), floating: Vec::new() };
++    strip_frame(&ctx, &layout, Vec::new(), 800.0, 0.0, TabSizing::Natural, TabOverflow::Menu);
++    let one = tab_rect(&ctx, 1).unwrap();
++    assert!(one.width() < 200.0, "hugs its label: {one:?}");
++}
++
++#[test]
++fn fill_tabs_span_the_whole_strip() {
++    let ctx = Context::default();
++    for panels in [&[7][..], &[1, 2, 3][..]] {
++        let layout = Layout { root: Some(tabs(panels, 0)), floating: Vec::new() };
++        for _ in 0..2 {
++            strip_frame(&ctx, &layout, Vec::new(), 600.0, 0.0, TabSizing::Fill, TabOverflow::Scroll);
++        }
++        let rects: Vec<Rect> = panels.iter().map(|p| tab_rect(&ctx, *p).unwrap()).collect();
++        assert!((rects.iter().map(|r| r.width()).sum::<f32>() - 600.0).abs() < 0.5, "{rects:?}");
++        assert!(rects.windows(2).all(|w| (w[0].right() - w[1].left()).abs() < 0.01));
++        assert!(rects.iter().all(|r| (r.width() - rects[0].width()).abs() < 0.5), "even shares");
++    }
++}
++
++#[test]
++fn scrolling_strip_reveals_the_active_tab_without_a_menu() {
++    let ctx = Context::default();
++    let panels: Vec<u32> = (0..12).collect();
++    let layout = Layout { root: Some(tabs(&panels, 10)), floating: Vec::new() };
++    for _ in 0..2 {
++        strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.0, TabSizing::Fill, TabOverflow::Scroll);
++    }
++    let active = tab_rect(&ctx, 10).unwrap();
++    assert!(active.left() >= 16.0 - 0.01 && active.right() <= 300.0 - 16.0 + 0.01, "{active:?}");
++    assert!(tab_rect(&ctx, 0).is_none(), "scrolled out on the left");
++    assert!(ctx.read_response(Id::new("test-area").with(("overflow", &10u32))).is_none());
++    // Natural widths are kept rather than squeezed.
++    let natural = tab_rect(&ctx, 9).unwrap().width();
++    assert!(natural > 50.0, "{natural}");
++
++    // The left arrow pages back toward the first tab.
++    let arrow = ctx.read_response(Id::new("test-area").with(("tab-scroll-arrow", &0u32, false))).unwrap().rect.center();
++    strip_frame(&ctx, &layout, vec![Event::PointerMoved(arrow), pointer_button(arrow, true)], 300.0, 0.1, TabSizing::Fill, TabOverflow::Scroll);
++    strip_frame(&ctx, &layout, vec![pointer_button(arrow, false)], 300.0, 0.2, TabSizing::Fill, TabOverflow::Scroll);
++    strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.3, TabSizing::Fill, TabOverflow::Scroll);
++    assert!(tab_rect(&ctx, 10).is_none_or(|r| r.left() > active.left()), "strip moved right");
++}
++
++#[test]
++fn wheel_scrolls_the_strip() {
++    let ctx = Context::default();
++    let panels: Vec<u32> = (0..12).collect();
++    let layout = Layout { root: Some(tabs(&panels, 0)), floating: Vec::new() };
++    strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.0, TabSizing::Natural, TabOverflow::Scroll);
++    strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.0, TabSizing::Natural, TabOverflow::Scroll);
++    assert!(tab_rect(&ctx, 0).is_some());
++    let over = pos2(150.0, 10.0);
++    let wheel =
++        Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -400.0), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE };
++    strip_frame(&ctx, &layout, vec![Event::PointerMoved(over), wheel], 300.0, 0.1, TabSizing::Natural, TabOverflow::Scroll);
++    for i in 0..60 {
++        strip_frame(&ctx, &layout, Vec::new(), 300.0, 0.2 + f64::from(i) * 0.05, TabSizing::Natural, TabOverflow::Scroll);
++    }
++    assert!(tab_rect(&ctx, 0).is_none(), "first tab scrolled out");
++}
++
++#[test]
++fn drops_on_a_scrolled_strip_insert_at_the_visible_position() {
++    let ctx = Context::default();
++    let mut layout = Layout {
++        root: Some(Node::Split {
++            axis: SplitAxis::Vertical,
++            size: SplitSize::FixedSecond(200.0),
++            first: Box::new(tabs(&(0..12).collect::<Vec<u32>>(), 0)),
++            second: Box::new(tabs(&[99], 0)),
++        }),
++        floating: Vec::new(),
++    };
++    let run = |ctx: &Context, layout: &mut Layout<u32>, events: Vec<Event>| {
++        let out = strip_frame(ctx, layout, events, 300.0, 0.0, TabSizing::Fill, TabOverflow::Scroll);
++        for action in &out.actions {
++            layout.apply(action.clone()).unwrap();
++        }
++        out.actions
++    };
++    run(&ctx, &mut layout, Vec::new());
++    run(&ctx, &mut layout, Vec::new());
++    let visible: Vec<u32> = (0..12).filter(|p| tab_rect(&ctx, *p).is_some()).collect();
++    let last_visible = *visible.last().unwrap();
++    assert!(last_visible < 11, "some tabs hidden: {visible:?}");
++    let source = tab_rect(&ctx, 99).unwrap().center();
++    // Just right of the last visible tab's midpoint, short of the right arrow.
++    let target = pos2(300.0 - 16.0 - 4.0, 10.0);
++    run(&ctx, &mut layout, vec![Event::PointerMoved(source), pointer_button(source, true)]);
++    run(&ctx, &mut layout, vec![Event::PointerMoved(source + vec2(0.0, -8.0))]);
++    run(&ctx, &mut layout, vec![Event::PointerMoved(target)]);
++    let actions = run(&ctx, &mut layout, vec![pointer_button(target, false)]);
++    assert!(actions.iter().any(|a| matches!(a, Action::Move { panel: 99, .. })), "{actions:?}");
++    let Some(Node::Tabs { panels, .. }) = layout.root.as_ref() else { panic!("{layout:?}") };
++    let at = panels.iter().position(|p| *p == 99).unwrap();
++    assert!(at < panels.len() - 1, "landed among the visible tabs, not after every hidden one: {panels:?}");
++}
+diff --git a/crates/ui/src/tabs/mod.rs b/crates/ui/src/tabs/mod.rs
+index e82dcca..59e03c3 100644
+--- a/crates/ui/src/tabs/mod.rs
++++ b/crates/ui/src/tabs/mod.rs
+@@ -1,7 +1,7 @@
+ //! Tab fitting and accessible tab interactions without owning a dock or document model.
+ //!
+ //! The caller owns identity, localization, selection, painting, overflow menus and drag actions.
+-//! [`fit`] only assigns widths; [`Tab`] returns the complete egui response, including double-click
++//! [`fit`], [`fill`] and [`scroll`] only assign widths; [`Tab`] returns the complete egui response, including double-click
+ //! and drag phases, so a panel strip can collapse, reorder or tear off according to its app.
+ 
+ use egui::{Id, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
+@@ -100,6 +100,99 @@ fn squeeze(natural: &[f32], indices: &[usize], total: f32, minimum: f32) -> Vec<
+         .collect()
+ }
+ 
++/// Stretch tabs to share `available` points as evenly as their labels allow: every tab gets a
++/// common width, and a tab whose natural width is wider keeps it. Returns `None` when the
++/// natural widths alone do not fit, so the caller can squeeze, overflow or scroll instead.
++///
++/// Dimensions are sanitized like [`fit`]. Widths are in input order and their sum never
++/// exceeds the sanitized available width; with any input it equals it up to rounding.
++pub fn fill(natural: &[f32], available: f32) -> Option<Vec<f32>> {
++    let available = extent(available);
++    let natural: Vec<f32> = natural.iter().map(|&w| extent(w)).collect();
++    if natural.iter().map(|&w| f64::from(w)).sum::<f64>() > f64::from(available) {
++        return None;
++    }
++    // Water-fill: tabs wider than an even share keep their width; the rest share what's left.
++    let mut order: Vec<usize> = (0..natural.len()).collect();
++    order.sort_by(|&a, &b| natural.get(b).unwrap_or(&0.0).total_cmp(natural.get(a).unwrap_or(&0.0)));
++    let mut remaining = f64::from(available);
++    let mut count = natural.len();
++    for &i in &order {
++        let width = f64::from(natural.get(i).copied().unwrap_or(0.0));
++        if count == 0 || width <= remaining / count as f64 {
++            break;
++        }
++        remaining -= width;
++        count -= 1;
++    }
++    let level = if count == 0 { 0.0 } else { (remaining / count as f64).max(0.0) as f32 };
++    let mut left = available;
++    Some(
++        natural
++            .iter()
++            .map(|&w| {
++                let width = w.max(level).min(left);
++                left = (left - width).max(0.0);
++                width
++            })
++            .collect(),
++    )
++}
++
++/// Horizontal scroll state of a tab strip whose tabs keep their natural widths.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct TabScroll {
++    /// Width of every tab, in input order.
++    pub widths: Vec<f32>,
++    /// Points scrolled from the strip's start, within `0..=max_offset`.
++    pub offset: f32,
++    pub max_offset: f32,
++    /// Width reserved for each scroll arrow, at both ends; zero when everything fits.
++    pub arrow_width: f32,
++    /// Width of the visible tab area between the arrows.
++    pub view: f32,
++}
++
++impl TabScroll {
++    /// Visible `(start, width)` of tab `index` within the view, relative to the view's left
++    /// edge, or `None` when it is scrolled out of view entirely.
++    pub fn visible(&self, index: usize) -> Option<(f32, f32)> {
++        let start: f32 = self.widths.iter().take(index).sum::<f32>() - self.offset;
++        let width = *self.widths.get(index)?;
++        let left = start.max(0.0);
++        let right = (start + width).min(self.view);
++        (right > left).then_some((left, right - left))
++    }
++}
++
++/// Lay out a scrolling strip. Tabs keep their natural widths; when they don't fit, arrows of
++/// `arrow_width` are reserved at both ends and `offset` is clamped to the scrollable range.
++/// With `reveal`, the offset moves the least needed to show the selected tab in full (its
++/// start wins when it is wider than the view). Dimensions are sanitized like [`fit`].
++pub fn scroll(natural: &[f32], selected: usize, available: f32, offset: f32, arrow_width: f32, reveal: bool) -> TabScroll {
++    let available = extent(available);
++    let widths: Vec<f32> = natural.iter().map(|&w| extent(w)).collect();
++    let total = widths.iter().map(|&w| f64::from(w)).sum::<f64>().min(f64::from(MAX_EXTENT)) as f32;
++    if total <= available {
++        return TabScroll { widths, view: available, ..Default::default() };
++    }
++    let arrow_width = extent(arrow_width).min(available / 2.0);
++    let view = available - 2.0 * arrow_width;
++    let max_offset = (total - view).max(0.0);
++    let mut offset = if offset.is_finite() { offset.clamp(0.0, max_offset) } else { 0.0 };
++    if reveal && let Some(&width) = widths.get(selected) {
++        let start: f32 = widths.iter().take(selected).sum();
++        if start + width > offset + view {
++            offset = start + width - view;
++        }
++        if start < offset {
++            offset = start;
++        }
++        offset = offset.clamp(0.0, max_offset);
++    }
++    TabScroll { widths, offset, max_offset, arrow_width, view }
++}
++
+ /// An accessible tab at a caller-supplied rectangle, with caller-supplied painting.
+ ///
+ /// IDs must be unique in their UI scope and independent of translated labels. Selection remains
+diff --git a/crates/ui/src/tabs/tests.rs b/crates/ui/src/tabs/tests.rs
+index 6fb37e3..386505d 100644
+--- a/crates/ui/src/tabs/tests.rs
++++ b/crates/ui/src/tabs/tests.rs
+@@ -233,3 +233,80 @@ fn invalid_rectangles_do_not_paint_or_accept_input() {
+         assert!(responses.iter().all(|r| r.rect.is_finite() && !r.sense.senses_click()));
+     }
+ }
++
++#[test]
++fn fill_shares_the_strip_and_keeps_wide_labels() {
++    let widths = fill(&[60.0, 70.0, 80.0], 300.0).unwrap();
++    assert_eq!(widths, [100.0, 100.0, 100.0]);
++    // A label wider than the even share keeps its width; the others split the rest.
++    let widths = fill(&[40.0, 200.0, 50.0], 400.0).unwrap();
++    assert_eq!(widths, [100.0, 200.0, 100.0]);
++    let widths = fill(&[80.0], 333.0).unwrap();
++    assert_eq!(widths, [333.0]);
++    assert_eq!(fill(&[], 100.0), Some(Vec::new()));
++    assert_eq!(fill(&[60.0, 70.0], 100.0), None, "natural widths don't fit");
++}
++
++#[test]
++fn fill_widths_sum_to_the_strip_width() {
++    for available in [0.0, 1.0, 99.5, 210.0, 333.3, 1000.0, 1e6] {
++        for natural in [&[10.0, 20.0, 30.0][..], &[0.0, 0.0][..], &[33.3, 66.6, 99.9, 12.0][..], &[f32::NAN, 5.0][..]] {
++            let Some(widths) = fill(natural, available) else { continue };
++            let sum: f32 = widths.iter().sum();
++            assert!(sum <= available + 1e-3 && sum >= available - available * 1e-5 - 1e-3, "{natural:?} in {available}: {widths:?}");
++            for (w, n) in widths.iter().zip(natural) {
++                assert!(*w >= extent(*n) - 1e-3, "{widths:?}");
++            }
++        }
++    }
++    for available in [f32::NAN, f32::INFINITY, -4.0] {
++        assert!(fill(&[10.0], available).is_none_or(|w| w.iter().all(|w| w.is_finite())));
++    }
++}
++
++#[test]
++fn scroll_keeps_natural_widths_and_reveals_the_selected_tab() {
++    let natural = [100.0; 6];
++    let fits = scroll(&natural, 0, 600.0, 50.0, 16.0, true);
++    assert_eq!((fits.offset, fits.max_offset, fits.arrow_width, fits.view), (0.0, 0.0, 0.0, 600.0));
++
++    let s = scroll(&natural, 0, 332.0, 0.0, 16.0, true);
++    assert_eq!(s.widths, natural);
++    assert_eq!((s.arrow_width, s.view, s.max_offset), (16.0, 300.0, 300.0));
++    assert_eq!(s.offset, 0.0);
++    // Selecting the fifth tab scrolls just far enough to show its right edge.
++    let s = scroll(&natural, 4, 332.0, 0.0, 16.0, true);
++    assert_eq!(s.offset, 200.0);
++    assert_eq!(s.visible(4), Some((200.0, 100.0)));
++    assert_eq!(s.visible(1), None, "scrolled out on the left");
++    // Back to the first tab: its start wins.
++    let s = scroll(&natural, 0, 332.0, 200.0, 16.0, true);
++    assert_eq!(s.offset, 0.0);
++    // Without reveal, a wheel offset is only clamped.
++    let s = scroll(&natural, 0, 332.0, 999.0, 16.0, false);
++    assert_eq!(s.offset, 300.0);
++    let s = scroll(&natural, 0, 332.0, 150.0, 16.0, false);
++    assert_eq!(s.visible(1), Some((0.0, 50.0)), "partly visible tab is clipped");
++    assert_eq!(s.visible(4), Some((250.0, 50.0)));
++    assert_eq!(s.visible(5), None);
++    assert_eq!(s.visible(9), None);
++}
++
++#[test]
++fn scroll_sanitizes_malformed_dimensions() {
++    for available in [f32::NAN, f32::INFINITY, -1.0, 0.0, 10.0, 1e20] {
++        for offset in [f32::NAN, f32::NEG_INFINITY, -5.0, 1e30] {
++            for arrows in [f32::NAN, -1.0, 0.0, 16.0, f32::MAX] {
++                let s = scroll(&[f32::MAX, 40.0, f32::NAN, 80.0], 1, available, offset, arrows, true);
++                assert!(s.offset.is_finite() && (0.0..=s.max_offset).contains(&s.offset), "{s:?}");
++                assert!(s.view >= 0.0 && s.arrow_width >= 0.0);
++                assert!(s.view + 2.0 * s.arrow_width <= extent(available) + 1e-3, "{s:?}");
++                for i in 0..4 {
++                    if let Some((start, width)) = s.visible(i) {
++                        assert!(start >= 0.0 && width > 0.0 && start + width <= s.view + 1e-3, "{s:?}");
++                    }
++                }
++            }
++        }
++    }
++}
+-- 
+2.45.2.windows.1
+
