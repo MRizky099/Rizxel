@@ -5,6 +5,13 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-24
+
+Milestone M4: editing power. Selection operations and Mask Mode, structure
+and core operations, palette tools, a History panel, the layer tree and
+reference images, box selection, lines and curves, the Transform tool, and a
+tabbed workspace.
+
 ### Phase 10d: Workspace, docking tabs and mode switch (2026-10-24)
 
 - **Model / Render switch in the title bar**, left of the window controls. It no longer

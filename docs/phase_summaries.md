@@ -17,9 +17,10 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 7 | Stabilize, CI and 0.2.0 | ✅ Done | `v0.2.0` |
 | 8 | Safe editing and 0.3.0 | ✅ Done | `v0.3.0` |
 | 9 | Visual fidelity and 0.4.0 | ✅ Done | `v0.4.0` |
-| 10 | Editing power | ✅ Done (branch) | `a179e73`..`7d60c3e` |
-| 10b | Layer hierarchy and reference images | ✅ Done (branch) | `af5b8a3`..`59eaac7` |
-| 10c | Box select, lines and curves, Transform tool | ✅ Done (branch) | `8d556ac`..`2d3c6dc` |
+| 10 | Editing power | ✅ Done | `v0.5.0` |
+| 10b | Layer hierarchy and reference images | ✅ Done | `v0.5.0` |
+| 10c | Box select, lines and curves, Transform tool | ✅ Done | `v0.5.0` |
+| 10d | Workspace and 0.5.0 | ✅ Done | `v0.5.0` |
 
 ---
 
@@ -222,7 +223,7 @@ Plan: [`rizxel_phase9_implementation_plan.md`](plan/rizxel_phase9_implementation
 
 Plan: [`rizxel_phase10_implementation_plan.md`](plan/rizxel_phase10_implementation_plan.md)
 
-**Delivered** (branch `claude/phase10-editing-power-f1ac88`, part of M4 / 0.5.0)
+**Delivered** (PR #7, tag `v0.5.0`)
 - Selection Grow, Shrink and By Color in a new Selection menu, and Mask Mode, which
   protects the selection from every write path (`a179e73`).
 - Separate Parts, Split at Work Plane, Fit Bounds to Content, Fill Hollows, Hollow,
@@ -240,8 +241,7 @@ Plan: [`rizxel_phase10_implementation_plan.md`](plan/rizxel_phase10_implementati
 
 Plan: [`rizxel_phase10b_implementation_plan.md`](plan/rizxel_phase10b_implementation_plan.md)
 
-**Delivered** (branch `claude/phase10b-layers-references`, on top of Phase 10, part of
-M4 / 0.5.0)
+**Delivered** (PR #7, tag `v0.5.0`)
 - `LayerTree` (`rizxel-app/src/layer_tree.rs`) derives the tree from the `parent` ids
   and enforces one rule: a group's contents sit right below it. Debug builds check it
   after every change, and files written without it are reordered on load. Group
@@ -263,7 +263,7 @@ M4 / 0.5.0)
 
 Plan: [`rizxel_phase10c_implementation_plan.md`](plan/rizxel_phase10c_implementation_plan.md)
 
-**Delivered** (on top of Phase 10b, part of M4 / 0.5.0)
+**Delivered** (PR #7, tag `v0.5.0`)
 - Selection tool *Box* mode: an open blue box with face arrows, face drags and typed
   position / size, a live preview, Apply as one undo step (mask mode from the modifiers
   held), Esc to cancel, a dimmed box that can be re-opened, and Slice Mode clamping.
@@ -281,11 +281,11 @@ Plan: [`rizxel_phase10c_implementation_plan.md`](plan/rizxel_phase10c_implementa
 - The randomized undo-all / redo-all test covers box selection, to-new-layer, lines and
   curves and transforms; 396 tests.
 
-## Phase 10d — Workspace: docking tabs and mode switch
+## Phase 10d — Workspace: docking tabs, mode switch and 0.5.0
 
 Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementation_plan.md)
 
-**Delivered** (on top of Phase 10c, part of M4 / 0.5.0)
+**Delivered** (PR #7, tag `v0.5.0`)
 - The *Model / Render* switch sits in the title bar next to the window controls; the
   title bar is laid out by `bar_layout`, which shrinks the title, then folds the menus
   into ☰ (`193871f`).
