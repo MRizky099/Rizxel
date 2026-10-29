@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rizxel
+Comment=Voxel art editor
+Exec=rizxel %f
+Icon=io.github.mrizky099.rizxel
+Terminal=false
+Categories=Graphics;3DGraphics;
+MimeType=application/x-rizxel;application/x-vox;application/x-gox;
+StartupWMClass=rizxel

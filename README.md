@@ -10,7 +10,7 @@
 [![Latest version](https://img.shields.io/github/v/tag/MRizky099/Rizxel?label=version&sort=semver)](https://github.com/MRizky099/Rizxel/tags)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg?logo=rust)](rust-toolchain.toml)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-lightgrey.svg)](#requirements)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#requirements)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](Cargo.toml)
 
 ![Rizxel's Render mode with the path tracer and the Brick voxel shape](docs/images/readme/render_mode.png)
@@ -102,14 +102,33 @@ The demo model comes from `cargo run -p rizxel-app --example sample_model`.
 
 | | |
 |---|---|
-| **OS** | Windows 10/11 or Linux (X11 or Wayland). Both are built and tested in CI. macOS builds from source but isn't tested yet. |
+| **OS** | Windows 10/11, Linux (X11 or Wayland) or macOS 11+. All three are built and tested in CI. |
 | **GPU** | Any GPU with Vulkan, Direct3D 12 or Metal for the viewport. The path tracer runs on **Vulkan or Metal** (Windows GPUs normally ship Vulkan drivers); on other backends Render mode keeps the raster preview and the *Image* output. |
 | **To build** | Rust 1.85 or newer (pinned through `rust-toolchain.toml`). On Linux, the X11/Wayland and GTK development packages listed in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
 
 ## Getting started
 
-There are no prebuilt binaries yet; installers are planned for the 0.9 beta. Build from
-source:
+### Download
+
+Packages are attached to every release on the
+[Releases page](https://github.com/MRizky099/Rizxel/releases) (from the 0.9 beta on):
+
+| Platform | Package | Notes |
+|---|---|---|
+| Windows 10/11 | `Rizxel-<version>-windows-x64.msi` | Installs per user (no admin rights) and opens `.rzxl` files with Rizxel. |
+| Windows 10/11 | `Rizxel-<version>-windows-x64.zip` | Portable: unzip and run `rizxel.exe`. *Settings ▸ General ▸ Associate .rzxl Files* adds the file association. |
+| Linux (x86-64) | `Rizxel-<version>-x86_64.AppImage` | `chmod +x` and run. *Settings ▸ General* registers `.rzxl` files, or let AppImageLauncher integrate it. |
+| macOS 11+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel. Drag Rizxel to *Applications*. |
+
+The beta packages are not code-signed: Windows SmartScreen and macOS Gatekeeper warn on
+the first start (on macOS, right-click the app and choose *Open*). Every package contains
+`LICENSE` and `THIRD_PARTY_LICENSES.html`, and every release links the source code it was
+built from.
+
+Double-clicking a `.rzxl` file while Rizxel is open opens it as a new tab in the running
+window.
+
+### Build from source
 
 ```bash
 git clone https://github.com/MRizky099/Rizxel.git
@@ -159,6 +178,37 @@ skip when it is unset, as on CI. In PowerShell:
 ```powershell
 $env:RIZXEL_SAMPLES = "D:\samples\magicavoxel;D:\samples\goxel"
 ```
+
+`RIZXEL_DATA_DIR` points Rizxel's settings, layout, recent files and autosaves to another
+folder, for example to try a build without touching your own settings.
+
+### Packages
+
+The [release workflow](.github/workflows/release.yml) builds every package when a `v*` tag
+is pushed and attaches them to a draft release. To build one locally, first write the
+third-party notices with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about)
+(the command fails on a dependency license that isn't on the GPL-compatible allow-list in
+[`about.toml`](about.toml)):
+
+```bash
+cargo install cargo-about --locked --features cli
+```
+
+```bash
+cargo about generate --fail about.hbs -o THIRD_PARTY_LICENSES.html
+```
+
+```bash
+cargo build --release -p rizxel-ui
+```
+
+Then run the platform's script from the repository root:
+
+| Platform | Script | Needs |
+|---|---|---|
+| Windows | `pwsh packaging/wix/build.ps1 -Version 0.9.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
+| Linux | `sh packaging/appimage/build.sh 0.9.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
+| macOS | `sh packaging/macos/build.sh 0.9.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
 
 ## Controls
 
