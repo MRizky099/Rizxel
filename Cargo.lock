@@ -2929,6 +2929,8 @@ dependencies = [
  "rizxel-app",
  "rizxel-engine",
  "rizxel-math",
+ "serde",
+ "serde_json",
  "winresource",
 ]
 

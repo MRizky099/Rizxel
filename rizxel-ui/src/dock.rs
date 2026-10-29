@@ -13,13 +13,14 @@ use craft_ui::docking::{
 };
 use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Id, Stroke, Ui};
+use serde::{Deserialize, Serialize};
 
 use rizxel_app::ViewMode;
 
 use crate::theme;
 
 /// Every dockable region of the editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Panel {
     Viewport,
     Tools,
@@ -134,7 +135,7 @@ fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Pane
 }
 
 /// Dock layout plus where each closed panel used to live.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Workspace {
     pub layout: Layout<Panel>,
     /// View mode this layout belongs to (its default and dock area id).
@@ -145,7 +146,7 @@ pub struct Workspace {
 }
 
 /// A group shrunk to its tab strip, found again by any panel it held.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Collapsed {
     panel: Panel,
     /// Split size the group had before collapsing, restored on expand.
@@ -258,7 +259,7 @@ impl Workspace {
 
 /// One dock layout per view mode. Switching modes swaps them, and each keeps
 /// the user's own changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Workspaces {
     model: Workspace,
     render: Workspace,
@@ -285,6 +286,161 @@ impl Workspaces {
         match mode {
             ViewMode::Model => &mut self.model,
             ViewMode::Render => &mut self.render,
+        }
+    }
+}
+
+// ------------------------------------------------------------ layout.json
+
+/// Version of `layout.json`; a file with another one is ignored.
+pub const LAYOUT_VERSION: u32 = 1;
+
+/// Size, position and maximized flag of the main window, in logical points.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowState {
+    pub size: [f32; 2],
+    /// Outer top-left corner; `None` lets the OS center the window.
+    pub position: Option<[f32; 2]>,
+    pub maximized: bool,
+}
+
+impl WindowState {
+    /// Smallest window size restored (the window's minimum size).
+    pub const MIN_SIZE: [f32; 2] = [800.0, 480.0];
+
+    /// The state to restore, or `None` when the saved values are unusable.
+    pub fn sane(self) -> Option<Self> {
+        let finite = self.size.iter().all(|v| v.is_finite())
+            && self
+                .position
+                .is_none_or(|p| p.iter().all(|v| v.is_finite()));
+        if !finite {
+            return None;
+        }
+        let size = [
+            self.size[0].clamp(Self::MIN_SIZE[0], 16_384.0),
+            self.size[1].clamp(Self::MIN_SIZE[1], 16_384.0),
+        ];
+        // A window far off any plausible desktop is re-centered.
+        let position = self
+            .position
+            .filter(|p| p.iter().all(|v| (-4_000.0..=32_000.0).contains(v)));
+        Some(Self {
+            size,
+            position,
+            maximized: self.maximized,
+        })
+    }
+}
+
+/// What `layout.json` keeps of one workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedWorkspace {
+    layout: Layout<Panel>,
+    #[serde(default)]
+    hidden: Vec<(Panel, Location<Panel>)>,
+    #[serde(default)]
+    collapsed: Vec<Collapsed>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LayoutFile {
+    version: u32,
+    model: Option<SavedWorkspace>,
+    render: Option<SavedWorkspace>,
+    window: Option<WindowState>,
+}
+
+impl Workspace {
+    fn saved(&self) -> SavedWorkspace {
+        SavedWorkspace {
+            layout: self.layout.clone(),
+            hidden: self.hidden.clone(),
+            collapsed: self.collapsed.clone(),
+        }
+    }
+
+    /// A saved workspace for `mode`, or `None` when it is broken: invalid
+    /// tree, no viewport, or panels the mode doesn't offer.
+    fn from_saved(mode: ViewMode, saved: SavedWorkspace) -> Option<Self> {
+        saved.layout.validate().ok()?;
+        let offered = Panel::offered(mode);
+        let panels = saved.layout.panels();
+        let fits = saved.layout.contains(&Panel::Viewport)
+            && panels.iter().all(|p| offered.contains(p))
+            && saved
+                .hidden
+                .iter()
+                .all(|(p, _)| offered.contains(p) && !panels.contains(&p));
+        let mut ws = Self {
+            layout: saved.layout,
+            mode,
+            hidden: saved.hidden,
+            collapsed: saved.collapsed,
+        };
+        ws.prune_collapsed();
+        fits.then_some(ws)
+    }
+}
+
+impl Workspaces {
+    /// The layouts saved in `file`. A missing, corrupt or outdated file, or
+    /// a broken layout of one mode, gives that mode's default.
+    pub fn load(file: &std::path::Path) -> (Self, Option<WindowState>) {
+        let Some(saved) = read_layout_file(file) else {
+            return (Self::default(), None);
+        };
+        let pick = |mode, ws: Option<SavedWorkspace>| {
+            ws.and_then(|w| Workspace::from_saved(mode, w))
+                .unwrap_or_else(|| {
+                    log::info!("layout: {mode:?} layout unusable; using the default");
+                    Workspace::for_mode(mode)
+                })
+        };
+        let docks = Self {
+            model: pick(ViewMode::Model, saved.model),
+            render: pick(ViewMode::Render, saved.render),
+        };
+        (docks, saved.window.and_then(WindowState::sane))
+    }
+
+    /// Writes both layouts and the window state to `file`.
+    pub fn save(&self, file: &std::path::Path, window: Option<WindowState>) -> std::io::Result<()> {
+        let data = LayoutFile {
+            version: LAYOUT_VERSION,
+            model: Some(self.model.saved()),
+            render: Some(self.render.saved()),
+            window,
+        };
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(&data).map_err(std::io::Error::other)?;
+        let tmp = file.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, file)
+    }
+}
+
+/// Only the window state of `file` (read before the window opens).
+pub fn load_window_state(file: &std::path::Path) -> Option<WindowState> {
+    read_layout_file(file)?.window.and_then(WindowState::sane)
+}
+
+fn read_layout_file(file: &std::path::Path) -> Option<LayoutFile> {
+    let bytes = std::fs::read(file).ok()?;
+    match serde_json::from_slice::<LayoutFile>(&bytes) {
+        Ok(f) if f.version == LAYOUT_VERSION => Some(f),
+        Ok(f) => {
+            log::info!("layout: version {} ignored", f.version);
+            None
+        }
+        Err(e) => {
+            log::warn!(
+                "layout: {} unreadable ({e}); using the defaults",
+                file.display()
+            );
+            None
         }
     }
 }
@@ -741,6 +897,102 @@ mod tests {
         })
         .unwrap();
         assert!(ws.layout.floating.is_empty() && ws.is_visible(Panel::References));
+    }
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join(format!("rizxel_layout_{name}_{}", std::process::id()))
+            .join("layout.json")
+    }
+
+    #[test]
+    fn layout_and_window_survive_a_save() {
+        let file = temp_file("rt");
+        let mut docks = Workspaces::default();
+        let model = docks.get_mut(ViewMode::Model);
+        model.set_visible(Panel::History, false).unwrap();
+        model
+            .apply(Action::Float {
+                panel: Panel::References,
+                rect: [100.0, 120.0, 300.0, 200.0],
+            })
+            .unwrap();
+        assert!(model.toggle_collapsed(Panel::Layers));
+        let window = WindowState {
+            size: [1280.0, 720.0],
+            position: Some([40.0, 30.0]),
+            maximized: true,
+        };
+        docks.save(&file, Some(window)).unwrap();
+        let (back, w) = Workspaces::load(&file);
+        assert_eq!(back, docks);
+        assert_eq!(w, Some(window));
+        assert_eq!(load_window_state(&file), Some(window));
+        // The closed panel still reopens where it was.
+        let mut back = back;
+        back.get_mut(ViewMode::Model)
+            .set_visible(Panel::History, true)
+            .unwrap();
+        assert!(groups(back.get(ViewMode::Model)).contains(&vec![
+            Panel::Layers,
+            Panel::Bounds,
+            Panel::History
+        ]));
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn broken_layout_files_fall_back_to_the_defaults() {
+        let file = temp_file("broken");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        for bytes in [
+            &b"{ nope"[..],
+            br#"{"version": 99, "model": null, "render": null, "window": null}"#,
+        ] {
+            std::fs::write(&file, bytes).unwrap();
+            assert_eq!(Workspaces::load(&file), (Workspaces::default(), None));
+        }
+        assert_eq!(
+            Workspaces::load(&temp_file("missing")).0,
+            Workspaces::default()
+        );
+
+        // A Render panel in the Model layout breaks only that layout.
+        let mut docks = Workspaces::default();
+        docks.render.set_visible(Panel::History, false).unwrap();
+        let mut bad = docks.clone();
+        bad.model = Workspace::render();
+        bad.save(&file, None).unwrap();
+        let (back, _) = Workspaces::load(&file);
+        assert_eq!(back.model, Workspace::default());
+        assert_eq!(back.render, docks.render);
+
+        // Duplicate panels fail validation.
+        let mut dup = Workspaces::default();
+        if let Some(Node::Split { first, .. }) = &mut dup.model.layout.root {
+            **first = tabs(Panel::Viewport);
+        }
+        dup.save(&file, None).unwrap();
+        assert_eq!(Workspaces::load(&file).0.model, Workspace::default());
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn window_state_is_sanitized() {
+        let w = WindowState {
+            size: [10.0, f32::NAN],
+            position: None,
+            maximized: false,
+        };
+        assert_eq!(w.sane(), None);
+        let w = WindowState {
+            size: [100.0, 100.0],
+            position: Some([-90_000.0, 0.0]),
+            maximized: false,
+        };
+        let s = w.sane().unwrap();
+        assert_eq!(s.size, WindowState::MIN_SIZE);
+        assert_eq!(s.position, None);
     }
 
     #[test]

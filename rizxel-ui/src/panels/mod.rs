@@ -7,6 +7,7 @@ pub mod references;
 pub mod render;
 pub mod settings;
 pub mod sidebar;
+pub mod start;
 pub mod status;
 pub mod tabs;
 pub mod tools;
@@ -39,6 +40,8 @@ pub struct UiState {
     pub render: render::RenderUi,
     /// The open *Settings* dialog.
     pub settings: Option<settings::SettingsDialog>,
+    /// The start screen (shown at start without a command-line file).
+    pub start: Option<start::StartScreen>,
 }
 
 impl UiState {

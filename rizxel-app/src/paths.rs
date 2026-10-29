@@ -12,8 +12,12 @@ pub struct AppPaths {
 
 impl AppPaths {
     /// The platform's app data folder, or `None` when the OS reports no home
-    /// directory (features that need it are then off).
+    /// directory (features that need it are then off). `RIZXEL_DATA_DIR`
+    /// points it elsewhere (testing, or a second profile).
     pub fn new() -> Option<Self> {
+        if let Some(dir) = std::env::var_os("RIZXEL_DATA_DIR").filter(|d| !d.is_empty()) {
+            return Some(Self::with_root(dir));
+        }
         let name = if cfg!(any(target_os = "windows", target_os = "macos")) {
             "Rizxel"
         } else {

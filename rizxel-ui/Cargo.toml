@@ -22,7 +22,9 @@ rizxel-app.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
-craft-ui.workspace = true
+craft-ui = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
 glam.workspace = true
 rfd.workspace = true
 log.workspace = true

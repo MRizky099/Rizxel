@@ -28,7 +28,18 @@ pub struct RizxelApp {
     render_state: Option<eframe::egui_wgpu::RenderState>,
     /// Image, photo-realistic and turntable outputs.
     outputs: crate::output::Outputs,
+    /// Renders the start-screen thumbnails (created on first use).
+    thumbs: Option<crate::render::offscreen::OffscreenRaster>,
+    /// The layouts and window state last written to `layout.json`.
+    layout_saved: (dock::Workspaces, Option<dock::WindowState>),
+    /// When the layout or window first differed from `layout_saved`.
+    layout_changed: Option<std::time::Instant>,
+    /// Current window state (size and position while not maximized).
+    window: Option<dock::WindowState>,
 }
+
+/// Unsaved layout changes are written after this quiet period.
+const LAYOUT_SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl RizxelApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -55,6 +66,10 @@ impl RizxelApp {
             recovery: state.recoverable(),
             ..Default::default()
         };
+        let (docks, window) = match state.paths() {
+            Some(p) => dock::Workspaces::load(&p.layout_file()),
+            None => (dock::Workspaces::default(), None),
+        };
         Self {
             state,
             ui,
@@ -62,11 +77,80 @@ impl RizxelApp {
             meshes: viewport::MeshCache::default(),
             tools: ToolInput::default(),
             target_format,
-            docks: dock::Workspaces::default(),
+            layout_saved: (docks.clone(), window),
+            docks,
             quitting: false,
             render_state: cc.wgpu_render_state.clone(),
             outputs: Default::default(),
+            thumbs: None,
+            layout_changed: None,
+            window,
         }
+    }
+
+    /// Opens the start screen unless the settings turned it off.
+    pub fn show_start_screen(&mut self) {
+        if self.state.settings.general.start_screen {
+            self.ui.start = Some(Default::default());
+        }
+    }
+
+    /// Follows the window's size, position and maximized flag (in logical
+    /// points, as the window builder takes them).
+    fn track_window(&mut self, ctx: &egui::Context) {
+        let zoom = ctx.zoom_factor();
+        let (inner, outer, maximized, minimized) = ctx.input(|i| {
+            let v = i.viewport();
+            (
+                v.inner_rect,
+                v.outer_rect,
+                v.maximized.unwrap_or(false),
+                v.minimized.unwrap_or(false),
+            )
+        });
+        if minimized {
+            return;
+        }
+        let mut w = self.window.unwrap_or(dock::WindowState {
+            size: [1080.0, 640.0],
+            position: None,
+            maximized: false,
+        });
+        w.maximized = maximized;
+        // A maximized window keeps the size and spot it restores to.
+        if !maximized {
+            if let Some(r) = inner {
+                w.size = (r.size() * zoom).into();
+            }
+            if let Some(r) = outer {
+                w.position = Some((r.min.to_vec2() * zoom).into());
+            }
+        }
+        self.window = Some(w);
+    }
+
+    /// Writes `layout.json` once the layout or window has been unchanged
+    /// for [`LAYOUT_SAVE_DELAY`], or right away with `now`.
+    fn save_layout(&mut self, now: bool) {
+        let current = (&self.docks, &self.window);
+        if (&self.layout_saved.0, &self.layout_saved.1) == current {
+            self.layout_changed = None;
+            return;
+        }
+        let changed = *self
+            .layout_changed
+            .get_or_insert_with(std::time::Instant::now);
+        if !now && changed.elapsed() < LAYOUT_SAVE_DELAY {
+            return;
+        }
+        let Some(paths) = self.state.paths() else {
+            return;
+        };
+        if let Err(e) = self.docks.save(&paths.layout_file(), self.window) {
+            log::warn!("layout: {e}");
+        }
+        self.layout_saved = (self.docks.clone(), self.window);
+        self.layout_changed = None;
     }
 
     /// Opens a project or model passed on the command line (`.rzxl`,
@@ -92,10 +176,12 @@ impl RizxelApp {
         }
     }
 
-    /// Clean exit: lets the close through and deletes the recovery files.
+    /// Clean exit: lets the close through, deletes the recovery files and
+    /// saves the layout.
     fn quit(&mut self) {
         self.quitting = true;
         self.state.clean_exit();
+        self.save_layout(true);
     }
 
     /// Global keyboard shortcuts, dispatched through the keymap
@@ -106,7 +192,8 @@ impl RizxelApp {
         let modal = self.state.closing().is_some()
             || !self.ui.recovery.is_empty()
             || self.ui.dialogs.is_open()
-            || self.ui.settings.is_some();
+            || self.ui.settings.is_some()
+            || self.ui.start.is_some();
         if ctx.egui_wants_keyboard_input() || modal {
             return;
         }
@@ -225,6 +312,11 @@ impl eframe::App for RizxelApp {
         panels::settings::capture_keys(&ctx, self.ui.settings.as_mut());
         self.handle_close(&ctx);
         panels::top_bar::recovery_dialog(&ctx, &mut self.state, &mut self.ui);
+        // After the recovery prompt, which comes first.
+        if self.ui.recovery.is_empty() {
+            panels::start::show(&ctx, &mut self.state, &mut self.ui.start);
+        }
+        self.track_window(&ctx);
         self.state.autosave_tick(std::time::Instant::now());
         // Keep ticking while idle so the time-based autosave still fires.
         ctx.request_repaint_after(std::time::Duration::from_secs(5));
@@ -308,6 +400,12 @@ impl eframe::App for RizxelApp {
         panels::render::shaped_dialog(&ctx, state, &mut ui_state.render);
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
+
+        crate::thumbnails::update(state, self.render_state.as_ref(), &mut self.thumbs);
+        self.save_layout(false);
+        if self.layout_changed.is_some() {
+            ctx.request_repaint_after(LAYOUT_SAVE_DELAY);
+        }
     }
 }
 

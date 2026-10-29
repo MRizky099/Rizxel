@@ -12,6 +12,7 @@ pub mod panels;
 pub mod render;
 pub mod resize;
 pub mod theme;
+pub mod thumbnails;
 pub mod tool_input;
 pub mod viewport;
 pub mod widgets;

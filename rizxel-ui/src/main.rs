@@ -13,18 +13,26 @@ fn main() -> eframe::Result {
         eframe::icon_data::from_png_bytes(include_bytes!("../../assets/Rizxel_icon_256x256.png"))
             .expect("embedded app icon is a valid PNG");
 
+    // The window comes back where it was (layout.json); the first start
+    // opens windowed at 1080x640, centered.
+    let window = rizxel_app::AppPaths::new()
+        .and_then(|p| rizxel_ui::dock::load_window_state(&p.layout_file()));
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Rizxel - Voxel Editor")
+        .with_icon(window_icon)
+        .with_inner_size(window.map_or([1080.0, 640.0], |w| w.size))
+        .with_min_inner_size(rizxel_ui::dock::WindowState::MIN_SIZE)
+        .with_maximized(window.is_some_and(|w| w.maximized))
+        // Frameless: title bar, window controls and resize edges are drawn by egui.
+        .with_decorations(false);
+    let position = window.and_then(|w| w.position);
+    if let Some(pos) = position {
+        viewport = viewport.with_position(pos);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Rizxel - Voxel Editor")
-            .with_icon(window_icon)
-            // Opens windowed (not maximized) at 1080x640.
-            .with_inner_size([1080.0, 640.0])
-            .with_min_inner_size([800.0, 480.0])
-            .with_maximized(false)
-            // Frameless: title bar, window controls and resize edges are drawn by egui.
-            .with_decorations(false),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
-        centered: true,
+        centered: position.is_none(),
         ..Default::default()
     };
 
@@ -36,8 +44,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut app = app::RizxelApp::new(cc);
-            if let Some(path) = open_path {
-                app.open_at_startup(&path);
+            match open_path {
+                Some(path) => app.open_at_startup(&path),
+                None => app.show_start_screen(),
             }
             Ok(Box::new(app))
         }),
