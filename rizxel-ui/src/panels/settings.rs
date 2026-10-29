@@ -46,6 +46,8 @@ pub struct SettingsDialog {
     pub filter: String,
     /// Last refused rebinding.
     pub error: Option<String>,
+    /// Result of the last *Associate .rzxl files* click.
+    pub assoc_status: Option<String>,
 }
 
 impl SettingsDialog {
@@ -56,6 +58,7 @@ impl SettingsDialog {
             capture: None,
             filter: String::new(),
             error: None,
+            assoc_status: None,
         }
     }
 
@@ -223,6 +226,7 @@ fn general(ui: &mut Ui, d: &mut SettingsDialog) {
                 ui.checkbox(&mut g.start_screen, "Show when no file was opened");
             });
         });
+    crate::file_assoc::settings_section(ui, &mut d.assoc_status);
 }
 
 fn viewport(ui: &mut Ui, d: &mut SettingsDialog) {

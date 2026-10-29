@@ -36,6 +36,8 @@ pub struct RizxelApp {
     layout_changed: Option<std::time::Instant>,
     /// Current window state (size and position while not maximized).
     window: Option<dock::WindowState>,
+    /// Receives files from later launches (`None`: no app data folder).
+    instance: Option<crate::single_instance::Server>,
 }
 
 /// Unsaved layout changes are written after this quiet period.
@@ -85,7 +87,36 @@ impl RizxelApp {
             thumbs: None,
             layout_changed: None,
             window,
+            instance: None,
         }
+    }
+
+    /// Opens files handed over by later launches; `ctx` is woken when they
+    /// arrive so they open while the window is idle.
+    pub fn set_instance(&mut self, server: crate::single_instance::Server, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        server.set_waker(move || ctx.request_repaint());
+        self.instance = Some(server);
+    }
+
+    /// Files from a second launch open as tabs and the window comes to the
+    /// front (also for a launch without files).
+    fn handle_instance(&mut self, ctx: &egui::Context) {
+        let Some(server) = &self.instance else {
+            return;
+        };
+        let Some(paths) = server.poll() else {
+            return;
+        };
+        self.ui.start = None;
+        for path in &paths {
+            actions::open_path(&mut self.state, path);
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+        ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(
+            egui::UserAttentionType::Informational,
+        ));
     }
 
     /// Opens the start screen unless the settings turned it off.
@@ -184,44 +215,47 @@ impl RizxelApp {
         self.save_layout(true);
     }
 
-    /// Global keyboard shortcuts, dispatched through the keymap
-    /// (*Settings ▸ Keymap*). Skipped while a text field has focus so e.g.
-    /// Ctrl+Z edits text instead of the document, and while a modal prompt
-    /// is open.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let modal = self.state.closing().is_some()
-            || !self.ui.recovery.is_empty()
-            || self.ui.dialogs.is_open()
-            || self.ui.settings.is_some()
-            || self.ui.start.is_some();
-        if ctx.egui_wants_keyboard_input() || modal {
-            return;
+        dispatch_shortcuts(ctx, &mut self.state, &mut self.ui);
+    }
+}
+
+/// Global keyboard shortcuts, dispatched through the keymap (*Settings ▸
+/// Keymap*). Skipped while a text field has focus so e.g. Ctrl+Z edits text
+/// instead of the document, and while a modal prompt or dialog is open.
+pub fn dispatch_shortcuts(ctx: &egui::Context, state: &mut AppState, ui: &mut panels::UiState) {
+    let modal = state.closing().is_some()
+        || !ui.recovery.is_empty()
+        || ui.dialogs.is_open()
+        || ui.settings.is_some()
+        || ui.start.is_some();
+    if ctx.egui_wants_keyboard_input() || modal {
+        return;
+    }
+    // Clipboard. Paste follows the cursor from the hovered voxel.
+    match clipboard_command(ctx) {
+        Some(ClipboardCommand::Copy) => {
+            state.copy();
         }
-        // Clipboard. Paste follows the cursor from the hovered voxel.
-        match clipboard_command(ctx) {
-            Some(ClipboardCommand::Copy) => {
-                self.state.copy();
-            }
-            Some(ClipboardCommand::Cut) => {
-                self.state.cut();
-            }
-            Some(ClipboardCommand::Paste) => {
-                self.state.paste(self.state.cursor_voxel);
-            }
-            Some(ClipboardCommand::PasteInPlace) => {
-                self.state.paste_in_place();
-            }
-            Some(ClipboardCommand::PasteToNewLayer) => {
-                self.state.paste_to_new_layer();
-            }
-            Some(ClipboardCommand::FlipX) => self.state.flip(0),
-            None => {}
+        Some(ClipboardCommand::Cut) => {
+            state.cut();
         }
-        let keymap = &self.state.settings.keymap;
-        let actions = ctx.input_mut(|i| keys::take_actions(i, keymap));
-        for action in actions {
-            run_action(&mut self.state, &mut self.ui, action);
+        Some(ClipboardCommand::Paste) => {
+            state.paste(state.cursor_voxel);
         }
+        Some(ClipboardCommand::PasteInPlace) => {
+            state.paste_in_place();
+        }
+        Some(ClipboardCommand::PasteToNewLayer) => {
+            state.paste_to_new_layer();
+        }
+        Some(ClipboardCommand::FlipX) => state.flip(0),
+        None => {}
+    }
+    let keymap = &state.settings.keymap;
+    let actions = ctx.input_mut(|i| keys::take_actions(i, keymap));
+    for action in actions {
+        run_action(state, ui, action);
     }
 }
 
@@ -317,6 +351,7 @@ impl eframe::App for RizxelApp {
             panels::start::show(&ctx, &mut self.state, &mut self.ui.start);
         }
         self.track_window(&ctx);
+        self.handle_instance(&ctx);
         self.state.autosave_tick(std::time::Instant::now());
         // Keep ticking while idle so the time-based autosave still fires.
         ctx.request_repaint_after(std::time::Duration::from_secs(5));

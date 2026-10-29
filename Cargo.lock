@@ -2916,6 +2916,7 @@ version = "0.6.0"
 dependencies = [
  "bytemuck",
  "craft-ui",
+ "directories",
  "eframe",
  "egui",
  "egui-phosphor",
