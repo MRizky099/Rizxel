@@ -520,11 +520,25 @@ impl TileMeshCache {
 
     /// The cached tiles of `volume` in sorted order, as one mesh.
     fn concatenate(&self, volume: &VoxelVolume) -> Mesh {
-        let mut out = Mesh::default();
-        for o in &volume.sorted_tile_origins() {
-            if let Some(m) = self.tiles.get(o) {
-                out.append(m);
-            }
+        let parts: Vec<&Mesh> = volume
+            .sorted_tile_origins()
+            .iter()
+            .filter_map(|o| self.tiles.get(o))
+            .collect();
+        // One allocation per buffer (a 256³ model has hundreds of tiles).
+        let vertices: usize = parts.iter().map(|m| m.positions.len()).sum();
+        let indices: usize = parts.iter().map(|m| m.indices.len()).sum();
+        let extra = |len: fn(&Mesh) -> usize| parts.iter().map(|m| len(m)).sum::<usize>();
+        let mut out = Mesh {
+            positions: Vec::with_capacity(vertices),
+            normals: Vec::with_capacity(vertices),
+            colors: Vec::with_capacity(vertices),
+            materials: Vec::with_capacity(extra(|m| m.materials.len())),
+            ao: Vec::with_capacity(extra(|m| m.ao.len())),
+            indices: Vec::with_capacity(indices),
+        };
+        for m in parts {
+            out.append(m);
         }
         out
     }

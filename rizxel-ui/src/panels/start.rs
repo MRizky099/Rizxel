@@ -160,6 +160,13 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
 /// A recent file: thumbnail (or a placeholder), name and folder.
 fn card(ui: &mut Ui, path: &Path, thumb: Option<&TextureHandle>) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(CARD, Sense::click());
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, file_name.clone())
+    });
     let hovered = response.hovered();
     let painter = ui.painter_at(rect);
     let fill = if hovered {

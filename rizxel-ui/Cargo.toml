@@ -36,6 +36,8 @@ pollster.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
+# Headless UI smoke tests (tests/ui_smoke.rs); no GPU.
+egui_kittest = "0.36"
 
 [build-dependencies]
 winresource.workspace = true

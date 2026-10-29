@@ -2920,6 +2920,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-phosphor",
+ "egui_kittest",
  "env_logger",
  "glam",
  "image",

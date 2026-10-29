@@ -9,7 +9,7 @@
 //! empty and writes to them are ignored.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use glam::{IVec3, Vec3};
 
@@ -61,10 +61,12 @@ pub fn local_coord(i: usize) -> IVec3 {
     )
 }
 
-/// 16³ block of voxels.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 16³ block of voxels. Copy-on-write: cloning a volume shares its tiles
+/// until one is written, so snapshots (undo, the mesh cache, autosave)
+/// stay cheap and unchanged tiles compare by pointer.
+#[derive(Debug, Clone, Eq)]
 pub struct Tile {
-    voxels: Box<[Voxel; TILE_VOLUME]>,
+    voxels: Arc<[Voxel; TILE_VOLUME]>,
     /// Number of non-empty voxels, so emptiness checks are O(1).
     count: u16,
 }
@@ -72,7 +74,7 @@ pub struct Tile {
 impl Tile {
     fn new() -> Self {
         Self {
-            voxels: Box::new([EMPTY_VOXEL; TILE_VOLUME]),
+            voxels: Arc::new([EMPTY_VOXEL; TILE_VOLUME]),
             count: 0,
         }
     }
@@ -101,10 +103,13 @@ impl Tile {
 
     /// Writes a voxel and returns the previous value.
     fn set(&mut self, index: usize, v: Voxel) -> Voxel {
-        let Some(slot) = self.voxels.get_mut(index) else {
-            return EMPTY_VOXEL;
+        let old = match self.voxels.get(index) {
+            Some(&old) if old == v => return old,
+            Some(&old) => old,
+            None => return EMPTY_VOXEL,
         };
-        let old = std::mem::replace(slot, v);
+        // Copies the array only while another volume shares it.
+        Arc::make_mut(&mut self.voxels)[index] = v;
         match (old == EMPTY_VOXEL, v == EMPTY_VOXEL) {
             (true, false) => self.count += 1,
             (false, true) => self.count -= 1,
@@ -125,6 +130,13 @@ impl Tile {
     /// Raw voxel array (`x` fastest, see [`local_index`]).
     pub fn voxels(&self) -> &[Voxel; TILE_VOLUME] {
         &self.voxels
+    }
+}
+
+impl PartialEq for Tile {
+    fn eq(&self, other: &Self) -> bool {
+        self.count == other.count
+            && (Arc::ptr_eq(&self.voxels, &other.voxels) || self.voxels == other.voxels)
     }
 }
 
