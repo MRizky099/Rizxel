@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.6.0`: Phases 1–11b, 589 tests) and a
+Gaps between the current build (`v0.6.0` plus Phase 12 on `claude/phase12-beta`, 624 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -11,7 +11,7 @@ Severity: **High** blocks real-world use · **Medium** is a noticeable limitatio
 The **Phase** column names the plan that closes the gap (see
 [`milestones.md`](plan/milestones.md)); `post` means after 1.0.
 
-> Last updated 2026-10-29.
+> Last updated 2026-10-30.
 
 ## Closed since the last revision
 
@@ -65,6 +65,13 @@ The **Phase** column names the plan that closes the gap (see
 | Render mode has no layout or options of its own | Phase 11b (Render layout, render bar, Render panel) |
 | No photo-realistic rendering | Phase 11b (GPU path tracer) |
 | No render-only voxel shapes or shaped-mesh export | Phase 11b (voxel shapes, *Export Shaped Mesh*) |
+| No Settings dialog; shortcuts, undo limit and view defaults are fixed | Phase 12, `b2e6625` (Settings dialog, remappable keymap, undo limit, autosave interval, start-up grid and projection) |
+| Favorite colors can't move to plain digits | Phase 12, `b2e6625` (rebind them in *Settings ▸ Keymap*) |
+| Dock layout and window state aren't saved; no start screen | Phase 12, `b22934c` |
+| `.rzxl` files aren't associated with Rizxel; a second launch opens a second window | Phase 12, `5e3db11`, `73f1834` |
+| No release packaging | Phase 12, `5e3db11` (MSI, zip, AppImage, dmg built by `release.yml`) |
+| UI behaviour isn't tested | Phase 12, `5b60236` (`egui_kittest` smoke tests; the viewport itself still needs a GPU) |
+| Greedy merging stops at tile borders | Phase 12 performance pass: not needed for the targets (256³ orbit 8.5 ms, brush frame 3.0 ms on 128³); export meshes keep the full-model greedy mesh |
 
 ## Known bugs
 
@@ -80,7 +87,6 @@ No open bugs are known. Fixed bugs move to the table above.
 | One shared grid for all layers | Medium | post | Qubicle matrices have their own size and position; needed for Align/Distribute and exact `.qb` multi-matrix layouts. |
 | Palette is limited to 255 colors, with no per-voxel RGBA | Medium | post | `Voxel = u8`. True-color imports (Goxel, OBJ textures) are quantized with median cut, so colors are lost. |
 | Selections aren't saved | Low | post | Each layer's selection is lost on save and reload. |
-| Dock layout isn't saved between sessions | Low | 12 | `Workspace::reset` exists, but the layout isn't written to disk. |
 
 ## Interchange
 
@@ -105,8 +111,9 @@ No open bugs are known. Fixed bugs move to the table above.
 | Undo with an open box selection or transform only closes it | Low | post | Same as a floating paste; the next Undo undoes the last step. |
 | No shear, smooth (filtered) resampling or multi-layer transforms | Low | post | The Transform tool resamples by nearest neighbour, on one layer. |
 | Gradient and Remap need `Shift+click` to mark a swatch | Low | 12 | There is no other way to pick the second color yet. |
+| Only a dark theme | Low | 12a | *Settings ▸ General* shows the theme, but `theme.rs` colors are constants; a light theme needs them to become a palette. |
+| Pointer clicks don't reach the title bar in `egui_kittest` | Low | — | The smoke tests click through AccessKit actions instead; real mouse input works. |
 | Brush pyramids and cones always point up | Low | post | The Shape tool points them away from the pressed face; Brush stamps have no face direction. |
-| Favorite colors use `Ctrl+digit`, not plain digits | Low | 12 | Plain `5` already toggles the projection, and egui can't tell the numpad from the main digits. Configurable shortcuts come with Phase 12. |
 | No multi-select of layer rows | Low | post | *Group Layer* wraps the active layer (with its contents) only. |
 | Group opacity doesn't fade its children in the Layers panel, and groups have no transform | Low | post | Opacity multiplies down the tree in the viewport; per-group transforms are Qubicle compounds. |
 | Reference images can't be moved with a handle in the viewport, and have no mipmaps | Low | post | Placement is typed or dragged in the References panel; large images minified a lot can shimmer. |
@@ -117,10 +124,6 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No Settings or Preferences dialog, and shortcuts are fixed | Medium | 12 | The toolbar settings button is a stub (`panels/tools.rs:45`). Shortcuts, theme, grid and the undo limit can't be configured. |
-| No start screen | Low | 12 | |
-| View toggles and the projection aren't remembered | Low | 12 | Floor grid, voxel grid, bounds, ghosts, AO and Auto Ortho reset on every start; Phase 12 stores them in settings. |
-| The undo history is capped at 512 steps | Low | 12 | The History panel (Phase 10) lists them; the limit becomes configurable in Phase 12. |
 | No localization | Low | post | The UI is English only. |
 | Tab strips can't be scrolled by dragging | Low | post | Dragging a tab moves it to another group, so strips scroll by wheel, arrows, or a dragged tab held near an end. |
 | A collapsed group only collapses when it sits above or below another group | Low | post | Groups beside the viewport or floating have nothing to give the space to. |
@@ -139,16 +142,17 @@ No open bugs are known. Fixed bugs move to the table above.
 | Translucent layers sort per layer, not per triangle | Low | post | Interpenetrating translucent layers can blend in the wrong order; no order-independent transparency. |
 | Ambient occlusion costs triangles | Low | 12 | AO-aware merging gives about 1.8× the triangles of the plain mesh (`mesh_bench`: 89,788 vs 49,984). |
 | Loading a file still parses on the UI thread | Low | 12 | Meshing is in the background since Phase 9, but reading a large `.vox` or `.rzxl` blocks before the first frame. |
-| Greedy merging stops at tile borders | Low | 12 | The mesh has more triangles than it needs. |
 | No LOD for large or zoomed-out scenes | Low | post | |
 
 ## Engineering
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| `.rzxl` files aren't associated with Rizxel | Medium | 12 | Double-clicking a project does nothing; there's no document icon, and a second launch would open a second window. The app already accepts a path argument. |
+| macOS doesn't open a double-clicked `.rzxl` | Medium | 12a | `Info.plist` declares the type and icon, but winit 0.30 doesn't deliver the `open` Apple event, so Finder starts Rizxel without the file. Needs an `NSApplicationDelegate` hook (`unsafe` Objective-C, forbidden in the workspace today). Untested: no Mac. |
+| Packages are built only in CI and not installed on clean machines yet | Medium | 12 | `release.yml` was written without a run (no tag pushed); WiX, appimagetool and the macOS tools aren't on the dev PC. Step 12 (install on a clean Windows, Linux and macOS and open a sample) waits for the first tagged build. |
+| The window may not come to the front on a second launch | Low | 12a | It sends Focus and asks for attention; Windows' focus-stealing rules may only flash the taskbar button. Untested by hand. |
+| Starting after a crash waits 1.5 s | Low | — | The stale `instance.lock` is detected by a connect timeout (Windows doesn't refuse a closed loopback port quickly). |
+| Font licenses in the third-party notices | Low | 12 | egui's bundled fonts are under the Ubuntu Font Licence and OFL-1.1; both are on the `about.toml` allow-list as separate font files. Confirm that this is acceptable for the GPL-3.0 packages. |
 | `craft-ui` is a vendored copy | Low | post | `vendor/craft-ui` is upstream `ae2f796` plus the Fill / Scroll tab-strip patch (Phase 10d). Send the patch upstream, then go back to a git rev; the steps are in `vendor/craft-ui/README.md`. |
-| No release packaging | Medium | 12 | There are no installers or signed binaries, and only Windows has an embedded icon resource. |
-| UI behaviour isn't tested | Medium | 12 | Tests cover the engine, I/O and app layers. Viewport and panel interactions aren't automated. |
 | No user documentation or tutorial | Medium | 12a | The docs are for developers only. |
 | No `.rzxl` compatibility promise | Medium | 12a | A candidate promise for v5 lands in 0.10.0 and becomes binding at 1.0. |

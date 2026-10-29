@@ -5,6 +5,46 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+Phase 12 (milestone M6, the 0.9.0 beta): settings, saved layout, start screen,
+packages, file association.
+
+### Added
+- **Settings dialog** (toolbar gear, *File ▸ Settings…*, `Ctrl+,`) with General (UI
+  scale, undo steps per document, autosave interval or off, start screen), Viewport
+  (start-up floor and voxel grid, projection, Model-mode background, camera controls),
+  Keymap and Paths (default export folder) tabs. Stored in `settings.json` in the app
+  data folder: versioned, unknown keys kept, a bad value falls back to its default.
+- **Remappable keymap**: every shortcut is an action with one or more chords. Click a
+  chord and press the new keys, add or remove chords, reset one or all; conflicts are
+  shown and block OK. Menus, tooltips and *Help ▸ Keyboard Shortcuts* show the current
+  keys. `Ctrl+C` / `X` / `V`, `Enter` and `Esc` stay fixed.
+- **Alt + mouse camera controls** (Settings ▸ Viewport): `Alt` + left drag orbits,
+  `Alt` + middle pans, `Alt` + right zooms.
+- **Saved dock layout and window state**: both layouts (with closed and collapsed
+  panels) and the window's size, position and maximized flag go to `layout.json` and
+  come back on the next start; a broken file falls back to the default layout.
+- **Start screen** with New, Open and the recent files as cards with thumbnails, which
+  are rendered whenever a project is saved or opened.
+- **Packages** built by a tagged release workflow: Windows MSI (per user, no admin
+  rights) and portable zip, Linux AppImage, macOS universal dmg. Every package ships
+  `LICENSE`, `THIRD_PARTY_LICENSES.html` (`cargo about`, GPL-compatible allow-list
+  checked on every release) and the craft-ui notices; releases link their source.
+- **`.rzxl` file association** with its own document icon (MSI, AppImage desktop file,
+  macOS `Info.plist`), *Open with* entries for `.vox` and `.gox`, and *Settings ▸
+  General ▸ Associate .rzxl Files with This Copy* for portable builds (Windows and
+  Linux, undoable).
+- **One window**: opening a file while Rizxel runs hands it to the running window, which
+  opens it as a tab and comes to the front.
+- `RIZXEL_DATA_DIR` points the app data folder elsewhere.
+- Headless UI smoke tests (`egui_kittest`) in CI; macOS in the CI matrix.
+
+### Performance
+- Volume tiles are copy-on-write and the tile mesh cache assembles its output in one
+  allocation: a brush frame on a 128³ model drops from 4.9 to 3.0 ms and on a 256³
+  model with a million voxels from 22.5 to 10.0 ms. Orbiting that model renders at
+  8.5 ms per 720p frame on a GTX 950M. New `mesh_bench --large` and `viewport_bench`
+  examples.
+
 ### Changed
 - **License: GPL-3.0-or-later** (was declared as MIT OR Apache-2.0, with no
   license file). The full text is in `LICENSE`, `Cargo.toml` declares

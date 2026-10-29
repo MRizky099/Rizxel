@@ -232,6 +232,11 @@ The full list is under *Help ▸ Keyboard Shortcuts*. The most used ones:
 | `F5` | Model / Render mode |
 | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` | New / open / save |
 | `Ctrl+Shift+F` | Zen mode |
+| `Ctrl+,` | Settings |
+
+Every shortcut can be changed in *Settings ▸ Keymap*; *Help ▸ Keyboard Shortcuts* lists
+the current ones. *Settings ▸ Viewport* also offers `Alt` + mouse camera controls
+(`Alt` + left drag orbits, `Alt` + middle pans, `Alt` + right zooms).
 
 ## File formats
 
@@ -280,7 +285,7 @@ rizxel-math    L0  Rgba8, Palette, BoundSize, Aabb, VoxelVolume (16³ sparse til
 | 0.2 – 0.4 | CI, safe editing, visual fidelity | ✅ Released |
 | 0.5 | Editing power: selection, structure and palette tools, layer tree, reference images, Transform tool, docking | ✅ Released |
 | 0.6 | Pipeline and rendering: glTF, Qubicle, PLY, Render mode, path tracer | ✅ Released |
-| 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ⏳ Next |
+| 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ⏳ Next (done on the branch, release pending) |
 | 0.10 | Beta 2: user guide, `.rzxl` format candidate, signed builds | ⏳ Planned |
 | 1.0 | Stable release, planned after the beta feedback | 💡 Later |
 
