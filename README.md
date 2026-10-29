@@ -231,7 +231,8 @@ rizxel-math    L0  Rgba8, Palette, BoundSize, Aabb, VoxelVolume (16³ sparse til
 | 0.5 | Editing power: selection, structure and palette tools, layer tree, reference images, Transform tool, docking | ✅ Released |
 | 0.6 | Pipeline and rendering: glTF, Qubicle, PLY, Render mode, path tracer | ✅ Released |
 | 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ⏳ Next |
-| 1.0 | User guide, frozen `.rzxl` format, signed releases | ⏳ Planned |
+| 0.10 | Beta 2: user guide, `.rzxl` format candidate, signed builds | ⏳ Planned |
+| 1.0 | Stable release, planned after the beta feedback | 💡 Later |
 
 Known limitations are tracked in [`docs/gaps.md`](docs/gaps.md).
 

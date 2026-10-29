@@ -150,5 +150,5 @@ No open bugs are known. Fixed bugs move to the table above.
 | `craft-ui` is a vendored copy | Low | post | `vendor/craft-ui` is upstream `ae2f796` plus the Fill / Scroll tab-strip patch (Phase 10d). Send the patch upstream, then go back to a git rev; the steps are in `vendor/craft-ui/README.md`. |
 | No release packaging | Medium | 12 | There are no installers or signed binaries, and only Windows has an embedded icon resource. |
 | UI behaviour isn't tested | Medium | 12 | Tests cover the engine, I/O and app layers. Viewport and panel interactions aren't automated. |
-| No user documentation or tutorial | Medium | 13 | The docs are for developers only. |
-| No `.rzxl` compatibility promise | Medium | 13 | Needed before 1.0. |
+| No user documentation or tutorial | Medium | 12a | The docs are for developers only. |
+| No `.rzxl` compatibility promise | Medium | 12a | A candidate promise for v5 lands in 0.10.0 and becomes binding at 1.0. |
