@@ -27,8 +27,8 @@ All notable changes to Rizxel are documented here. Format follows
   and seams, a shadow-catcher studio ground, depth of field and an edge-aware à-trous
   denoiser. The viewport shows it in Render mode, restarting on every change. On a GTX
   950M at full clocks: 21 samples per second at 720p (10.5 with Studio White and
-  bricks), a 1080p image at 256 samples in 21 s (46 s). GPUs without compute shaders (the GL backend)
-  keep the raster preview and the *Image* output.
+  bricks), a 1080p image at 256 samples in 21 s (46 s). Without Vulkan, DX12 or Metal
+  (the GL backend) Render mode keeps the raster preview and the *Image* output.
 - **Outputs:** *Image* (fast raster PNG up to 8192², transparent background optional),
   *Photo-realistic* (tiled path-traced PNG, 8 or 16 bits, with progress, time left,
   time limit and Cancel) and *Turntable* (raster or path-traced frames around the model:
@@ -37,7 +37,8 @@ All notable changes to Rizxel are documented here. Format follows
 - **Voxel shapes** (view only): cube, brick with studs, rounded, sphere and cylinder,
   with a cell size for gaps, in the path tracer, the raster view and *Image*.
   **Export Shaped Mesh** (File ▸ Export, Render mode only) writes them as OBJ + MTL, STL
-  or GLB, with quality, studs, scale and pivot, a triangle count and a size guard.
+  or GLB, with quality, studs, scale and pivot, a triangle count and a size guard. Brick
+  meshes are watertight (checked in Blender 5.2).
 - **`.rzxl` version 5:** render settings and the new material fields (specular, IOR,
   transmission, clear coat, emission strength). Older files load with the defaults.
 - `render` example (`cargo run -p rizxel-ui --example render -- in.rzxl out.png`) for

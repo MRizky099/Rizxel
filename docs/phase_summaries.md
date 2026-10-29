@@ -347,14 +347,21 @@ Plan: [`rizxel_phase11b_implementation_plan.md`](plan/rizxel_phase11b_implementa
 - *Photo-realistic* tiled jobs with progress, ETA and Cancel; *Turntable* PNG sequence,
   GIF (`gif` crate) and sprite sheet + JSON (`2014c7f`).
 - `rizxel-engine/src/shape_mesh.rs`, raster shapes, *Export Shaped Mesh* to OBJ / STL /
-  GLB from Render mode only (`b0e40a9`); fixes from the manual checks (`c34626a`).
+  GLB from Render mode only (`b0e40a9`); fixes from the manual checks (`c34626a`);
+  watertight brick meshes, stud caps, the path tracer off on GL (`b699a11`).
 - `render_bench` on a GTX 950M: 21.1 / 10.5 spp/s at 720p and 20.7 / 45.9 s for 1080p ×
   256 spp (Default / Studio White + Brick) at full clocks; when the driver kept the GPU
   at P8 (405 MHz) later the same code measured 7.8 / 3.8 spp/s. The release binary grew
   by 1.0 MB (22.56 → 23.60 MB).
 - Checked by hand: every Render panel tab, Studio White with the Brick shape and Plastic
   on `chr_knight`, *Image* (1080p, 1.3 s), *Photo-realistic* (1080p × 256 spp, 25 s), a
-  36-frame turntable GIF (512², raster, 18 s) and a shaped OBJ (19,836 triangles) opened
-  in Windows 3D Viewer; a re-voxelized `Kaki_Naga` compared with Studio's render. Blender
-  wasn't available for the OBJ check.
-- 588 tests (501 Rizxel, 87 craft-ui); GPU tests skip without an adapter.
+  36-frame turntable GIF (512², raster, 18 s) and a shaped OBJ opened in Windows 3D Viewer;
+  a re-voxelized `Kaki_Naga` compared with Studio's render.
+- Blender 5.2.3 (portable) imports the shaped `chr_knight` bricks as OBJ, STL and GLB with
+  the same 14,404 triangles and size, the OBJ's 21 materials and the GLB's vertex colors
+  (wired to its material). The first check found 1,620 crack edges between bricks; after
+  the fix and the stud caps no edge is open.
+- GL backend (`WGPU_BACKEND=gl`, Intel HD 4600): the path tracer reports unavailable and
+  the raster *Image* renders headless; the GPU tests skip cleanly. The window itself
+  doesn't refresh on GL, also before this phase (see gaps).
+- 589 tests (502 Rizxel, 87 craft-ui); GPU tests skip without an adapter.
