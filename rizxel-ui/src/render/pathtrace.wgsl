@@ -138,6 +138,8 @@ fn no_hit() -> ShapeHit {
     return ShapeHit(-1.0, vec3<f32>(0.0), 0u);
 }
 
+/// Integer vectors step with `step * vec3<i32>(mask)`, not `select`: GLSL
+/// before 4.50 (the GL backend on older GPUs) has no integer `mix`.
 /// Unit mask of the smallest component (ties pick the lowest axis).
 fn min_mask(v: vec3<f32>) -> vec3<bool> {
     let x = v.x <= v.y && v.x <= v.z;
@@ -426,7 +428,7 @@ fn trace_voxels(ro: vec3<f32>, rd: vec3<f32>, t_min: f32, t_max: f32) -> Hit {
                     break;
                 }
                 let m = min_mask(t_next);
-                c += select(vec3<i32>(0), step, m);
+                c += step * vec3<i32>(m);
                 t_next += select(vec3<f32>(0.0), t_delta, m);
                 if any(c < lo) || any(c > hi) {
                     break;
@@ -438,7 +440,7 @@ fn trace_voxels(ro: vec3<f32>, rd: vec3<f32>, t_min: f32, t_max: f32) -> Hit {
             break;
         }
         t = b_exit;
-        b += select(vec3<i32>(0), step, bm);
+        b += step * vec3<i32>(bm);
         bt_next += select(vec3<f32>(0.0), bt_delta, bm);
         if any(b < vec3<i32>(0)) || any(b >= brick_count) {
             break;
@@ -901,7 +903,7 @@ fn trace_exit(ro: vec3<f32>, rd: vec3<f32>) -> Exit {
     for (var i = 0; i < 512; i++) {
         let m = min_mask(t_next);
         t = min(t_next.x, min(t_next.y, t_next.z));
-        c += select(vec3<i32>(0), step, m);
+        c += step * vec3<i32>(m);
         t_next += select(vec3<f32>(0.0), t_delta, m);
         n = select(vec3<f32>(0.0), vec3<f32>(step), m);
         if !solid(c) {

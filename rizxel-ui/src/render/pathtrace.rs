@@ -9,8 +9,8 @@
 //! viewport blits and the outputs read back.
 //!
 //! Needs compute shaders with storage buffers and storage textures
-//! ([`supported`]); the GL backend has neither, so Render mode then keeps
-//! the raster preview and the *Image* output only.
+//! on Vulkan, DX12 or Metal ([`supported`]); on the GL backend Render mode
+//! keeps the raster preview and the *Image* output only.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,10 +46,15 @@ pub const APRON: u32 = 64;
 pub const PHOTO_TILE: u32 = 2048;
 
 /// Whether `adapter` can run the path tracer.
+///
+/// The GL backend is always left out: an Intel HD 4600 (GL 4.3) compiles the
+/// tracing kernel but its 2015 driver crashes on the first dispatch, and GL
+/// drivers vary too much to trust with a kernel this size.
 pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     let caps = adapter.get_downlevel_capabilities();
     let limits = device.limits();
-    caps.flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    adapter.get_info().backend != wgpu::Backend::Gl
+        && caps.flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
         && limits.max_storage_buffers_per_shader_stage >= 6
         && limits.max_storage_textures_per_shader_stage >= 1
         && limits.max_compute_invocations_per_workgroup >= 64
@@ -1731,9 +1736,13 @@ mod tests {
 
     fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         match super::super::offscreen::headless_device() {
-            Some((d, q, info)) => {
-                eprintln!("adapter: {} ({:?})", info.name, info.backend);
-                Some((d, q))
+            Some(h) if h.path_tracing => {
+                eprintln!("adapter: {} ({:?})", h.info.name, h.info.backend);
+                Some((h.device, h.queue))
+            }
+            Some(h) => {
+                eprintln!("{} can't run the path tracer: skipped", h.info.name);
+                None
             }
             None => {
                 eprintln!("no GPU adapter: skipped");

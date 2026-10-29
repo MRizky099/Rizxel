@@ -17,6 +17,8 @@
 //! - `--transparent` transparent background
 //! - `--material diffuse|plastic|metal|glass|emit` gives every layer one
 //!   material with that preset
+//! - `--export-shaped FILE` also writes the shaped mesh (`.obj`, `.stl` or
+//!   `.glb`, needs `--shape`)
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -42,6 +44,7 @@ fn main() {
     let mut raster = false;
     let mut transparent = false;
     let mut material = None;
+    let mut export_shaped: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -80,6 +83,7 @@ fn main() {
             "--pitch" => pitch = value().parse().unwrap_or_else(|e| fail(e)),
             "--raster" => raster = true,
             "--transparent" => transparent = true,
+            "--export-shaped" => export_shaped = Some(PathBuf::from(value())),
             "--material" => {
                 let v = value();
                 material = Some(
@@ -106,10 +110,17 @@ fn main() {
     if let Err(e) = opened {
         fail(format!("{}: {e}", input.display()));
     }
-    let Some((device, queue, info)) = headless_device() else {
+    let Some(gpu) = headless_device() else {
         fail("no GPU adapter");
     };
-    eprintln!("adapter: {} ({:?})", info.name, info.backend);
+    let (device, queue) = (gpu.device, gpu.queue);
+    eprintln!(
+        "adapter: {} ({:?}), path tracer: {}",
+        gpu.info.name, gpu.info.backend, gpu.path_tracing
+    );
+    if !raster && !gpu.path_tracing {
+        fail("this adapter can't run the path tracer (GL, or no compute shaders): only --raster works");
+    }
 
     state.viewport_aspect = size[0] as f32 / size[1] as f32;
     state.camera.yaw = yaw;
@@ -143,6 +154,13 @@ fn main() {
     }
     state.frame_selection();
     eprintln!("bounds {:?}", state.doc().map(|d| d.data.bounds));
+    if let Some(path) = &export_shaped {
+        let e = rizxel_app::ShapedExport::default();
+        match state.export_shaped(path, &e) {
+            Ok(m) => eprintln!("{m}"),
+            Err(e) => fail(e),
+        }
+    }
     let doc = state.doc().unwrap_or_else(|| fail("nothing opened"));
     let started = Instant::now();
     let image = if raster {

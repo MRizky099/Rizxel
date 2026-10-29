@@ -92,10 +92,14 @@ fn main() {
         }
         None => test_document(),
     };
-    let Some((device, queue, info)) = headless_device() else {
+    let Some(gpu) = headless_device() else {
         fail("no GPU adapter");
     };
-    println!("adapter: {} ({:?})", info.name, info.backend);
+    if !gpu.path_tracing {
+        fail(format!("{} can't run the path tracer", gpu.info.name));
+    }
+    let (device, queue) = (gpu.device, gpu.queue);
+    println!("adapter: {} ({:?})", gpu.info.name, gpu.info.backend);
     let b = doc.data.bounds.0;
     println!(
         "model: {}×{}×{}, {} voxels",

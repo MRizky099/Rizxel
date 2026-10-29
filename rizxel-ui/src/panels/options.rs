@@ -69,7 +69,9 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         );
     })
     .response
-    .on_disabled_hover_text("This GPU backend has no compute shaders: raster preview only");
+    .on_disabled_hover_text(
+        "The path tracer needs Vulkan, DX12 or Metal with compute shaders: raster preview only",
+    );
     if view.path_tracing {
         view.path_traced = mode;
     }

@@ -16,10 +16,22 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Largest tile side.
 pub const TILE: u32 = 2048;
 
+/// A GPU device without a window.
+pub struct Headless {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub info: wgpu::AdapterInfo,
+    /// The adapter can run the path tracer (see [`super::pathtrace::supported`]).
+    pub path_tracing: bool,
+}
+
 /// A device and queue without a window, for tests, the `render` example
 /// and the benchmark. `None` when the machine has no usable adapter (CI).
-pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+/// `WGPU_BACKEND` (e.g. `gl`) and `WGPU_POWER_PREF` pick the adapter, as in
+/// the app.
+pub fn headless_device() -> Option<Headless> {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
@@ -32,7 +44,13 @@ pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo
         ..Default::default()
     }))
     .ok()?;
-    Some((device, queue, info))
+    let path_tracing = super::pathtrace::supported(&adapter, &device);
+    Some(Headless {
+        device,
+        queue,
+        info,
+        path_tracing,
+    })
 }
 
 /// Copies `size` pixels of an RGBA8 `texture` at `origin` into a tightly
@@ -280,7 +298,13 @@ mod tests {
 
     #[test]
     fn image_has_the_output_size_and_a_transparent_background() {
-        let Some((device, queue, info)) = headless_device() else {
+        let Some(Headless {
+            device,
+            queue,
+            info,
+            ..
+        }) = headless_device()
+        else {
             eprintln!("no GPU adapter: skipped");
             return;
         };

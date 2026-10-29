@@ -9,6 +9,8 @@
 //! space (voxel `v` fills `v..v + 1`); triangles wind counter-clockwise
 //! seen from outside, like [`crate::greedy_mesh`]'s.
 
+use std::collections::{HashMap, HashSet};
+
 use glam::{IVec3, Vec3};
 use rizxel_math::render::{BRICK_MIN_BEVEL, ROUNDED_BEVEL, STUD_DIAMETER, STUD_HEIGHT};
 use rizxel_math::{Palette, Rgba8, VoxelShape, VoxelVolume, EMPTY_VOXEL};
@@ -322,6 +324,62 @@ impl Merged {
     }
 }
 
+/// The six side directions, in the order of the `sharp` / `cull` arrays.
+const SIDES: [IVec3; 6] = [
+    IVec3::NEG_X,
+    IVec3::X,
+    IVec3::NEG_Y,
+    IVec3::Y,
+    IVec3::NEG_Z,
+    IVec3::Z,
+];
+
+/// Sides (bit `k` = [`SIDES`]`[k]`) each voxel draws square instead of
+/// rounded. A side's rounded edges show on the planes it shares with its
+/// neighbours across the other two axes, so those neighbours must round it
+/// alike or the surface cracks there. Per side direction, the voxels of a
+/// flat patch (connected across the other two axes in one layer) round it
+/// only when none of them has a voxel on that side.
+fn square_sides(merged: &Merged) -> HashMap<IVec3, u8> {
+    let mut out: HashMap<IVec3, u8> = HashMap::new();
+    let solid: Vec<IVec3> = merged
+        .colors
+        .iter()
+        .filter(|(_, v)| *v != EMPTY_VOXEL)
+        .map(|(p, _)| p)
+        .collect();
+    for (k, side) in SIDES.iter().enumerate() {
+        let axis = (0..3).find(|&a| side[a] != 0).unwrap_or(0);
+        let steps: Vec<IVec3> = SIDES.iter().copied().filter(|d| d[axis] == 0).collect();
+        let mut seen: HashSet<IVec3> = HashSet::new();
+        for &start in &solid {
+            if !seen.insert(start) {
+                continue;
+            }
+            // Flood the patch, noting whether any voxel is covered on `side`.
+            let mut patch = vec![start];
+            let mut stack = vec![start];
+            let mut covered = false;
+            while let Some(p) = stack.pop() {
+                covered |= merged.solid(p + *side);
+                for d in &steps {
+                    let q = p + *d;
+                    if merged.solid(q) && seen.insert(q) {
+                        patch.push(q);
+                        stack.push(q);
+                    }
+                }
+            }
+            if covered {
+                for p in patch {
+                    *out.entry(p).or_default() |= 1 << k;
+                }
+            }
+        }
+    }
+    out
+}
+
 fn build(
     layers: &[(&VoxelVolume, u8)],
     palette: &Palette,
@@ -343,14 +401,12 @@ fn build(
     let full = s >= 0.999;
     let q = opts.quality;
     let r = opts.radius() * s;
-    let dirs = [
-        IVec3::NEG_X,
-        IVec3::X,
-        IVec3::NEG_Y,
-        IVec3::Y,
-        IVec3::NEG_Z,
-        IVec3::Z,
-    ];
+    let joins = full && matches!(opts.shape, VoxelShape::Cube | VoxelShape::Brick);
+    let square = if joins {
+        square_sides(&merged)
+    } else {
+        HashMap::new()
+    };
     for (p, v) in merged.colors.iter() {
         if v == EMPTY_VOXEL {
             continue;
@@ -360,22 +416,15 @@ fn build(
         let center = p.as_vec3() + Vec3::splat(0.5);
         match opts.shape {
             VoxelShape::Cube | VoxelShape::Brick | VoxelShape::Rounded => {
-                let joins = full && opts.shape != VoxelShape::Rounded;
-                let neighbour = dirs.map(|d| joins && merged.solid(p + d));
+                let neighbour = SIDES.map(|d| joins && merged.solid(p + d));
+                let bits = square.get(&p).copied().unwrap_or(0);
+                let sharp: [bool; 6] = std::array::from_fn(|k| bits & (1 << k) != 0);
                 let r = if opts.shape == VoxelShape::Cube {
                     opts.bevel.clamp(0.0, 0.5) * s
                 } else {
                     r
                 };
-                rounded_box(
-                    &mut b,
-                    center,
-                    h,
-                    r,
-                    q.bevel_segments(),
-                    neighbour,
-                    neighbour,
-                );
+                rounded_box(&mut b, center, h, r, q.bevel_segments(), sharp, neighbour);
                 if opts.shape == VoxelShape::Brick && opts.studs && !merged.solid(p + IVec3::Y) {
                     let top = center.y + h;
                     cylinder(
@@ -385,7 +434,8 @@ fn build(
                         top,
                         top + STUD_HEIGHT * s,
                         q.round_segments(),
-                        false,
+                        // Capped below too, so every stud is a closed shell (STL).
+                        true,
                     );
                 }
             }
@@ -433,7 +483,8 @@ mod tests {
         v
     }
 
-    /// Every edge (by rounded positions) is used by exactly two triangles.
+    /// Every edge (by rounded positions) is used by an even number of
+    /// triangles: no cracks.
     fn is_closed(mesh: &Mesh) -> bool {
         let key = |p: Vec3| (p * 1e4).round().as_ivec3();
         let mut edges: HashMap<(IVec3, IVec3), i32> = HashMap::new();
@@ -451,7 +502,8 @@ mod tests {
                 *edges.entry(k).or_default() += 1;
             }
         }
-        !edges.is_empty() && edges.values().all(|&n| n == 2)
+        // Bricks touching only along an edge share it four times: closed.
+        !edges.is_empty() && edges.values().all(|&n| n % 2 == 0)
     }
 
     fn studs(mesh: &Mesh) -> usize {
@@ -504,6 +556,36 @@ mod tests {
         plain.studs = false;
         let mesh = shape_mesh(&[(&v, 0)], &Palette::default(), &plain);
         assert!(is_closed(&mesh));
+    }
+
+    #[test]
+    fn stepped_bricks_form_a_closed_surface() {
+        // Steps, an overhang and a lone column: neighbours whose sides are
+        // covered differently must still meet without cracks.
+        let v = volume(&[
+            IVec3::new(1, 0, 1),
+            IVec3::new(2, 0, 1),
+            IVec3::new(3, 0, 1),
+            IVec3::new(2, 1, 1),
+            IVec3::new(2, 0, 2),
+            IVec3::new(3, 1, 2),
+            IVec3::new(3, 0, 2),
+            IVec3::new(5, 0, 5),
+            IVec3::new(5, 1, 5),
+        ]);
+        for (shape, studs) in [
+            (VoxelShape::Brick, false),
+            (VoxelShape::Brick, true),
+            (VoxelShape::Cube, false),
+        ] {
+            let opts = ShapeMeshOptions {
+                studs,
+                bevel: 0.1,
+                ..ShapeMeshOptions::new(shape)
+            };
+            let mesh = shape_mesh(&[(&v, 0)], &Palette::default(), &opts);
+            assert!(is_closed(&mesh), "{shape:?} cracks between bricks");
+        }
     }
 
     #[test]

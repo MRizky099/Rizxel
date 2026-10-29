@@ -182,7 +182,7 @@ impl Outputs {
         let needs_pt = o.kind == OutputKind::Photo
             || (o.kind == OutputKind::Turntable && o.turntable_path_traced);
         if needs_pt && !state.render_view.path_tracing {
-            return Err("This GPU backend has no compute shaders: only Image output works".into());
+            return Err("The path tracer needs Vulkan, DX12 or Metal with compute shaders: only Image output works here".into());
         }
         match o.kind {
             OutputKind::Image => self.image(device, queue, doc, &state.camera, ao).map(Some),

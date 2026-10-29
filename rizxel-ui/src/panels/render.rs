@@ -806,7 +806,7 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
                 .add_enabled(!blocked, button)
                 .on_hover_text(tip)
                 .on_disabled_hover_text(
-                    "This GPU backend has no compute shaders: only Image output works",
+                    "The path tracer needs Vulkan, DX12 or Metal with compute shaders: only Image output works here",
                 )
                 .clicked()
             {
