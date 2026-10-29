@@ -457,6 +457,14 @@ fn view_rotation(camera: &OrbitCamera) -> Mat3 {
     Mat3::from_mat4(unit.view_matrix(Vec3::ZERO))
 }
 
+/// `Alt` is held with the Alt + mouse camera controls and no tool drag is
+/// in progress: the mouse moves the camera instead of the tools.
+fn alt_navigation(ui: &Ui, state: &AppState, tools: &ToolInput) -> bool {
+    state.settings.viewport.camera_controls == rizxel_app::CameraControls::AltMouse
+        && ui.input(|i| i.modifiers.alt)
+        && !tools.is_dragging()
+}
+
 /// World-space min/max of the model bounds, centered on the origin in XZ.
 fn bounds_box(bounds: BoundSize) -> (Vec3, Vec3) {
     rizxel_app::world_bounds(bounds)
@@ -478,10 +486,18 @@ pub fn show(
     meshes.retain_open(&state.documents);
 
     // --- Camera input ------------------------------------------------------
-    // Right drag: orbit. Middle drag: pan. Wheel: zoom. Left is reserved for tools.
-    if response.dragged_by(egui::PointerButton::Secondary) {
+    // Right drag: orbit. Middle drag: pan. Wheel: zoom. Left is reserved for
+    // tools, except with the Alt + mouse controls (*Settings ▸ Viewport*):
+    // Alt + left orbits, Alt + right zooms, and the tools get no input.
+    let alt_nav = alt_navigation(ui, state, tools);
+    let alt_orbit = alt_nav && response.dragged_by(egui::PointerButton::Primary);
+    if response.dragged_by(egui::PointerButton::Secondary) && !alt_nav || alt_orbit {
         let d = response.drag_delta();
         state.camera.orbit(-d.x * ORBIT_SPEED, d.y * ORBIT_SPEED);
+    }
+    if alt_nav && response.dragged_by(egui::PointerButton::Secondary) {
+        let d = response.drag_delta();
+        state.camera.zoom((d.y * 4.0 * ZOOM_SPEED).exp());
     }
     if response.dragged_by(egui::PointerButton::Middle) {
         let d = response.drag_delta() / rect.height().max(1.0);
@@ -531,6 +547,8 @@ pub fn show(
     let render_mode = state.view_mode == ViewMode::Render;
     let preview = if render_mode {
         render_pick(ui, &response, &proj, bmin, &blocked, state);
+        tool_input::Preview::default()
+    } else if alt_nav {
         tool_input::Preview::default()
     } else {
         tools.update(
@@ -995,7 +1013,13 @@ fn scene_frame(
             look.transparent = false;
             (look, bg)
         }
-        _ => (RenderLook::default(), theme::WORKSPACE),
+        _ => {
+            let bg = state.settings.viewport.background;
+            let bg = bg.map_or(theme::WORKSPACE, |[r, g, b]| {
+                egui::Color32::from_rgb(r, g, b)
+            });
+            (RenderLook::default(), bg)
+        }
     };
     let bold = state.doc().is_some_and(|d| d.plane.slice);
     let bound_color = if bold {

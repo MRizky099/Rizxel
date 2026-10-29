@@ -345,6 +345,11 @@ fn is_voxel(hit: &RayHit) -> bool {
 const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 
 impl ToolInput {
+    /// A tool drag is in progress.
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     /// Runs the active tool for this frame and returns its overlays.
     pub fn update(&mut self, f: &Frame, state: &mut AppState) -> Preview {
         let mut preview = Preview::default();
@@ -450,12 +455,13 @@ impl ToolInput {
         };
         let mut hit = pick(state);
 
-        // Space: Slice Mode on at the hovered voxel (or the last slice), or
-        // off again. Works with every tool and keeps it.
+        // Space (keymap): Slice Mode on at the hovered voxel (or the last
+        // slice), or off again. Works with every tool and keeps it.
         let space = self.drag.is_none()
             && !f.ui.ctx().egui_wants_keyboard_input()
-            && f.ui
-                .input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space));
+            && f.ui.input_mut(|i| {
+                crate::keys::consume(i, &state.settings.keymap, rizxel_app::ActionId::SliceMode)
+            });
         if space {
             state.toggle_slice(hit.filter(is_voxel).as_ref());
             // The pickable region changed.
@@ -1514,17 +1520,17 @@ fn has_open_box(state: &AppState) -> bool {
     state.doc().is_some_and(|d| d.box_select().is_some())
 }
 
-/// `Esc` deselects and `Delete`/`Backspace` deletes the selected voxels of
-/// the active layer (outside a drag).
+/// `Esc` deselects and `Delete`/`Backspace` (keymap) deletes the selected
+/// voxels of the active layer (outside a drag).
 fn selection_keys(f: &Frame, state: &mut AppState) {
     if state.selected_voxels() == 0 {
         return;
     }
+    let keymap = &state.settings.keymap;
     let (esc, del) = f.ui.input_mut(|i| {
         (
             i.consume_key(Modifiers::NONE, Key::Escape),
-            i.consume_key(Modifiers::NONE, Key::Delete)
-                || i.consume_key(Modifiers::NONE, Key::Backspace),
+            crate::keys::consume(i, keymap, rizxel_app::ActionId::Delete),
         )
     });
     if del {

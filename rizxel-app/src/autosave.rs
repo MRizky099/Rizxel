@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::Document;
 use crate::paths::AppPaths;
 
-/// Autosave a dirty document after this long...
+/// By default, autosave a dirty document after this long...
 pub const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(120);
 /// ...or after this many committed edits, whichever comes first.
 pub const AUTOSAVE_EDITS: u64 = 50;
@@ -135,9 +135,21 @@ pub struct Autosave {
     /// file they came from is overwritten, then deleted on save or close.
     keys: HashMap<u64, String>,
     writes: Vec<(u64, JoinHandle<Result<(), String>>)>,
+    /// Time between autosaves (*Settings*): `None` for
+    /// [`AUTOSAVE_INTERVAL`], `Some(None)` when autosave is off.
+    interval: Option<Option<Duration>>,
 }
 
 impl Autosave {
+    /// Sets the time between autosaves; `None` turns autosave off.
+    pub fn set_interval(&mut self, interval: Option<Duration>) {
+        self.interval = Some(interval);
+    }
+
+    fn interval(&self) -> Option<Duration> {
+        self.interval.unwrap_or(Some(AUTOSAVE_INTERVAL))
+    }
+
     pub fn key(&mut self, doc: u64) -> String {
         self.keys
             .entry(doc)
@@ -151,8 +163,11 @@ impl Autosave {
 
     /// Documents due for an autosave at `now`: dirty, not mid-edit, changed
     /// since their last autosave, and past [`AUTOSAVE_INTERVAL`] or
-    /// [`AUTOSAVE_EDITS`] since then.
+    /// [`AUTOSAVE_EDITS`] since then. Nothing while autosave is off.
     pub fn due(&mut self, now: Instant, docs: &[Document]) -> Vec<u64> {
+        let Some(interval) = self.interval() else {
+            return Vec::new();
+        };
         self.marks
             .retain(|id, _| docs.iter().any(|d| d.id() == *id));
         let mut due = Vec::new();
@@ -171,7 +186,7 @@ impl Autosave {
             if d.is_editing() || mark.written == Some(d.revision()) {
                 continue;
             }
-            let elapsed = now.saturating_duration_since(mark.at) >= AUTOSAVE_INTERVAL;
+            let elapsed = now.saturating_duration_since(mark.at) >= interval;
             let edits = d.edit_count().saturating_sub(mark.edits) >= AUTOSAVE_EDITS;
             if elapsed || edits {
                 due.push(d.id());

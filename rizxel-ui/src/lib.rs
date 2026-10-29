@@ -6,6 +6,7 @@ pub mod actions;
 pub mod app;
 pub mod dock;
 pub mod icons;
+pub mod keys;
 pub mod output;
 pub mod panels;
 pub mod render;

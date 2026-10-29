@@ -50,4 +50,54 @@ impl AppPaths {
     pub fn render_presets_file(&self) -> PathBuf {
         self.root.join("render_presets.json")
     }
+
+    /// User preferences (*Settings*).
+    pub fn settings_file(&self) -> PathBuf {
+        self.root.join("settings.json")
+    }
+
+    /// Dock layouts and window state.
+    pub fn layout_file(&self) -> PathBuf {
+        self.root.join("layout.json")
+    }
+
+    /// Start screen thumbnails of recent files.
+    pub fn thumbnails_dir(&self) -> PathBuf {
+        self.root.join("thumbnails")
+    }
+
+    /// Thumbnail of the project at `project` (named by a hash of its
+    /// absolute path, compared case-insensitively on Windows).
+    pub fn thumbnail_file(&self, project: &Path) -> PathBuf {
+        let path = std::path::absolute(project).unwrap_or_else(|_| project.to_path_buf());
+        let mut key = path.to_string_lossy().into_owned();
+        if cfg!(windows) {
+            key = key.to_lowercase();
+        }
+        // FNV-1a: stable across runs and Rust versions (unlike `DefaultHasher`).
+        let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        self.thumbnails_dir().join(format!("{hash:016x}.png"))
+    }
+
+    /// The single-instance lock (port and token of the running window).
+    pub fn instance_file(&self) -> PathBuf {
+        self.root.join("instance.lock")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumbnail_names_are_stable_per_path() {
+        let p = AppPaths::with_root("/data");
+        let a = p.thumbnail_file(Path::new("/m/castle.rzxl"));
+        assert_eq!(a, p.thumbnail_file(Path::new("/m/castle.rzxl")));
+        assert_ne!(a, p.thumbnail_file(Path::new("/m/tower.rzxl")));
+        assert!(a.starts_with(p.thumbnails_dir()));
+        assert_eq!(a.extension().unwrap(), "png");
+    }
 }

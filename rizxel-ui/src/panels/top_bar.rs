@@ -5,7 +5,8 @@
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
 use egui_phosphor::regular as icon;
 use rizxel_app::{
-    AppState, CloseAction, CloseChoice, CloseStep, CoreOp, FileFormat, SliceStep, ViewMode,
+    ActionId, AppState, CloseAction, CloseChoice, CloseStep, CoreOp, FileFormat, SliceStep,
+    ViewMode,
 };
 use rizxel_engine::tools::BooleanOp;
 
@@ -13,6 +14,8 @@ use super::{options, UiState};
 use crate::dock::{self, Workspace};
 use crate::widgets::{icon_button, icon_label, IconStyle};
 use crate::{actions, theme};
+
+use ActionId as A;
 
 const CONTROL_WIDTH: f32 = 46.0;
 /// Shown in *Help ▸ About Rizxel*.
@@ -199,22 +202,22 @@ fn menu_style(ui: &mut Ui) {
 fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
     ui.menu_button("File", |ui| {
         ui.set_min_width(220.0);
-        if menu_item(ui, icon::FILE_PLUS, "New", "Ctrl+N", true) {
+        if menu_item(ui, icon::FILE_PLUS, "New", &sc(state, A::New), true) {
             actions::new_document(state);
         }
-        if menu_item(ui, icon::FOLDER_OPEN, "Open...", "Ctrl+O", true) {
+        if menu_item(ui, icon::FOLDER_OPEN, "Open...", &sc(state, A::Open), true) {
             actions::open(state);
         }
         recent_menu(ui, state);
         ui.separator();
-        if menu_item(ui, icon::FLOPPY_DISK, "Save", "Ctrl+S", true) {
+        if menu_item(ui, icon::FLOPPY_DISK, "Save", &sc(state, A::Save), true) {
             actions::save(state);
         }
         if menu_item(
             ui,
             icon::FLOPPY_DISK_BACK,
             "Save As...",
-            "Ctrl+Shift+S",
+            &sc(state, A::SaveAs),
             true,
         ) {
             actions::save_as(state);
@@ -304,6 +307,10 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
             );
         });
         ui.separator();
+        if menu_item(ui, icon::GEAR, "Settings...", &sc(state, A::Settings), true) {
+            ui_state.open_settings(state);
+        }
+        ui.separator();
         // Goes through the app's close request, which asks about
         // unsaved documents first.
         if menu_item(ui, icon::SIGN_OUT, "Exit", "Alt+F4", true) {
@@ -319,7 +326,13 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
     ui.menu_button("View", |ui| {
         ui.set_min_width(220.0);
 
-        if menu_item(ui, icon::CUBE_FOCUS, "Zen Mode", "Ctrl+Shift+F", true) {
+        if menu_item(
+            ui,
+            icon::CUBE_FOCUS,
+            "Zen Mode",
+            &sc(state, A::ZenMode),
+            true,
+        ) {
             ui_state.zen_mode = !ui_state.zen_mode;
         }
         slice_menu(ui, state);
@@ -366,7 +379,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
             ui,
             check_glyph(refs.1),
             "Reference Images",
-            "Alt+R",
+            &sc(state, A::References),
             refs.0 > 0,
         ) {
             state.toggle_all_references();
@@ -389,7 +402,13 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
 fn camera_items(ui: &mut Ui, state: &mut AppState) {
     let has_doc = state.doc().is_some();
     let ortho = state.camera.is_ortho();
-    if menu_item(ui, check_glyph(ortho), "Orthographic", "Numpad 5", true) {
+    if menu_item(
+        ui,
+        check_glyph(ortho),
+        "Orthographic",
+        &sc(state, A::Projection),
+        true,
+    ) {
         state.camera.toggle_projection();
     }
     if menu_item(
@@ -402,13 +421,25 @@ fn camera_items(ui: &mut Ui, state: &mut AppState) {
         state.view.auto_ortho = !state.view.auto_ortho;
     }
     ui.separator();
-    if menu_item(ui, icon::FRAME_CORNERS, "Frame Selection", ".", has_doc) {
+    if menu_item(
+        ui,
+        icon::FRAME_CORNERS,
+        "Frame Selection",
+        &sc(state, A::FrameSelection),
+        has_doc,
+    ) {
         state.frame_selection();
     }
-    if menu_item(ui, icon::BOUNDING_BOX, "Frame Work Area", "Home", has_doc) {
+    if menu_item(
+        ui,
+        icon::BOUNDING_BOX,
+        "Frame Work Area",
+        &sc(state, A::FrameWorkArea),
+        has_doc,
+    ) {
         state.frame_work_area();
     }
-    if menu_item(ui, icon::HOUSE, "Home View", "Shift+Home", true) {
+    if menu_item(ui, icon::HOUSE, "Home View", &sc(state, A::HomeView), true) {
         state.camera.reset();
     }
 }
@@ -418,19 +449,29 @@ fn camera_items(ui: &mut Ui, state: &mut AppState) {
 fn show_menu(ui: &mut Ui, state: &mut AppState) {
     ui.menu_button(icon_label(ui, icon::EYE, "Show", None), |ui| {
         ui.set_min_width(200.0);
+        let keys = [A::FloorGrid, A::VoxelGrid, A::ModelBounds].map(|a| sc(state, a));
         let view = &mut state.view;
-        for (on, label, shortcut) in [
-            (&mut view.floor_grid, "Floor Grid", "G"),
-            (&mut view.voxel_grid, "Voxel Grid", "Shift+G"),
-            (&mut view.model_bounds, "Model Bounds", "Shift+B"),
-        ] {
+        for ((on, label), shortcut) in [
+            (&mut view.floor_grid, "Floor Grid"),
+            (&mut view.voxel_grid, "Voxel Grid"),
+            (&mut view.model_bounds, "Model Bounds"),
+        ]
+        .into_iter()
+        .zip(&keys)
+        {
             if menu_item(ui, check_glyph(*on), label, shortcut, true) {
                 *on = !*on;
             }
         }
     });
     let ghosts = state.view.ghosts;
-    if menu_item(ui, check_glyph(ghosts), "Ghosts", "Shift+H", true) {
+    if menu_item(
+        ui,
+        check_glyph(ghosts),
+        "Ghosts",
+        &sc(state, A::Ghosts),
+        true,
+    ) {
         state.view.ghosts = !ghosts;
     }
     // Per view mode: on in Render, off in Model by default.
@@ -443,7 +484,13 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
         state.view.toggle_ao(mode);
     }
     let render = mode == rizxel_app::ViewMode::Render;
-    if menu_item(ui, check_glyph(render), "Render Mode", "F5", true) {
+    if menu_item(
+        ui,
+        check_glyph(render),
+        "Render Mode",
+        &sc(state, A::RenderMode),
+        true,
+    ) {
         state.toggle_view_mode();
     }
 }
@@ -472,22 +519,40 @@ fn edit_menu(ui: &mut Ui, state: &mut AppState) {
         ui,
         icon::ARROW_COUNTER_CLOCKWISE,
         "Undo",
-        "Ctrl+Z",
+        &sc(state, A::Undo),
         can_undo,
     ) {
         state.undo();
     }
-    if menu_item(ui, icon::ARROW_CLOCKWISE, "Redo", "Ctrl+Y", can_redo) {
+    if menu_item(
+        ui,
+        icon::ARROW_CLOCKWISE,
+        "Redo",
+        &sc(state, A::Redo),
+        can_redo,
+    ) {
         state.redo();
     }
     ui.separator();
-    if menu_item(ui, icon::SCISSORS, "Cut", "Ctrl+X", has_voxels && editable) {
+    if menu_item(
+        ui,
+        icon::SCISSORS,
+        "Cut",
+        &sc(state, A::Cut),
+        has_voxels && editable,
+    ) {
         state.cut();
     }
-    if menu_item(ui, icon::COPY, "Copy", "Ctrl+C", has_voxels) {
+    if menu_item(ui, icon::COPY, "Copy", &sc(state, A::Copy), has_voxels) {
         state.copy();
     }
-    if menu_item(ui, icon::CLIPBOARD, "Paste", "Ctrl+V", clip && editable) {
+    if menu_item(
+        ui,
+        icon::CLIPBOARD,
+        "Paste",
+        &sc(state, A::Paste),
+        clip && editable,
+    ) {
         let at = state.cursor_voxel;
         state.paste(at);
     }
@@ -495,7 +560,7 @@ fn edit_menu(ui: &mut Ui, state: &mut AppState) {
         ui,
         icon::CLIPBOARD_TEXT,
         "Paste in Place",
-        "Ctrl+Alt+V",
+        &sc(state, A::PasteInPlace),
         clip && editable,
     ) {
         state.paste_in_place();
@@ -504,12 +569,18 @@ fn edit_menu(ui: &mut Ui, state: &mut AppState) {
         ui,
         icon::STACK_PLUS,
         "Paste to New Layer",
-        "Ctrl+Shift+V",
+        &sc(state, A::PasteToNewLayer),
         clip && has_doc,
     ) {
         state.paste_to_new_layer();
     }
-    if menu_item(ui, icon::TRASH, "Delete", "Delete", selected && editable) {
+    if menu_item(
+        ui,
+        icon::TRASH,
+        "Delete",
+        &sc(state, A::Delete),
+        selected && editable,
+    ) {
         state.delete_selected();
     }
     ui.separator();
@@ -534,13 +605,31 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
     ui.set_min_width(240.0);
     let has_voxels = state.active_layer_has_voxels();
     let selected = state.selected_voxels() > 0;
-    if menu_item(ui, icon::SELECTION_ALL, "Select All", "Ctrl+A", has_voxels) {
+    if menu_item(
+        ui,
+        icon::SELECTION_ALL,
+        "Select All",
+        &sc(state, A::SelectAll),
+        has_voxels,
+    ) {
         state.select_all();
     }
-    if menu_item(ui, icon::SELECTION_SLASH, "Deselect", "Ctrl+D", selected) {
+    if menu_item(
+        ui,
+        icon::SELECTION_SLASH,
+        "Deselect",
+        &sc(state, A::Deselect),
+        selected,
+    ) {
         state.deselect();
     }
-    if menu_item(ui, icon::SELECTION_INVERSE, "Invert", "Ctrl+I", has_voxels) {
+    if menu_item(
+        ui,
+        icon::SELECTION_INVERSE,
+        "Invert",
+        &sc(state, A::InvertSelection),
+        has_voxels,
+    ) {
         state.invert_selection();
     }
     ui.separator();
@@ -563,7 +652,7 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
         ui,
         icon::SCISSORS,
         "To New Layer (Cut)",
-        "Ctrl+Shift+J",
+        &sc(state, A::SelectionToLayerCut),
         selected,
     ) {
         state.selection_to_new_layer(true);
@@ -572,14 +661,20 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
         ui,
         icon::STACK_PLUS,
         "To New Layer (Copy)",
-        "Ctrl+J",
+        &sc(state, A::SelectionToLayer),
         selected,
     ) {
         state.selection_to_new_layer(false);
     }
     ui.separator();
     let mask = state.options.mask_selection;
-    if menu_item(ui, check_glyph(mask), "Mask Mode", "Shift+M", true) {
+    if menu_item(
+        ui,
+        check_glyph(mask),
+        "Mask Mode",
+        &sc(state, A::MaskMode),
+        true,
+    ) {
         state.toggle_mask_selection();
     }
 }
@@ -603,12 +698,18 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
         ui,
         icon::FOLDER_SIMPLE_PLUS,
         "Group Layer",
-        "Ctrl+G",
+        &sc(state, A::Group),
         has_doc,
     ) {
         state.group_active_layer();
     }
-    if menu_item(ui, icon::FOLDER_MINUS, "Ungroup", "Ctrl+Shift+G", in_group) {
+    if menu_item(
+        ui,
+        icon::FOLDER_MINUS,
+        "Ungroup",
+        &sc(state, A::Ungroup),
+        in_group,
+    ) {
         state.ungroup_active_layer();
     }
     ui.label(
@@ -744,7 +845,7 @@ fn transform_menus(ui: &mut Ui, state: &mut AppState) {
                 ui,
                 icon::ARROW_ARC_LEFT,
                 &format!("Counterclockwise (facing {facing})"),
-                "Ctrl+R",
+                &sc(state, A::RotateCcw),
                 true,
             ) {
                 state.rotate_facing(false);
@@ -753,7 +854,7 @@ fn transform_menus(ui: &mut Ui, state: &mut AppState) {
                 ui,
                 icon::ARROW_ARC_RIGHT,
                 &format!("Clockwise (facing {facing})"),
-                "Ctrl+Shift+R",
+                &sc(state, A::RotateCw),
                 true,
             ) {
                 state.rotate_facing(true);
@@ -793,7 +894,7 @@ fn transform_menus(ui: &mut Ui, state: &mut AppState) {
                 ui,
                 glyph,
                 &format!("Flip {name}"),
-                &format!("Ctrl+Alt+{name}"),
+                &sc(state, [A::FlipX, A::FlipY, A::FlipZ][axis]),
                 true,
             ) {
                 state.flip(axis);
@@ -875,12 +976,18 @@ fn slice_menu(ui: &mut Ui, state: &mut AppState) {
         } else {
             icon::SQUARE
         };
-        if menu_item(ui, glyph, "Slice Mode", "Space", has_doc) {
+        if menu_item(ui, glyph, "Slice Mode", &sc(state, A::SliceMode), has_doc) {
             state.toggle_slice(None);
         }
         let shown = state.doc().is_some_and(|d| d.plane.active());
         let glyph = if shown { icon::EYE } else { icon::EYE_SLASH };
-        if menu_item(ui, glyph, "Show Work Plane", "/", has_doc) {
+        if menu_item(
+            ui,
+            glyph,
+            "Show Work Plane",
+            &sc(state, A::WorkPlane),
+            has_doc,
+        ) {
             state.toggle_plane_visible();
         }
         ui.separator();
@@ -896,6 +1003,11 @@ fn slice_menu(ui: &mut Ui, state: &mut AppState) {
             }
         }
     });
+}
+
+/// Menu text of `action`'s shortcut (*Settings ▸ Keymap*).
+fn sc(state: &AppState, action: ActionId) -> String {
+    state.settings.keymap.label(action)
 }
 
 /// Menu entry with leading icon and trailing shortcut. Returns true on click.
@@ -1121,7 +1233,7 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
 }
 
 /// Help dialogs opened from the menu.
-pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut UiState) {
+pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut UiState) {
     if ui_state.show_about {
         egui::Window::new("About Rizxel")
             .open(&mut ui_state.show_about)
@@ -1170,26 +1282,31 @@ pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut U
                     .show(ui, |ui| {
                         egui::Grid::new("shortcuts")
                             .striped(true)
-                            .show(ui, shortcut_rows);
+                            .show(ui, |ui| shortcut_rows(ui, &state.settings.keymap));
                     });
             });
     }
 }
 
-/// Rows of the Keyboard Shortcuts window: commands, then the tool keys.
-fn shortcut_rows(ui: &mut Ui) {
+/// Rows of the Keyboard Shortcuts window: the keymap by group, then the
+/// mouse and the fixed keys.
+fn shortcut_rows(ui: &mut Ui, keymap: &rizxel_app::Keymap) {
+    let strong = |ui: &mut Ui, text: &str| {
+        ui.label(egui::RichText::new(text).color(theme::TEXT_STRONG));
+    };
+    for group in rizxel_app::ActionGroup::ALL {
+        ui.label(egui::RichText::new(group.label()).font(theme::semibold(12.0)));
+        ui.end_row();
+        for action in ActionId::all().into_iter().filter(|a| a.group() == group) {
+            let keys = keymap.labels(action);
+            strong(ui, if keys.is_empty() { "—" } else { &keys });
+            ui.label(action.label());
+            ui.end_row();
+        }
+    }
+    ui.label(egui::RichText::new("Mouse and fixed keys").font(theme::semibold(12.0)));
+    ui.end_row();
     for (keys, action) in [
-        ("Ctrl+N", "New project"),
-        ("Ctrl+O", "Open project"),
-        ("Ctrl+S", "Save"),
-        ("Ctrl+Shift+S", "Save as"),
-        ("Ctrl+Z", "Undo"),
-        ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
-        ("Ctrl+X", "Cut (selection or layer)"),
-        ("Ctrl+C", "Copy (selection or layer)"),
-        ("Ctrl+V", "Paste at the cursor"),
-        ("Ctrl+Alt+V", "Paste in place"),
-        ("Ctrl+Shift+V", "Paste to new layer"),
         ("Enter / click", "Place the paste"),
         (
             "Esc",
@@ -1201,46 +1318,14 @@ fn shortcut_rows(ui: &mut Ui) {
             "Right-click / double-click",
             "Finish a polyline (Line tool)",
         ),
-        ("Ctrl+A", "Select all"),
-        ("Ctrl+D", "Deselect"),
-        ("Ctrl+I", "Invert selection"),
-        ("Ctrl+J", "Selection to a new layer (copy)"),
-        ("Ctrl+Shift+J", "Selection to a new layer (cut)"),
-        ("Shift+M", "Mask Mode: protect the selection"),
-        ("Alt+R", "Show or hide all reference images"),
-        ("Ctrl+0 … 9", "Select favorite color 0–9"),
-        ("Ctrl+Shift+0 … 9", "Store the selected color as favorite"),
         ("Shift+click swatch", "Mark a color for Gradient and Remap"),
-        ("Delete", "Delete selected voxels"),
-        ("Ctrl+G", "Group the active layer"),
-        ("Ctrl+Shift+G", "Ungroup (the active group or its group)"),
-        ("Ctrl+R", "Rotate 90° counterclockwise (facing axis)"),
-        ("Ctrl+Shift+R", "Rotate 90° clockwise (facing axis)"),
-        ("Ctrl+Alt+X / Y / Z", "Flip X / Y / Z"),
-        ("Space", "Slice Mode on / off"),
-        ("/", "Show or hide the work plane"),
-        ("Ctrl+Shift+F", "Zen mode"),
-        ("Numpad 5 / 5", "Perspective / orthographic"),
-        (". / Numpad .", "Frame selection (or the model)"),
-        ("Home", "Frame work area (model bounds)"),
-        ("Shift+Home", "Home view (reset camera)"),
-        ("G", "Show or hide the floor grid"),
-        ("Shift+G", "Show or hide the voxel grid on the model"),
-        ("Shift+B", "Show or hide the model bounds"),
-        ("Shift+H", "Ghosts: other layers semi-transparent"),
-        ("F5", "Model / Render mode"),
         ("Right drag (viewport)", "Orbit camera"),
         ("Middle drag (viewport)", "Pan camera"),
         ("Middle double-click", "Reset camera"),
         ("Scroll (viewport)", "Zoom"),
     ] {
-        ui.label(egui::RichText::new(keys).color(theme::TEXT_STRONG));
+        strong(ui, keys);
         ui.label(action);
-        ui.end_row();
-    }
-    for tool in rizxel_engine::Tool::ALL {
-        ui.label(egui::RichText::new(tool.shortcut().to_string()).color(theme::TEXT_STRONG));
-        ui.label(format!("{} tool", tool.label()));
         ui.end_row();
     }
 }

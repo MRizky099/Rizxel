@@ -897,6 +897,11 @@ impl Document {
         self.history.can_undo()
     }
 
+    /// Undo steps kept for this document (*Settings ▸ General*).
+    pub fn set_undo_limit(&mut self, limit: usize) {
+        self.history.set_limit(limit);
+    }
+
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
     }

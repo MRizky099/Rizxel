@@ -282,7 +282,7 @@ fn slices(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialogs) {
     match action {
         Some(true) => {
             dialogs.slices = false;
-            if let Some(dir) = rfd::FileDialog::new()
+            if let Some(dir) = crate::actions::export_folder_dialog(state)
                 .set_title("Export Slices To")
                 .pick_folder()
             {

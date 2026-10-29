@@ -5,6 +5,7 @@ pub mod history;
 pub mod options;
 pub mod references;
 pub mod render;
+pub mod settings;
 pub mod sidebar;
 pub mod status;
 pub mod tabs;
@@ -36,4 +37,15 @@ pub struct UiState {
     pub dialogs: export::Dialogs,
     /// Render panel tabs, presets and the running output job.
     pub render: render::RenderUi,
+    /// The open *Settings* dialog.
+    pub settings: Option<settings::SettingsDialog>,
+}
+
+impl UiState {
+    /// Opens *Settings* on a copy of the current settings.
+    pub fn open_settings(&mut self, state: &rizxel_app::AppState) {
+        if self.settings.is_none() {
+            self.settings = Some(settings::SettingsDialog::new(&state.settings));
+        }
+    }
 }

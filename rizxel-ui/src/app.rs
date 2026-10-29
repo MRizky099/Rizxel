@@ -1,14 +1,14 @@
 //! eframe application: owns [`AppState`] and lays out all panels in the same
 //! order as the HTML prototype.
 
-use egui::{Frame, Key, KeyboardShortcut, Modifiers, Panel, ViewportCommand};
-use rizxel_app::AppState;
+use egui::{Frame, Key, Panel, ViewportCommand};
+use rizxel_app::{ActionId, AppState};
 
 use eframe::egui_wgpu::wgpu;
 
 use crate::render::ViewportRenderer;
 use crate::tool_input::ToolInput;
-use crate::{actions, dock, icons::Icons, panels, resize, theme, viewport};
+use crate::{actions, dock, icons::Icons, keys, panels, resize, theme, viewport};
 
 pub struct RizxelApp {
     state: AppState,
@@ -98,44 +98,17 @@ impl RizxelApp {
         self.state.clean_exit();
     }
 
-    /// Global keyboard shortcuts. Skipped while a text field has focus so
-    /// e.g. Ctrl+Z edits text instead of the document, and while a modal
-    /// prompt is open.
+    /// Global keyboard shortcuts, dispatched through the keymap
+    /// (*Settings ▸ Keymap*). Skipped while a text field has focus so e.g.
+    /// Ctrl+Z edits text instead of the document, and while a modal prompt
+    /// is open.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let modal = self.state.closing().is_some()
             || !self.ui.recovery.is_empty()
-            || self.ui.dialogs.is_open();
+            || self.ui.dialogs.is_open()
+            || self.ui.settings.is_some();
         if ctx.egui_wants_keyboard_input() || modal {
             return;
-        }
-        const CMD: Modifiers = Modifiers::COMMAND;
-        const CMD_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
-
-        // Consume longer combos first (Ctrl+Shift+S before Ctrl+S).
-        let pressed = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
-        // Transforms: `R` and `F` are tool keys, so they take Ctrl. Rotation
-        // turns about the axis the camera faces. Checked before Undo/Redo,
-        // since `Ctrl+Z` also matches `Ctrl+Alt+Z`.
-        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::R)) {
-            self.state.rotate_facing(true);
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::R)) {
-            self.state.rotate_facing(false);
-        }
-        const CMD_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
-        if pressed(KeyboardShortcut::new(CMD_ALT, Key::Y)) {
-            self.state.flip(1);
-        }
-        if pressed(KeyboardShortcut::new(CMD_ALT, Key::Z)) {
-            self.state.flip(2);
-        }
-        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::Z))
-            || pressed(KeyboardShortcut::new(CMD, Key::Y))
-        {
-            self.state.redo();
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::Z)) {
-            self.state.undo();
         }
         // Clipboard. Paste follows the cursor from the hovered voxel.
         match clipboard_command(ctx) {
@@ -157,106 +130,59 @@ impl RizxelApp {
             Some(ClipboardCommand::FlipX) => self.state.flip(0),
             None => {}
         }
-        // Selection.
-        if pressed(KeyboardShortcut::new(CMD, Key::A)) {
-            self.state.select_all();
+        let keymap = &self.state.settings.keymap;
+        let actions = ctx.input_mut(|i| keys::take_actions(i, keymap));
+        for action in actions {
+            run_action(&mut self.state, &mut self.ui, action);
         }
-        if pressed(KeyboardShortcut::new(CMD, Key::I)) {
-            self.state.invert_selection();
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::D)) {
-            self.state.deselect();
-        }
-        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::J)) {
-            self.state.selection_to_new_layer(true);
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::J)) {
-            self.state.selection_to_new_layer(false);
-        }
-        // Groups. Before the `G` view toggles, which plain patterns match.
-        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::G)) {
-            self.state.ungroup_active_layer();
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::G)) {
-            self.state.group_active_layer();
-        }
-        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::S)) {
-            actions::save_as(&mut self.state);
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::S)) {
-            actions::save(&mut self.state);
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::O)) {
-            actions::open(&mut self.state);
-        }
-        if pressed(KeyboardShortcut::new(CMD, Key::N)) {
-            actions::new_document(&mut self.state);
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::F5)) {
-            self.state.toggle_view_mode();
-        }
-        if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::F)) {
-            self.ui.zen_mode = !self.ui.zen_mode;
-        }
-        // `/`: show or hide the work plane (hiding it also ends Slice Mode).
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Slash)) {
-            self.state.toggle_plane_visible();
-        }
-        // Camera. egui reports the numpad digits and `.` as the main keys.
-        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Num5)) {
-            self.state.camera.toggle_projection();
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Period)) {
-            self.state.frame_selection();
-        }
-        // Shift+Home first: a plain `Home` pattern also matches it.
-        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::Home)) {
-            self.state.camera.reset();
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::Home)) {
-            self.state.frame_work_area();
-        }
-        // View toggles. Shifted keys first, and before the tool letters
-        // (`B` is the Brush), since plain patterns also match them.
-        let view = &mut self.state.view;
-        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::G)) {
-            view.voxel_grid = !view.voxel_grid;
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::G)) {
-            view.floor_grid = !view.floor_grid;
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::B)) {
-            view.model_bounds = !view.model_bounds;
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::H)) {
-            view.ghosts = !view.ghosts;
-        }
-        // Favorite colors: Ctrl+Shift+digit stores, Ctrl+digit recalls.
-        for (slot, key) in DIGITS.into_iter().enumerate() {
-            if pressed(KeyboardShortcut::new(CMD_SHIFT, key)) {
-                self.state.store_favorite(slot);
-            }
-            if pressed(KeyboardShortcut::new(CMD, key)) {
-                self.state.recall_favorite(slot);
-            }
-        }
-        // Before the tool letters: `M` is the Move tool, `R` a tool key.
-        if pressed(KeyboardShortcut::new(Modifiers::SHIFT, Key::M)) {
-            self.state.toggle_mask_selection();
-        }
-        if pressed(KeyboardShortcut::new(Modifiers::ALT, Key::R)) {
-            self.state.toggle_all_references();
-        }
-        // Tool shortcuts: plain letters (Ctrl/Shift/Alt combos are left to
-        // the commands above and to the tools' own modifiers).
-        for tool in rizxel_engine::Tool::ALL {
-            let Some(key) = Key::from_name(&tool.shortcut().to_string()) else {
-                continue;
-            };
-            if pressed(KeyboardShortcut::new(Modifiers::NONE, key)) {
-                self.state.tool = tool;
-            }
-        }
+    }
+}
+
+/// Runs a keyboard command (the clipboard and the viewport's own keys are
+/// handled where their input arrives).
+pub fn run_action(state: &mut AppState, ui: &mut panels::UiState, action: ActionId) {
+    use ActionId as A;
+    match action {
+        A::New => actions::new_document(state),
+        A::Open => actions::open(state),
+        A::Save => actions::save(state),
+        A::SaveAs => actions::save_as(state),
+        A::Settings => ui.open_settings(state),
+        A::Undo => state.undo(),
+        A::Redo => state.redo(),
+        A::Cut | A::Copy | A::Paste | A::PasteInPlace | A::PasteToNewLayer => {}
+        A::Delete => state.delete_selected(),
+        A::SelectAll => state.select_all(),
+        A::Deselect => state.deselect(),
+        A::InvertSelection => state.invert_selection(),
+        A::SelectionToLayer => state.selection_to_new_layer(false),
+        A::SelectionToLayerCut => state.selection_to_new_layer(true),
+        A::MaskMode => state.toggle_mask_selection(),
+        A::Group => state.group_active_layer(),
+        A::Ungroup => state.ungroup_active_layer(),
+        // Rotation turns about the axis the camera faces.
+        A::RotateCcw => state.rotate_facing(false),
+        A::RotateCw => state.rotate_facing(true),
+        A::FlipX => state.flip(0),
+        A::FlipY => state.flip(1),
+        A::FlipZ => state.flip(2),
+        A::SliceMode => state.toggle_slice(None),
+        // Hiding the work plane also ends Slice Mode.
+        A::WorkPlane => state.toggle_plane_visible(),
+        A::ZenMode => ui.zen_mode = !ui.zen_mode,
+        A::RenderMode => state.toggle_view_mode(),
+        A::Projection => state.camera.toggle_projection(),
+        A::FrameSelection => state.frame_selection(),
+        A::FrameWorkArea => state.frame_work_area(),
+        A::HomeView => state.camera.reset(),
+        A::FloorGrid => state.view.floor_grid = !state.view.floor_grid,
+        A::VoxelGrid => state.view.voxel_grid = !state.view.voxel_grid,
+        A::ModelBounds => state.view.model_bounds = !state.view.model_bounds,
+        A::Ghosts => state.view.ghosts = !state.view.ghosts,
+        A::References => state.toggle_all_references(),
+        A::Tool(tool) => state.tool = tool,
+        A::RecallFavorite(slot) => state.recall_favorite(slot.into()),
+        A::StoreFavorite(slot) => state.store_favorite(slot.into()),
     }
 }
 
@@ -292,6 +218,11 @@ impl eframe::App for RizxelApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let scale = self.state.settings.general.ui_scale;
+        if (ctx.zoom_factor() - scale).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(scale);
+        }
+        panels::settings::capture_keys(&ctx, self.ui.settings.as_mut());
         self.handle_close(&ctx);
         panels::top_bar::recovery_dialog(&ctx, &mut self.state, &mut self.ui);
         self.state.autosave_tick(std::time::Instant::now());
@@ -332,9 +263,9 @@ impl eframe::App for RizxelApp {
             }
             let error = dock.show(ui, |ui, panel| match panel {
                 dock::Panel::Viewport => viewport_panel(ui, state, target_format, meshes, tools),
-                dock::Panel::Tools => {
-                    scroll_panel(ui, panel, |ui| panels::tools::show(ui, state, icons))
-                }
+                dock::Panel::Tools => scroll_panel(ui, panel, |ui| {
+                    panels::tools::show(ui, state, ui_state, icons)
+                }),
                 dock::Panel::Options => scroll_panel(ui, panel, |ui| {
                     egui::Frame::NONE
                         .inner_margin(egui::Margin::symmetric(8, 0))
@@ -372,26 +303,13 @@ impl eframe::App for RizxelApp {
 
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);
+        panels::settings::show(&ctx, state, &mut ui_state.settings);
         panels::export::show(&ctx, state, &mut ui_state.dialogs);
         panels::render::shaped_dialog(&ctx, state, &mut ui_state.render);
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }
 }
-
-/// Keys of favorite colors `0`–`9`.
-const DIGITS: [Key; 10] = [
-    Key::Num0,
-    Key::Num1,
-    Key::Num2,
-    Key::Num3,
-    Key::Num4,
-    Key::Num5,
-    Key::Num6,
-    Key::Num7,
-    Key::Num8,
-    Key::Num9,
-];
 
 enum ClipboardCommand {
     Copy,
