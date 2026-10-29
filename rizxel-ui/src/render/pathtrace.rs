@@ -1876,6 +1876,55 @@ mod tests {
         assert!(misses.iter().all(|&s| s < 200), "a miss took {worst} steps");
     }
 
+    #[test]
+    fn gpu_studs_sit_where_shape_mesh_puts_them() {
+        let Some((device, queue)) = gpu() else { return };
+        let mut v = VoxelVolume::new(BoundSize::new(4, 4, 4));
+        v.set(IVec3::new(1, 0, 1), 5);
+        let scene = Arc::new(PtScene::build([4, 4, 4], [(&v, 0)], None));
+        let mut pt = PathTracer::new(&device);
+        pt.set_scene(&device, &queue, &scene);
+        pt.set_tables(&queue, &PtTables::new(&Document::new("t")));
+        let s = shape_settings(rizxel_math::VoxelShape::Brick);
+        let params = params_for(&s, [4, 4, 4], Vec3::ZERO, test_camera(), [1, 1]);
+        // The CPU stud: shape_mesh's cylinder above the brick.
+        let mesh = rizxel_engine::shape_mesh(
+            &[(&v, 0)],
+            &rizxel_math::Palette::default(),
+            &rizxel_engine::ShapeMeshOptions::new(rizxel_math::VoxelShape::Brick),
+        );
+        let stud_top = mesh.positions.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+        let stud_radius = mesh
+            .positions
+            .iter()
+            .filter(|p| p.y > 1.01)
+            .map(|p| (Vec3::new(p.x, 0.0, p.z) - Vec3::new(1.5, 0.0, 1.5)).length())
+            .fold(0.0, f32::max);
+        let rays = [
+            // Down through the stud's center: its top.
+            (Vec3::new(1.5, 3.9, 1.5), Vec3::NEG_Y),
+            // Down beside the stud: the brick's top.
+            (Vec3::new(1.5 + stud_radius + 0.08, 3.9, 1.5), Vec3::NEG_Y),
+            // Sideways at stud height: the stud's side.
+            (Vec3::new(0.01, 1.1, 1.5), Vec3::X),
+        ];
+        let hits = pt.raycast(&device, &queue, &params, &rays);
+        let y = |i: usize| rays[i].0.y - hits[i].0[3];
+        assert!(
+            (y(0) - stud_top).abs() < 1e-3,
+            "stud top {} vs {stud_top}",
+            y(0)
+        );
+        assert_eq!(hits[0].1[3], 1.0, "flagged as a stud");
+        assert!((y(1) - 1.0).abs() < 1e-3, "brick top {}", y(1));
+        let x = rays[2].0.x + hits[2].0[3];
+        assert!(
+            (x - (1.5 - stud_radius)).abs() < 0.02,
+            "stud side at x {x} vs {}",
+            1.5 - stud_radius
+        );
+    }
+
     /// Mean brightness of the middle of a small path-traced image of one
     /// floating white voxel, seen from `pitch`.
     fn white_voxel_brightness(device: &wgpu::Device, queue: &wgpu::Queue, pitch: f32) -> f32 {

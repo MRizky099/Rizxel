@@ -28,7 +28,7 @@ use glam::{IVec3, Mat3, Mat4, Vec3};
 use rizxel_app::{
     AppState, Document, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget,
 };
-use rizxel_math::{BoundSize, ImageData, VoxelBox};
+use rizxel_math::{BoundSize, ImageData, VoxelBox, VoxelShape};
 
 use crate::render::pathtrace::{document_params, PtInputs, PtScene, PtTables, SkyCache};
 use crate::render::{
@@ -87,6 +87,9 @@ pub struct MeshCache {
     images: HashMap<usize, (ImageData, Arc<RefPixels>)>,
     /// Render mode's path-traced preview.
     pub preview: PtPreview,
+    /// Render mode's raster shape mesh: built from these mesh keys and
+    /// shape options.
+    shaped: Option<(ShapedKey, Option<Arc<GpuMesh>>)>,
 }
 
 impl MeshCache {
@@ -566,6 +569,23 @@ pub fn show(
         frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
         frame.voxels = Some(meshes.opaque.clone());
     }
+    // Render mode's raster view draws the voxel shape (view only).
+    let raster_view = !(state.render_view.path_traced && state.render_view.path_tracing);
+    if let (true, Some(doc), Some(m)) = (
+        render_mode && raster_view,
+        state.documents.get(state.active_doc),
+        &voxels,
+    ) {
+        if doc.data.render.display.shape != VoxelShape::Cube || doc.data.render.display.cell < 1.0 {
+            match meshes.shaped(doc, m, bmin) {
+                Some(shaped) => {
+                    frame.voxels = Some(shaped);
+                    frame.translucent.clear();
+                }
+                None => state.tool_feedback = Some(SHAPE_FALLBACK.to_owned()),
+            }
+        }
+    }
     if let Some(doc) = state.doc().filter(|_| !render_mode) {
         frame.references = meshes.references(doc, bmin);
     }
@@ -642,6 +662,69 @@ pub fn show(
     paint_axis_gizmo(&painter, &state.camera, axis_center);
 }
 
+/// Voxels above which the raster view keeps cubes for the voxel shape (the
+/// path tracer draws any number).
+pub const MAX_SHAPED_VOXELS: usize = 1_000_000;
+const SHAPE_FALLBACK: &str = "Shape preview: too many voxels, the raster view shows cubes";
+
+/// What a raster shape mesh was built from: document, mesh keys, options.
+type ShapedKey = (u64, Vec<(u64, u64)>, rizxel_app::ShapeMeshOptions);
+
+fn shape_options(
+    doc: &Document,
+    quality: rizxel_app::ShapeQuality,
+) -> rizxel_app::ShapeMeshOptions {
+    let d = &doc.data.render.display;
+    rizxel_app::ShapeMeshOptions {
+        shape: d.shape,
+        cell: d.cell,
+        bevel: d.bevel,
+        quality,
+        studs: true,
+    }
+}
+
+/// The *Image* output's shape mesh (`None` for full-size cubes or too many
+/// voxels).
+fn shaped_output(doc: &Document, bmin: Vec3) -> Option<Arc<GpuMesh>> {
+    let d = &doc.data.render.display;
+    if (d.shape == VoxelShape::Cube && d.cell >= 1.0)
+        || doc.visible_voxel_count() > MAX_SHAPED_VOXELS
+    {
+        return None;
+    }
+    let mesh = doc.shaped_mesh(&shape_options(doc, rizxel_app::ShapeQuality::Medium));
+    let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(Arc::new(GpuMesh::from_mesh((doc.id(), key), &mesh, bmin)))
+}
+
+impl MeshCache {
+    /// Low-quality shape mesh of `doc` for the raster view, rebuilt only
+    /// when the meshes or the shape options change. `None` above
+    /// [`MAX_SHAPED_VOXELS`].
+    fn shaped(&mut self, doc: &Document, meshes: &DocMeshes, bmin: Vec3) -> Option<Arc<GpuMesh>> {
+        let opts = shape_options(doc, rizxel_app::ShapeQuality::Low);
+        let mut keys = vec![meshes.opaque.key];
+        keys.extend(meshes.transparent.iter().map(|t| t.mesh.key));
+        let key = (doc.id(), keys, opts);
+        if let Some((k, mesh)) = &self.shaped {
+            if *k == key {
+                return mesh.clone();
+            }
+        }
+        let mesh = (doc.visible_voxel_count() <= MAX_SHAPED_VOXELS).then(|| {
+            self.next_build += 1;
+            Arc::new(GpuMesh::from_mesh(
+                (doc.id(), self.next_build),
+                &doc.shaped_mesh(&opts),
+                bmin,
+            ))
+        });
+        self.shaped = Some((key, mesh.clone()));
+        mesh
+    }
+}
+
 /// Source of upload keys for output meshes (never shared with the viewport's).
 static OUTPUT_BUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
 
@@ -701,8 +784,15 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
         axis_z: theme::AXIS_Z,
         lines: Vec::new(),
         fills: Vec::new(),
-        voxels: Some(gpu(&view.opaque)),
-        translucent: sorted_back_to_front(&proj, &transparent),
+        voxels: Some(match shaped_output(doc, bmin) {
+            Some(mesh) => mesh,
+            None => gpu(&view.opaque),
+        }),
+        translucent: if doc.data.render.display.shape == VoxelShape::Cube {
+            sorted_back_to_front(&proj, &transparent)
+        } else {
+            Vec::new()
+        },
         materials: doc.data.materials.clone(),
         references: Vec::new(),
         look,

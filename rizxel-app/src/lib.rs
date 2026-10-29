@@ -17,6 +17,7 @@ pub mod recent;
 pub mod render_job;
 pub mod render_presets;
 pub mod selection;
+pub mod shaped;
 pub mod transform_session;
 
 use std::path::Path;
@@ -53,12 +54,17 @@ pub use recent::RecentFiles;
 pub use render_presets::{UserPreset, UserPresets};
 pub use rizxel_engine::Mesh;
 pub use rizxel_engine::VoxelizeOptions;
+pub use rizxel_engine::{ShapeMeshOptions, ShapeQuality};
 pub use rizxel_io::hdr::{read_hdr, HdrImage};
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::png_io::RgbaImage;
+pub use rizxel_io::shaped_export::{
+    MAX_TRIANGLES as MAX_SHAPED_TRIANGLES, WARN_TRIANGLES as WARN_SHAPED_TRIANGLES,
+};
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use rizxel_io::{GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
+pub use shaped::{ShapedExport, SHAPED_EXTENSIONS};
 pub use transform_session::{pivot_point, TransformSession};
 
 /// File extension of mesh exports.

@@ -284,6 +284,23 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     .size(10.0)
                     .color(theme::TEXT_DIM),
             );
+            ui.separator();
+            if menu_item(
+                ui,
+                icon::CUBE,
+                "Shaped Mesh...",
+                "",
+                state.can_export_shaped(),
+            ) {
+                ui_state.render.export_shape = true;
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Render mode: the model as bricks, spheres, ... (OBJ, STL, GLB)",
+                )
+                .size(10.0)
+                .color(theme::TEXT_DIM),
+            );
         });
         ui.separator();
         // Goes through the app's close request, which asks about

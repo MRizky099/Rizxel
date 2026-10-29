@@ -39,6 +39,7 @@ pub mod mesh_export;
 pub mod mesh_import;
 pub mod png_io;
 mod qubicle;
+pub mod shaped_export;
 pub mod slices;
 #[cfg(test)]
 mod test_samples;

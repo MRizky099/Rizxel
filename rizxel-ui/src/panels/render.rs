@@ -7,7 +7,10 @@
 
 use egui::{Color32, RichText, Ui};
 use egui_phosphor::regular as icon;
-use rizxel_app::{AppState, Document, LayerProps, Projection};
+use rizxel_app::{
+    AppState, Document, LayerProps, Pivot, Projection, ShapeMeshOptions, ShapeQuality,
+    ShapedExport, MAX_SHAPED_TRIANGLES, SHAPED_EXTENSIONS, WARN_SHAPED_TRIANGLES,
+};
 use rizxel_math::render::{
     BackgroundMode, Denoise, OutputKind, PixelFilter, SkyMode, ToneMap, MAX_BOUNCES,
     MAX_OUTPUT_SIDE, MAX_SAMPLES, MAX_TURNTABLE_FRAMES,
@@ -72,6 +75,18 @@ pub struct RenderUi {
     pub job: Option<JobStatus>,
     /// Message of the last finished job.
     pub last_result: Option<String>,
+    /// Open *Export Shaped Mesh* dialog.
+    shaped: Option<ShapedDialog>,
+}
+
+/// State of the *Export Shaped Mesh* dialog.
+#[derive(Debug)]
+struct ShapedDialog {
+    export: ShapedExport,
+    /// Index into [`SHAPED_EXTENSIONS`].
+    format: usize,
+    /// Triangle estimate and what it was computed for.
+    estimate: Option<((u64, u64, ShapeMeshOptions), usize)>,
 }
 
 /// Height of the footer with the Render button.
@@ -823,4 +838,140 @@ fn output_size(state: &AppState) -> String {
         let o = &d.data.render.output;
         format!("{}×{}", o.width, o.height)
     })
+}
+
+// ------------------------------------------------------------ shaped export
+
+/// *Export Shaped Mesh*: quality, studs, cell size, scale and pivot, with
+/// the triangle count before writing (warned above 2M, refused above 20M).
+pub fn shaped_dialog(ctx: &egui::Context, state: &mut AppState, render: &mut RenderUi) {
+    if std::mem::take(&mut render.export_shape) && state.can_export_shaped() {
+        render.shaped = Some(ShapedDialog {
+            export: ShapedExport::default(),
+            format: 0,
+            estimate: None,
+        });
+    }
+    let Some(dialog) = &mut render.shaped else {
+        return;
+    };
+    if !state.can_export_shaped() {
+        render.shaped = None;
+        return;
+    }
+    let Some(doc) = state.doc() else { return };
+    let mut open = true;
+    let mut export_to = None;
+    egui::Window::new("Export Shaped Mesh")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let e = &mut dialog.export;
+            ui.label(label(&format!(
+                "Shape: {} (Display tab)",
+                doc.data.render.display.shape.label()
+            )));
+            egui::Grid::new("shaped_export")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    combo(
+                        ui,
+                        "Quality",
+                        &mut e.quality,
+                        &ShapeQuality::ALL,
+                        ShapeQuality::label,
+                    );
+                    check(ui, "Studs", &mut e.studs);
+                    check(ui, "Cell size from settings", &mut e.use_cell);
+                    ui.label(label("Scale (units per voxel)"));
+                    ui.add(
+                        egui::DragValue::new(&mut e.scale)
+                            .range(0.001..=1000.0)
+                            .speed(0.01),
+                    );
+                    ui.end_row();
+                    combo(ui, "Pivot", &mut e.pivot, &Pivot::ALL, Pivot::label);
+                    ui.label(label("Format"));
+                    egui::ComboBox::from_id_salt("shaped_format")
+                        .selected_text(SHAPED_EXTENSIONS[dialog.format].to_uppercase())
+                        .show_ui(ui, |ui| {
+                            for (i, ext) in SHAPED_EXTENSIONS.iter().enumerate() {
+                                ui.selectable_value(&mut dialog.format, i, ext.to_uppercase());
+                            }
+                        });
+                    ui.end_row();
+                });
+            let opts = doc.shape_options(e);
+            let key = (doc.id(), doc.revision(), opts);
+            let triangles = match &dialog.estimate {
+                Some((k, n)) if *k == key => *n,
+                _ => {
+                    let n = doc.shaped_triangles(&opts);
+                    dialog.estimate = Some((key, n));
+                    n
+                }
+            };
+            let too_many = triangles > MAX_SHAPED_TRIANGLES;
+            let color = if too_many {
+                theme::DANGER
+            } else if triangles > WARN_SHAPED_TRIANGLES {
+                theme::BOUND
+            } else {
+                theme::TEXT_DIM
+            };
+            ui.label(
+                RichText::new(format!("{triangles} triangles"))
+                    .size(12.0)
+                    .color(color),
+            );
+            if too_many {
+                note(
+                    ui,
+                    "Over 20 million triangles: lower the quality or turn studs off.",
+                );
+            } else if triangles > WARN_SHAPED_TRIANGLES {
+                note(
+                    ui,
+                    "Over 2 million triangles: other programs may load it slowly.",
+                );
+            }
+            note(
+                ui,
+                "OBJ and GLB are Y up, STL is Z up (like the plain exports).",
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!too_many && triangles > 0, egui::Button::new("Export…"))
+                    .clicked()
+                {
+                    export_to = Some(dialog.format);
+                }
+            });
+        });
+    if let Some(format) = export_to {
+        let ext = SHAPED_EXTENSIONS[format];
+        let name = format!(
+            "{}_{}",
+            doc.name,
+            doc.data.render.display.shape.label().to_lowercase()
+        );
+        let export = dialog.export;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(ext.to_uppercase(), &[ext])
+            .set_file_name(format!("{name}.{ext}"))
+            .save_file()
+        {
+            let message = match state.export_shaped(&path, &export) {
+                Ok(m) => m,
+                Err(e) => format!("Shaped export failed: {e}"),
+            };
+            state.status_message = Some(message.clone());
+            render.last_result = Some(message);
+            open = false;
+        }
+    }
+    if !open {
+        render.shaped = None;
+    }
 }

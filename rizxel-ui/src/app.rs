@@ -373,6 +373,7 @@ impl eframe::App for RizxelApp {
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);
         panels::export::show(&ctx, state, &mut ui_state.dialogs);
+        panels::render::shaped_dialog(&ctx, state, &mut ui_state.render);
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }

@@ -101,3 +101,110 @@ fn make_unique_changes_only_the_active_layer() {
     assert_eq!(doc.make_material_unique(0), Some(0));
     assert_eq!(doc.data.layers[0].props.material, Some(0));
 }
+
+// ------------------------------------------------------------ shaped export
+
+use rizxel_app::{AppState, FileFormat, ShapedExport, ViewMode, VoxelChange};
+use rizxel_math::IVec3;
+
+/// State with one document holding a 2×1×1 row of voxels.
+fn two_bricks() -> AppState {
+    let mut state = AppState::default();
+    let doc = state.doc_mut().unwrap();
+    let changes: Vec<_> = [IVec3::new(3, 0, 3), IVec3::new(4, 0, 3)]
+        .into_iter()
+        .map(|pos| VoxelChange {
+            pos,
+            old: 0,
+            new: 12,
+        })
+        .collect();
+    doc.begin_edit();
+    doc.edit_voxels(0, &changes);
+    doc.commit_edit();
+    state
+}
+
+fn temp(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rizxel_shaped_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
+#[test]
+fn shaped_export_only_in_render_mode_with_a_shape() {
+    let mut state = two_bricks();
+    let path = temp("refused.obj");
+    assert!(!state.can_export_shaped(), "Model mode");
+    assert!(state
+        .export_shaped(&path, &ShapedExport::default())
+        .is_err());
+    state.set_view_mode(ViewMode::Render);
+    assert!(!state.can_export_shaped(), "the cube shape");
+    let doc = state.doc_mut().unwrap();
+    let mut s = doc.data.render.clone();
+    s.display.shape = VoxelShape::Brick;
+    doc.set_render(s, false);
+    assert!(state.can_export_shaped());
+}
+
+#[test]
+fn shaped_obj_matches_the_estimate_and_has_two_studs() {
+    let mut state = two_bricks();
+    state.set_view_mode(ViewMode::Render);
+    let doc = state.doc_mut().unwrap();
+    let mut s = doc.data.render.clone();
+    s.display.shape = VoxelShape::Brick;
+    doc.set_render(s, false);
+    let export = ShapedExport::default();
+    let doc = state.doc().unwrap();
+    let estimate = doc.shaped_triangles(&doc.shape_options(&export));
+    let mesh = doc.shaped_mesh(&doc.shape_options(&export));
+    let path = temp("bricks.obj");
+    state.export_shaped(&path, &export).unwrap();
+    let obj = std::fs::read_to_string(&path).unwrap();
+    let faces = obj.lines().filter(|l| l.starts_with("f ")).count();
+    assert_eq!(faces, estimate);
+    assert!(path.with_extension("mtl").exists());
+    // Stud tops: upward normals above the brick tops (y = 1).
+    let stud_tops: std::collections::BTreeSet<i32> = mesh
+        .positions
+        .iter()
+        .zip(&mesh.normals)
+        .filter(|(p, n)| n.y > 0.99 && p.y > 1.1)
+        .map(|(p, _)| p.x.floor() as i32)
+        .collect();
+    assert_eq!(stud_tops.len(), 2);
+    for ext in ["stl", "glb"] {
+        let p = temp(&format!("bricks.{ext}"));
+        state.export_shaped(&p, &export).unwrap();
+        assert!(std::fs::metadata(&p).unwrap().len() > 100);
+    }
+    assert!(state.export_shaped(&temp("bricks.vox"), &export).is_err());
+}
+
+#[test]
+fn model_exports_ignore_the_render_shape() {
+    let mut state = two_bricks();
+    let plain = temp("plain.obj");
+    state.export_active(&plain, FileFormat::Obj).unwrap();
+    let doc = state.doc_mut().unwrap();
+    let mut s = doc.data.render.clone();
+    s.display.shape = VoxelShape::Sphere;
+    s.display.cell = 0.7;
+    doc.set_render(s, false);
+    let shaped = temp("plain_again.obj");
+    state.export_active(&shaped, FileFormat::Obj).unwrap();
+    let a = std::fs::read(&plain).unwrap();
+    let b = std::fs::read(&shaped).unwrap();
+    // Only the mtllib line names the file.
+    let strip = |bytes: Vec<u8>| -> String {
+        String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with("mtllib"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip(a), strip(b));
+}
