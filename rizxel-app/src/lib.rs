@@ -14,7 +14,10 @@ pub mod interchange;
 pub mod layer_tree;
 pub mod paths;
 pub mod recent;
+pub mod render_job;
+pub mod render_presets;
 pub mod selection;
+pub mod shaped;
 pub mod transform_session;
 
 use std::path::Path;
@@ -48,13 +51,20 @@ pub use interchange::{
 pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
+pub use render_presets::{UserPreset, UserPresets};
 pub use rizxel_engine::Mesh;
 pub use rizxel_engine::VoxelizeOptions;
+pub use rizxel_engine::{ShapeMeshOptions, ShapeQuality};
+pub use rizxel_io::hdr::{read_hdr, HdrImage};
 /// Re-exported so the UI layer does not need to depend on `rizxel-io` directly.
 pub use rizxel_io::png_io::RgbaImage;
+pub use rizxel_io::shaped_export::{
+    MAX_TRIANGLES as MAX_SHAPED_TRIANGLES, WARN_TRIANGLES as WARN_SHAPED_TRIANGLES,
+};
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use rizxel_io::{GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
+pub use shaped::{ShapedExport, SHAPED_EXTENSIONS};
 pub use transform_session::{pivot_point, TransformSession};
 
 /// File extension of mesh exports.
@@ -243,9 +253,15 @@ impl OrbitCamera {
 
     /// View -> clip matrix using the wgpu/DirectX convention (depth in `[0, 1]`).
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
+        self.projection_matrix_fov(aspect, Self::FOV_Y)
+    }
+
+    /// [`OrbitCamera::projection_matrix`] with a perspective field of view
+    /// of `fov_y` radians (Render mode's lens). Orthographic ignores it.
+    pub fn projection_matrix_fov(&self, aspect: f32, fov_y: f32) -> Mat4 {
         let aspect = aspect.max(0.01);
         match self.projection {
-            Projection::Perspective => perspective(Self::FOV_Y, aspect, Self::NEAR, Self::FAR),
+            Projection::Perspective => perspective(fov_y, aspect, Self::NEAR, Self::FAR),
             Projection::Orthographic => {
                 let half_h = self.view_height() * 0.5;
                 let half_w = half_h * aspect;
@@ -257,6 +273,11 @@ impl OrbitCamera {
     /// Combined world -> clip matrix for a viewport of the given aspect ratio.
     pub fn view_proj(&self, target: Vec3, aspect: f32) -> Mat4 {
         self.projection_matrix(aspect) * self.view_matrix(target)
+    }
+
+    /// [`OrbitCamera::view_proj`] with a field of view of `fov_y` radians.
+    pub fn view_proj_fov(&self, target: Vec3, aspect: f32, fov_y: f32) -> Mat4 {
+        self.projection_matrix_fov(aspect, fov_y) * self.view_matrix(target)
     }
 
     /// Aims at the world-space box `min..max` and zooms so it fills the
@@ -585,7 +606,39 @@ pub struct AppState {
     /// Favorite colors `0`–`9`: palette indices, shared by every document
     /// and kept in the app settings (not in files).
     pub favorites: Favorites,
+    /// Render-mode preview state (render bar). View state: not saved.
+    pub render_view: RenderView,
+    /// Render setting presets saved by the user (app data folder).
+    pub render_presets: UserPresets,
     untitled_counter: u32,
+}
+
+/// Render-mode preview state shown in the render bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderView {
+    /// The path-traced preview stops adding samples.
+    pub paused: bool,
+    /// Preview with the path tracer (else the raster renderer).
+    pub path_traced: bool,
+    /// Path-traced preview resolution relative to the viewport.
+    pub scale: f32,
+    /// Samples the preview has accumulated (set by the viewport).
+    pub samples_done: u32,
+    /// The GPU can run the path tracer (compute shaders with storage
+    /// buffers; not the GL backend). Set by the UI at startup.
+    pub path_tracing: bool,
+}
+
+impl Default for RenderView {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            path_traced: true,
+            scale: 1.0,
+            samples_done: 0,
+            path_tracing: true,
+        }
+    }
 }
 
 /// Settings of the structure operations, shown in their menus.
@@ -631,6 +684,8 @@ impl Default for AppState {
             clipboard: None,
             structure: StructureOptions::default(),
             favorites: Favorites::default(),
+            render_view: RenderView::default(),
+            render_presets: UserPresets::default(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -645,6 +700,7 @@ impl AppState {
         if let Some(p) = &paths {
             state.recent = RecentFiles::load(&p.recent_file());
             state.favorites = Favorites::load(&p.favorites_file());
+            state.render_presets = UserPresets::load(&p.render_presets_file());
         }
         state.paths = paths;
         state
@@ -1356,6 +1412,65 @@ impl AppState {
         });
     }
 
+    // ------------------------------------------------------------ render
+
+    /// Switches between Model and Render mode, ending any tool drag.
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        if mode != self.view_mode {
+            self.cancel_active_edit();
+            self.view_mode = mode;
+        }
+    }
+
+    /// Model ↔ Render (`F5`).
+    pub fn toggle_view_mode(&mut self) {
+        self.set_view_mode(match self.view_mode {
+            ViewMode::Model => ViewMode::Render,
+            ViewMode::Render => ViewMode::Model,
+        });
+    }
+
+    /// Saves the active document's render settings as user preset `name`.
+    pub fn save_render_preset(&mut self, name: &str) -> bool {
+        let Some(settings) = self.doc().map(|d| d.data.render.clone()) else {
+            return false;
+        };
+        if !self.render_presets.store(name, &settings) {
+            return false;
+        }
+        self.write_render_presets();
+        self.status_message = Some(format!("Saved render preset \"{}\"", name.trim()));
+        true
+    }
+
+    pub fn delete_render_preset(&mut self, name: &str) {
+        if self.render_presets.remove(name) {
+            self.write_render_presets();
+        }
+    }
+
+    /// Applies user preset `name` to the active document (one undo step).
+    pub fn apply_user_render_preset(&mut self, name: &str) -> bool {
+        let presets = self.render_presets.clone();
+        let Some(doc) = self.doc_mut() else {
+            return false;
+        };
+        let Some(settings) = presets.apply(name, &doc.data.render) else {
+            return false;
+        };
+        doc.labeled(format!("Render Preset \"{name}\""), |d| {
+            d.set_render(settings, false)
+        })
+    }
+
+    fn write_render_presets(&self) {
+        if let Some(p) = &self.paths {
+            if let Err(e) = self.render_presets.save(&p.render_presets_file()) {
+                log::warn!("render presets: {e}");
+            }
+        }
+    }
+
     // ------------------------------------------------------------ palette
 
     /// Stores the selected palette index as favorite `slot` (`Ctrl+Shift+digit`).
@@ -1528,12 +1643,24 @@ impl AppState {
             bmin + hi.as_vec3(),
             self.viewport_aspect,
         );
+        // Render mode looks through the render settings' lens: keep the box
+        // filling the view at its field of view.
+        if self.view_mode == ViewMode::Render && !self.camera.is_ortho() {
+            if let Some(fov) = self.doc().map(|d| d.data.render.camera.fov.to_radians()) {
+                let k = (OrbitCamera::FOV_Y * 0.5).tan() / (fov * 0.5).tan().max(1e-3);
+                self.camera.distance = (self.camera.distance * k)
+                    .clamp(OrbitCamera::MIN_DISTANCE, OrbitCamera::MAX_DISTANCE);
+            }
+        }
     }
 
     // ------------------------------------------------------------ status
 
     /// Hint text for the status bar.
     pub fn hint(&self) -> String {
+        if self.view_mode == ViewMode::Render {
+            return "Render mode: right drag orbits, click sets the focus, Alt+click picks a layer. F5: Model mode".to_owned();
+        }
         format!(
             "{} Tool: {}",
             self.tool.label(),

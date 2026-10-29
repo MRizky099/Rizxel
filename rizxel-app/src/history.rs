@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use glam::IVec3;
-use rizxel_math::{BoundSize, Material, Palette, ReferenceImage, Rgba8, Voxel};
+use rizxel_math::{BoundSize, Material, Palette, ReferenceImage, RenderSettings, Rgba8, Voxel};
 
 use crate::document::{DocData, Layer, LayerProps};
 use crate::selection::Selection;
@@ -87,6 +87,11 @@ pub enum Edit {
         old: Vec<Material>,
         new: Vec<Material>,
     },
+    /// Replaces the render settings (Render panel).
+    SetRender {
+        old: Box<RenderSettings>,
+        new: Box<RenderSettings>,
+    },
     /// Replaces the whole palette (e.g. importing one from an MTL file).
     SetPalette {
         old: Palette,
@@ -158,6 +163,7 @@ impl Edit {
                 }
             }
             Edit::SetMaterials { new, .. } => data.materials = new.clone(),
+            Edit::SetRender { new, .. } => data.render = (**new).clone(),
             Edit::SetPalette { new, .. } => data.palette = new.clone(),
             Edit::SetSelection { layer, new, .. } => {
                 if let Some(l) = data.layers.get_mut(*layer) {
@@ -213,6 +219,7 @@ impl Edit {
                 }
             }
             Edit::SetMaterials { old, .. } => data.materials = old.clone(),
+            Edit::SetRender { old, .. } => data.render = (**old).clone(),
             Edit::SetPalette { old, .. } => data.palette = old.clone(),
             Edit::SetSelection { layer, old, .. } => {
                 if let Some(l) = data.layers.get_mut(*layer) {
@@ -259,6 +266,7 @@ impl Edit {
             Edit::Voxels { changes, .. } => format!("Edit {} Voxels", changes.len()),
             Edit::SetLayerProps { .. } => "Layer Properties".to_owned(),
             Edit::SetMaterials { .. } => "Materials".to_owned(),
+            Edit::SetRender { .. } => "Render Settings".to_owned(),
             Edit::SetPalette { .. } => "Palette".to_owned(),
             Edit::SetSelection { new, .. } if new.is_empty() => "Deselect".to_owned(),
             Edit::SetSelection { new, .. } => format!("Select {} Voxels", new.len()),
@@ -316,6 +324,11 @@ impl Edit {
             (Edit::SetMaterials { new, .. }, Edit::SetMaterials { new: n, .. })
                 if new.len() == n.len() =>
             {
+                *new = n.clone();
+                true
+            }
+            // Render panel slider drags.
+            (Edit::SetRender { new, .. }, Edit::SetRender { new: n, .. }) => {
                 *new = n.clone();
                 true
             }
@@ -639,6 +652,7 @@ mod tests {
             bounds: BoundSize::default(),
             materials: Vec::new(),
             references: Vec::new(),
+            render: RenderSettings::default(),
         }
     }
 

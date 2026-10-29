@@ -1,0 +1,16 @@
+//! Rizxel L4 frontend: the egui/wgpu editor. The `rizxel` binary runs
+//! [`app::RizxelApp`]; the library target also lets the `render` and
+//! `render_bench` examples drive the renderers without a window.
+
+pub mod actions;
+pub mod app;
+pub mod dock;
+pub mod icons;
+pub mod output;
+pub mod panels;
+pub mod render;
+pub mod resize;
+pub mod theme;
+pub mod tool_input;
+pub mod viewport;
+pub mod widgets;

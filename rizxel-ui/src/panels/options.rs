@@ -6,7 +6,7 @@
 //! in the title bar.
 
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
-use rizxel_app::AppState;
+use rizxel_app::{AppState, ViewMode};
 use rizxel_engine::{
     BrushShape, Connectivity, DragMode, ExtrudeOptions, FillMode, LineMode, MaskMode, NamesMode,
     SelectionMode, Symmetry, Tool, VoxelOp, WorkPlane,
@@ -24,15 +24,116 @@ pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let height = ui.max_rect().height();
     hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        common_controls(ui, state, icons);
-        vertical_divider(ui, DIVIDER_HEIGHT);
-        tool_parameters(ui, state);
+        if state.view_mode == ViewMode::Render {
+            render_bar(ui, state, icons);
+        } else {
+            common_controls(ui, state, icons);
+            vertical_divider(ui, DIVIDER_HEIGHT);
+            tool_parameters(ui, state);
+        }
         ui.add_space(8.0);
     });
 }
 
-/// Undo/Redo, Add/Subtract/Join and Paint.
-fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
+/// Render mode's bar: undo/redo, pause, raster or path-traced preview, its
+/// resolution, sample progress, output size and projection.
+fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
+    undo_redo(ui, state, icons);
+    vertical_divider(ui, DIVIDER_HEIGHT);
+
+    let view = &mut state.render_view;
+    let traced = view.path_traced && view.path_tracing;
+    let (glyph, tip) = if view.paused {
+        (egui_phosphor::regular::PLAY, "Resume the preview")
+    } else {
+        (egui_phosphor::regular::PAUSE, "Pause the preview")
+    };
+    if ui
+        .add_enabled(
+            traced,
+            egui::Button::new(egui::RichText::new(glyph).font(theme::icon(16.0)))
+                .min_size(egui::vec2(28.0, 26.0)),
+        )
+        .on_hover_text(tip)
+        .clicked()
+    {
+        view.paused = !view.paused;
+    }
+    let mut mode = traced;
+    ui.add_enabled_ui(view.path_tracing, |ui| {
+        segmented(
+            ui,
+            "preview_renderer",
+            &mut mode,
+            &[(false, "Raster"), (true, "Path traced")],
+        );
+    })
+    .response
+    .on_disabled_hover_text(
+        "The path tracer needs Vulkan or Metal with compute shaders: raster preview only",
+    );
+    if view.path_tracing {
+        view.path_traced = mode;
+    }
+    let scale_text = |s: f32| match s {
+        s if s >= 1.0 => "Full",
+        s if s >= 0.5 => "1/2",
+        _ => "1/4",
+    };
+    egui::ComboBox::from_id_salt("preview_scale")
+        .selected_text(scale_text(view.scale))
+        .width(56.0)
+        .show_ui(ui, |ui| {
+            for s in [1.0, 0.5, 0.25] {
+                ui.selectable_value(&mut view.scale, s, scale_text(s));
+            }
+        })
+        .response
+        .on_hover_text("Path-traced preview resolution");
+
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    let target = state.doc().map_or(1, |d| d.data.render.sample.samples);
+    let done = state.render_view.samples_done.min(target);
+    let text = if traced {
+        format!("{done} / {target}")
+    } else {
+        "Raster".to_owned()
+    };
+    let fraction = if traced {
+        done as f32 / target.max(1) as f32
+    } else {
+        1.0
+    };
+    ui.add(
+        egui::ProgressBar::new(fraction)
+            .text(egui::RichText::new(text).size(11.0))
+            .desired_width(120.0),
+    )
+    .on_hover_text("Samples per pixel of the preview");
+
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    if let Some(doc) = state.doc_mut() {
+        let mut s = doc.data.render.clone();
+        ui.label(
+            egui::RichText::new("Output")
+                .size(12.0)
+                .color(theme::TEXT_DIM),
+        );
+        let max = rizxel_math::render::MAX_OUTPUT_SIDE;
+        ui.add(egui::DragValue::new(&mut s.output.width).range(1..=max));
+        ui.label("×");
+        ui.add(egui::DragValue::new(&mut s.output.height).range(1..=max));
+        if s != doc.data.render {
+            let merge = ui.input(|i| i.pointer.any_down());
+            doc.set_render(s, merge);
+        }
+    }
+
+    vertical_divider(ui, DIVIDER_HEIGHT);
+    super::render::projection_buttons(ui, state);
+}
+
+fn undo_redo(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let (can_undo, can_redo) = (state.can_undo(), state.can_redo());
     if icon_texture_button(ui, icons.get(Icon::Undo), false, can_undo, None)
         .on_hover_text("Undo (Ctrl+Z)")
@@ -46,6 +147,11 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     {
         state.redo();
     }
+}
+
+/// Undo/Redo, Add/Subtract/Join and Paint.
+fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
+    undo_redo(ui, state, icons);
 
     vertical_divider(ui, DIVIDER_HEIGHT);
 
@@ -820,10 +926,39 @@ fn toggle_group(ui: &mut Ui, id: &str, labels: &[&str], values: &mut [bool]) {
     }
 }
 
+/// [`segmented`] whose segments share the available width (Render panel tabs).
+pub(crate) fn segmented_fill<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut T,
+    items: &[(T, &str)],
+) {
+    let labels: Vec<&str> = items.iter().map(|(_, l)| *l).collect();
+    let active: Vec<bool> = items.iter().map(|(item, _)| item == value).collect();
+    let width = ui.available_width() / items.len().max(1) as f32;
+    if let Some(i) = segments_sized(ui, id, &labels, &active, Some(width)) {
+        *value = items[i].0;
+    }
+}
+
 /// Paints a row of joined segments and returns the clicked index.
 fn segments(ui: &mut Ui, id: &str, labels: &[&str], active: &[bool]) -> Option<usize> {
+    segments_sized(ui, id, labels, active, None)
+}
+
+/// [`segments`] with every segment `width` wide (`None`: sized to its label).
+fn segments_sized(
+    ui: &mut Ui,
+    id: &str,
+    labels: &[&str],
+    active: &[bool],
+    width: Option<f32>,
+) -> Option<usize> {
     let items: Vec<((), &str)> = labels.iter().map(|l| ((), *l)).collect();
-    let (widths, height) = segment_widths(ui, &items);
+    let (mut widths, height) = segment_widths(ui, &items);
+    if let Some(w) = width {
+        widths.iter_mut().for_each(|x| *x = w);
+    }
     let (outer, _) =
         ui.allocate_exact_size(egui::vec2(widths.iter().sum(), height), Sense::hover());
     let painter = ui.painter().clone();

@@ -868,7 +868,9 @@ mod tests {
 
     #[test]
     fn every_format_roundtrips_through_disk() {
-        let d = dir();
+        // Own subfolder: the other tests write in theirs at the same time.
+        let d = dir().join("roundtrip");
+        std::fs::create_dir_all(&d).unwrap();
         let src = sample_state();
         let visible = src.doc().unwrap().visible_voxel_count();
         for format in [

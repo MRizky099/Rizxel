@@ -17,6 +17,8 @@
 //!   plus a `generator` string.
 //! - **4**: reference images ([`ProjectFile::references`]), each with its
 //!   PNG or JPEG file embedded in base64.
+//! - **5**: render settings ([`ProjectFile::render`]) and the material fields
+//!   `specular`, `ior`, `transmission`, `clearcoat` and `emission_strength`.
 //!
 //! Compatibility rules:
 //! - Every field added after version 1 has a serde default, so older bodies
@@ -36,15 +38,15 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use rizxel_math::{
-    BoundSize, IVec3, LayerId, LayerKind, Material, Palette, ReferenceImage, Voxel, VoxelVolume,
-    EMPTY_VOXEL,
+    BoundSize, IVec3, LayerId, LayerKind, Material, Palette, ReferenceImage, RenderSettings, Voxel,
+    VoxelVolume, EMPTY_VOXEL,
 };
 
 use crate::image_io::{check_reference, MAX_REFERENCE_SIDE};
 use serde::{Deserialize, Serialize};
 
 pub const RZXL_MAGIC: [u8; 4] = *b"RZXL";
-pub const RZXL_VERSION: u32 = 4;
+pub const RZXL_VERSION: u32 = 5;
 pub const RZXL_EXTENSION: &str = "rzxl";
 
 /// Hard limit on the decompressed body to guard against corrupt/malicious files.
@@ -166,6 +168,10 @@ pub struct ProjectFile {
     /// Reference images, in draw order (version 4+).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<ReferenceImage>,
+    /// Render-mode settings (version 5+; defaults for older files).
+    /// Clamped into range on load.
+    #[serde(default)]
+    pub render: RenderSettings,
 }
 
 /// `generator` value written by this build.
@@ -471,6 +477,7 @@ pub fn read_rzxl<R: Read>(mut r: R) -> Result<ProjectFile, RzxlError> {
 
     let mut project: ProjectFile = serde_json::from_slice(&json)?;
     project.migrate(version);
+    project.render.sanitize();
     project.validate()?;
     for (i, r) in project.references.iter().enumerate() {
         check_reference(&r.image)
@@ -551,6 +558,7 @@ mod tests {
             active_layer: 1,
             bounds: BoundSize::new(16, 32, 64),
             references: Vec::new(),
+            render: RenderSettings::default(),
         }
     }
 
@@ -624,10 +632,68 @@ mod tests {
     fn version_4_references_roundtrip() {
         let mut buf = Vec::new();
         write_rzxl(&mut buf, &with_references()).unwrap();
-        assert_eq!(&buf[4..8], &4u32.to_le_bytes());
+        assert_eq!(&buf[4..8], &RZXL_VERSION.to_le_bytes());
         let back = read_rzxl(buf.as_slice()).unwrap();
         assert_eq!(back, with_references());
         assert_eq!(back.references[1].image.bytes(), png(3, 5).as_slice());
+    }
+
+    #[test]
+    fn version_5_render_settings_roundtrip() {
+        let mut p = rich_sample();
+        p.render = rizxel_math::RenderPreset::StudioWhite.apply(&p.render);
+        p.render.display.shape = rizxel_math::VoxelShape::Brick;
+        p.materials[0].apply_preset(rizxel_math::MaterialPreset::Glass);
+        p.materials[1].clearcoat = 0.7;
+        let mut buf = Vec::new();
+        write_rzxl(&mut buf, &p).unwrap();
+        assert_eq!(&buf[4..8], &5u32.to_le_bytes());
+        assert_eq!(read_rzxl(buf.as_slice()).unwrap(), p);
+    }
+
+    #[test]
+    fn version_4_body_gets_default_render_settings() {
+        let p = with_references();
+        let mut json: serde_json::Value = serde_json::to_value(&p).unwrap();
+        json.as_object_mut().unwrap().remove("render");
+        for m in json["materials"].as_array_mut().unwrap() {
+            let m = m.as_object_mut().unwrap();
+            for key in [
+                "specular",
+                "ior",
+                "transmission",
+                "clearcoat",
+                "emission_strength",
+            ] {
+                m.remove(key);
+            }
+        }
+        let back = read_rzxl(raw_file(4, &json.to_string()).as_slice()).unwrap();
+        assert_eq!(back.render, RenderSettings::default());
+        assert_eq!(back, p, "material fields default to Material::new's");
+    }
+
+    #[test]
+    fn hostile_render_settings_are_clamped_on_load() {
+        let mut p = sample();
+        p.render.sample.samples = u32::MAX;
+        p.render.output.width = 1_000_000;
+        p.render.light.sun_elevation = 500.0;
+        let json = serde_json::to_string(&p).unwrap();
+        let back = read_rzxl(raw_file(5, &json).as_slice()).unwrap();
+        assert_eq!(back.render.sample.samples, rizxel_math::render::MAX_SAMPLES);
+        assert_eq!(
+            back.render.output.width,
+            rizxel_math::render::MAX_OUTPUT_SIDE
+        );
+        assert_eq!(back.render.light.sun_elevation, 90.0);
+        // Materials out of range are refused, as in version 3.
+        let mut p = sample();
+        p.materials = vec![Material {
+            ior: 9.0,
+            ..Material::new("Bad")
+        }];
+        assert!(p.validate().is_err());
     }
 
     #[test]
@@ -699,7 +765,7 @@ mod tests {
     fn version_3_features_roundtrip() {
         let mut buf = Vec::new();
         write_rzxl(&mut buf, &rich_sample()).unwrap();
-        assert_eq!(&buf[4..8], &4u32.to_le_bytes());
+        assert_eq!(&buf[4..8], &RZXL_VERSION.to_le_bytes());
         let back = read_rzxl(buf.as_slice()).unwrap();
         assert_eq!(back, rich_sample());
         assert!(back.generator.starts_with("Rizxel "));

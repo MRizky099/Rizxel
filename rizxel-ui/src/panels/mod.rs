@@ -4,6 +4,7 @@ pub mod export;
 pub mod history;
 pub mod options;
 pub mod references;
+pub mod render;
 pub mod sidebar;
 pub mod status;
 pub mod tabs;
@@ -33,4 +34,6 @@ pub struct UiState {
     pub reference_thumbs: references::Thumbnails,
     /// Import and export dialogs.
     pub dialogs: export::Dialogs,
+    /// Render panel tabs, presets and the running output job.
+    pub render: render::RenderUi,
 }

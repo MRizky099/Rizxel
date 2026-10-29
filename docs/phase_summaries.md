@@ -21,6 +21,8 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 10b | Layer hierarchy and reference images | ✅ Done | `v0.5.0` |
 | 10c | Box select, lines and curves, Transform tool | ✅ Done | `v0.5.0` |
 | 10d | Workspace and 0.5.0 | ✅ Done | `v0.5.0` |
+| 11 | Pipeline and export | ✅ Done | `v0.6.0` |
+| 11b | Render mode, path tracer and render output | ✅ Done | `v0.6.0` |
 
 ---
 
@@ -302,7 +304,7 @@ Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementa
 
 Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementation_plan.md)
 
-**Delivered** (branch `claude/phase11-pipeline-export-6102dc`, not released yet)
+**Delivered** (PR #10, tag `v0.6.0`)
 - `format_gltf.rs`: hand-written glTF 2.0 / GLB with one node per visible layer, group
   nodes, clone instancing (`ExportLayer::instance_of`), vertex colors or the palette
   texture and per-layer PBR materials; `mesh_export::Pivot` shared by every mesh
@@ -323,3 +325,48 @@ Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementati
   `.vox` node order, the `.qb` orientation flag, `.qbt` face mask bits and `.qbt` groups
   (nested models). The `chr_knight` parity test ran against MagicaVoxel's own files.
 - 536 tests (449 Rizxel, 87 craft-ui). Godot wasn't available.
+
+## Phase 11b — Render mode, path tracer and render output
+
+Plan: [`rizxel_phase11b_implementation_plan.md`](plan/rizxel_phase11b_implementation_plan.md)
+
+**Delivered** (PR #11, tag `v0.6.0`)
+- `rizxel-math/src/render.rs`: `RenderSettings` (light, sample, display, camera, output),
+  built-in presets and `sanitize`; `Material` gains specular, IOR, transmission, clear
+  coat and emission strength with presets. `.rzxl` version 5 stores them; older files
+  load with defaults and hostile values are clamped. Undoable render edits, presets as
+  one step, *Make unique*, user presets in the app data folder (`0ff7634`).
+- Render mode's own dock layout (`dock::Workspaces`), the render bar, the Render panel
+  (`panels/render.rs`) and the Layers panel with material swatches; no editing tools in
+  Render mode (click focuses, `Alt`+click picks a layer); `F5`. `rizxel-ui` has a
+  library target for the examples (`0ff7634`).
+- Offscreen raster *Image* output in 2048 px tiles with readback; the raster look follows
+  the sun, ground, background and lens settings (`f7a82b7`).
+- Compute path tracer (`render/pathtrace.rs`, `pt_common.wgsl`, `pathtrace.wgsl`,
+  `denoise.wgsl`): Rg8Uint voxel texture plus 8³ bricks, two-level DDA, principled-lite
+  BSDF, NEE with MIS, shadow catcher, DOF, à-trous denoiser; progressive viewport preview;
+  `render` and `render_bench` examples; `.hdr` reader (`bd77ec6`).
+- *Photo-realistic* tiled jobs with progress, ETA and Cancel; *Turntable* PNG sequence,
+  GIF (`gif` crate) and sprite sheet + JSON (`2014c7f`).
+- `rizxel-engine/src/shape_mesh.rs`, raster shapes, *Export Shaped Mesh* to OBJ / STL /
+  GLB from Render mode only (`b0e40a9`); fixes from the manual checks (`c34626a`);
+  watertight brick meshes, stud caps, the path tracer off on GL (`b699a11`).
+- `render_bench` on a GTX 950M: 21.1 / 10.5 spp/s at 720p and 20.7 / 45.9 s for 1080p ×
+  256 spp (Default / Studio White + Brick) at full clocks; when the driver kept the GPU
+  at P8 (405 MHz) later the same code measured 7.8 / 3.8 spp/s. The release binary grew
+  by 1.0 MB (22.56 → 23.60 MB).
+- Checked by hand: every Render panel tab, Studio White with the Brick shape and Plastic
+  on `chr_knight`, *Image* (1080p, 1.3 s), *Photo-realistic* (1080p × 256 spp, 25 s), a
+  36-frame turntable GIF (512², raster, 18 s) and a shaped OBJ opened in Windows 3D Viewer;
+  a re-voxelized `Kaki_Naga` compared with Studio's render.
+- Blender 5.2.3 (portable) imports the shaped `chr_knight` bricks as OBJ, STL and GLB with
+  the same 14,404 triangles and size, the OBJ's 21 materials and the GLB's vertex colors
+  (wired to its material). The first check found 1,620 crack edges between bricks; after
+  the fix and the stud caps no edge is open.
+- GL backend (`WGPU_BACKEND=gl`, Intel HD 4600): the path tracer reports unavailable and
+  the raster *Image* renders headless; the GPU tests skip cleanly. CI's DX12 runner showed
+  that FXC can't compile a `switch` or a dynamic vector index inside the loops; with those
+  removed it compiles, but takes 140–290 s, so the path tracer runs on Vulkan and Metal
+  only (fix for PR #11's CI). The window itself
+  doesn't refresh on GL, also before this phase (see gaps).
+- 589 tests (502 Rizxel, 87 craft-ui); GPU tests skip without an adapter.
