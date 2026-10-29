@@ -119,7 +119,7 @@ fn main() {
         gpu.info.name, gpu.info.backend, gpu.path_tracing
     );
     if !raster && !gpu.path_tracing {
-        fail("this adapter can't run the path tracer (GL, or no compute shaders): only --raster works");
+        fail("this adapter can't run the path tracer (it needs Vulkan or Metal): only --raster works");
     }
 
     state.viewport_aspect = size[0] as f32 / size[1] as f32;

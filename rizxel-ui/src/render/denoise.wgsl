@@ -135,18 +135,16 @@ fn hable(x: vec3<f32>) -> vec3<f32> {
 
 fn tone_map(c: vec3<f32>) -> vec3<f32> {
     let x = c * params.film.x;
-    switch u32(params.film.y) {
-        case 1u: {
-            return aces(x);
-        }
-        case 2u: {
-            let white = 11.2;
-            return clamp(hable(x * 2.0) / hable(vec3<f32>(white)), vec3<f32>(0.0), vec3<f32>(1.0));
-        }
-        default: {
-            return clamp(x, vec3<f32>(0.0), vec3<f32>(1.0));
-        }
+    // No `switch` in these shaders: FXC (DX12) handles it badly.
+    let mode = u32(params.film.y);
+    if mode == 1u {
+        return aces(x);
     }
+    if mode == 2u {
+        let white = 11.2;
+        return clamp(hable(x * 2.0) / hable(vec3<f32>(white)), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    return clamp(x, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 /// Radiance of pixel `i` after the filter (albedo multiplied back).

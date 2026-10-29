@@ -119,12 +119,6 @@ fn slab(ro: vec3<f32>, inv: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32
     return vec3<f32>(near, min(tf.x, min(tf.y, tf.z)), axis);
 }
 
-fn axis_vec(axis: i32) -> vec3<f32> {
-    var v = vec3<f32>(0.0);
-    v[axis] = 1.0;
-    return v;
-}
-
 // ------------------------------------------------------------------ shapes
 
 struct ShapeHit {
@@ -192,14 +186,9 @@ fn round_box_normal(p: vec3<f32>, b: vec3<f32>, r: f32) -> vec3<f32> {
     if dot(m, m) > 1e-12 {
         return normalize(sign(p) * m);
     }
-    // On a flat face: the axis closest to the surface.
-    var axis = 0;
-    if q.y > q.x && q.y >= q.z {
-        axis = 1;
-    } else if q.z > q.x && q.z > q.y {
-        axis = 2;
-    }
-    return axis_vec(axis) * sign(p[axis]);
+    // On a flat face: the axis closest to the surface (a mask, not an
+    // index: FXC can't index vectors dynamically inside loops).
+    return select(vec3<f32>(0.0), sign(p), max_mask(q));
 }
 
 /// Rounded box (half size `h`, edge radius `r`) by sphere tracing inside
@@ -323,24 +312,23 @@ fn cell_shape_hit(ro: vec3<f32>, rd: vec3<f32>, c: vec3<i32>, t_min: f32) -> Sha
     let s = params.dims.w;
     let center = vec3<f32>(c) + vec3<f32>(0.5);
     let h = 0.5 * s;
-    switch shape_kind() {
-        case 1u: {
-            let r = max(params.shape.x, 0.04) * s;
-            return round_box_hit(ro, rd, center, h, min(r, h), t_min);
-        }
-        case 2u: {
-            return round_box_hit(ro, rd, center, h, 0.3 * s, t_min);
-        }
-        case 3u: {
-            return sphere_hit(ro, rd, center, h, t_min);
-        }
-        case 4u: {
-            return cylinder_hit(ro, rd, center, h, center.y - h, center.y + h, t_min);
-        }
-        default: {
-            return box_hit(ro, rd, center, h, t_min);
-        }
+    // An if chain, not `switch`: FXC (DX12) fails on a switch inside the
+    // traversal loops ("forced to unroll loop").
+    let kind = shape_kind();
+    if kind == 1u {
+        let r = max(params.shape.x, 0.04) * s;
+        return round_box_hit(ro, rd, center, h, min(r, h), t_min);
     }
+    if kind == 2u {
+        return round_box_hit(ro, rd, center, h, 0.3 * s, t_min);
+    }
+    if kind == 3u {
+        return sphere_hit(ro, rd, center, h, t_min);
+    }
+    if kind == 4u {
+        return cylinder_hit(ro, rd, center, h, center.y - h, center.y + h, t_min);
+    }
+    return box_hit(ro, rd, center, h, t_min);
 }
 
 // ------------------------------------------------------------------ traversal

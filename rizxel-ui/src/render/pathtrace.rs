@@ -9,7 +9,7 @@
 //! viewport blits and the outputs read back.
 //!
 //! Needs compute shaders with storage buffers and storage textures
-//! on Vulkan, DX12 or Metal ([`supported`]); on the GL backend Render mode
+//! on Vulkan or Metal ([`supported`]); on GL and DX12 Render mode
 //! keeps the raster preview and the *Image* output only.
 
 use std::sync::Arc;
@@ -47,14 +47,19 @@ pub const PHOTO_TILE: u32 = 2048;
 
 /// Whether `adapter` can run the path tracer.
 ///
-/// The GL backend is always left out: an Intel HD 4600 (GL 4.3) compiles the
-/// tracing kernel but its 2015 driver crashes on the first dispatch, and GL
-/// drivers vary too much to trust with a kernel this size.
+/// Only on Vulkan and Metal:
+/// - GL: an Intel HD 4600 (GL 4.3) compiles the kernel but its 2015 driver
+///   crashes on the first dispatch, and GL drivers vary too much to trust
+///   with a kernel this size.
+/// - DX12: wgpu compiles HLSL with FXC, which takes about 140 s (debug) to
+///   290 s (release) for this kernel on a GTX 950M; Render mode would hang.
 pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     let caps = adapter.get_downlevel_capabilities();
     let limits = device.limits();
-    adapter.get_info().backend != wgpu::Backend::Gl
-        && caps.flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    matches!(
+        adapter.get_info().backend,
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal
+    ) && caps.flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
         && limits.max_storage_buffers_per_shader_stage >= 6
         && limits.max_storage_textures_per_shader_stage >= 1
         && limits.max_compute_invocations_per_workgroup >= 64

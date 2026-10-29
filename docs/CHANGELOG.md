@@ -27,8 +27,8 @@ All notable changes to Rizxel are documented here. Format follows
   and seams, a shadow-catcher studio ground, depth of field and an edge-aware à-trous
   denoiser. The viewport shows it in Render mode, restarting on every change. On a GTX
   950M at full clocks: 21 samples per second at 720p (10.5 with Studio White and
-  bricks), a 1080p image at 256 samples in 21 s (46 s). Without Vulkan, DX12 or Metal
-  (the GL backend) Render mode keeps the raster preview and the *Image* output.
+  bricks), a 1080p image at 256 samples in 21 s (46 s). Without Vulkan or Metal
+  (GL, DX12) Render mode keeps the raster preview and the *Image* output.
 - **Outputs:** *Image* (fast raster PNG up to 8192², transparent background optional),
   *Photo-realistic* (tiled path-traced PNG, 8 or 16 bits, with progress, time left,
   time limit and Cancel) and *Turntable* (raster or path-traced frames around the model:

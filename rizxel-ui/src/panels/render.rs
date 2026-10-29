@@ -806,7 +806,7 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
                 .add_enabled(!blocked, button)
                 .on_hover_text(tip)
                 .on_disabled_hover_text(
-                    "The path tracer needs Vulkan, DX12 or Metal with compute shaders: only Image output works here",
+                    "The path tracer needs Vulkan or Metal with compute shaders: only Image output works here",
                 )
                 .clicked()
             {

@@ -362,6 +362,9 @@ Plan: [`rizxel_phase11b_implementation_plan.md`](plan/rizxel_phase11b_implementa
   (wired to its material). The first check found 1,620 crack edges between bricks; after
   the fix and the stud caps no edge is open.
 - GL backend (`WGPU_BACKEND=gl`, Intel HD 4600): the path tracer reports unavailable and
-  the raster *Image* renders headless; the GPU tests skip cleanly. The window itself
+  the raster *Image* renders headless; the GPU tests skip cleanly. CI's DX12 runner showed
+  that FXC can't compile a `switch` or a dynamic vector index inside the loops; with those
+  removed it compiles, but takes 140–290 s, so the path tracer runs on Vulkan and Metal
+  only (fix for PR #11's CI). The window itself
   doesn't refresh on GL, also before this phase (see gaps).
 - 589 tests (502 Rizxel, 87 craft-ui); GPU tests skip without an adapter.
