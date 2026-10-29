@@ -5,6 +5,52 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-30
+
+Milestone M5: pipeline, export and rendering. glTF / GLB, Qubicle and PLY
+formats, OBJ layouts, slices, mesh voxelizing and heightmaps, then a Render
+mode with a progressive GPU path tracer, Image, Photo-realistic and Turntable
+outputs, voxel shapes and shaped-mesh export.
+
+### Phase 11b: Render mode, path tracer and render output (2026-10-29)
+
+- **Render mode is a rendering workspace** with its own panel layout (kept separately
+  from Model mode's): a render bar instead of the tool options (pause, Raster / Path
+  traced preview, preview resolution, sample progress, output size, Pers / Ortho / Iso),
+  the **Render** panel and the Layers panel, which shows each layer's material. Tools,
+  Color Palette, Bound Model and References are hidden, and the viewport doesn't edit:
+  a click sets the depth of field focus, `Alt`+click picks the clicked voxel's layer.
+  `F5` and *View ▸ Render Mode* switch modes.
+- **Render panel** with Light (sun, sky color / gradient / HDR image, fog, studio
+  lights), Sample, Display (voxel shape and cell size, ground and shadow catcher,
+  background, bevel, seams, outline), Material (the active layer's material, presets
+  Diffuse / Plastic / Metal / Glass / Emit, *Make unique*), Camera (field of view,
+  aperture, focus, blades, exposure, ACES / filmic tone mapping, gamma, vignette,
+  bloom) and Output tabs, built-in presets (**Studio White**, Outdoor Sun, Night
+  Emissive, Flat Pixel) and user presets, and a **Render** button at its bottom-right.
+  Every setting is undoable and saved in the file.
+- **Progressive GPU path tracer** (wgpu compute, no new renderer crates): soft shadows,
+  bounced light, glossy plastic with a clear coat, metal, glass, emission, rounded edges
+  and seams, a shadow-catcher studio ground, depth of field and an edge-aware à-trous
+  denoiser. The viewport shows it in Render mode, restarting on every change. On a GTX
+  950M at full clocks: 21 samples per second at 720p (10.5 with Studio White and
+  bricks), a 1080p image at 256 samples in 21 s (46 s). Without Vulkan or Metal
+  (GL, DX12) Render mode keeps the raster preview and the *Image* output.
+- **Outputs:** *Image* (fast raster PNG up to 8192², transparent background optional),
+  *Photo-realistic* (tiled path-traced PNG, 8 or 16 bits, with progress, time left,
+  time limit and Cancel) and *Turntable* (raster or path-traced frames around the model:
+  PNG sequence, looping GIF, sprite sheet with a JSON of frame rectangles). File names
+  follow a pattern with `{name}` and `{frame}`.
+- **Voxel shapes** (view only): cube, brick with studs, rounded, sphere and cylinder,
+  with a cell size for gaps, in the path tracer, the raster view and *Image*.
+  **Export Shaped Mesh** (File ▸ Export, Render mode only) writes them as OBJ + MTL, STL
+  or GLB, with quality, studs, scale and pivot, a triangle count and a size guard. Brick
+  meshes are watertight (checked in Blender 5.2).
+- **`.rzxl` version 5:** render settings and the new material fields (specular, IOR,
+  transmission, clear coat, emission strength). Older files load with the defaults.
+- `render` example (`cargo run -p rizxel-ui --example render -- in.rzxl out.png`) for
+  headless renders and `render_bench` for path tracer timings.
+
 ### Phase 11: Pipeline and export (2026-10-24)
 
 - **glTF 2.0 export** (`.glb`, or `.gltf` + `.bin`): one node per visible layer, groups

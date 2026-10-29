@@ -10,6 +10,7 @@ pub mod mesher;
 pub mod quads;
 pub mod quantize;
 pub mod raycast;
+pub mod shape_mesh;
 pub mod shapes;
 pub mod tools;
 pub mod voxelize;
@@ -22,6 +23,7 @@ pub use mesher::{
 pub use quads::{greedy_quads, Quad};
 pub use quantize::{build_color_map, nearest, ColorMap};
 pub use raycast::{Ray, RayHit};
+pub use shape_mesh::{shape_mesh, shape_triangle_count, ShapeMeshOptions, ShapeQuality};
 pub use shapes::rasterize_shape;
 pub use tools::{
     BrushOptions, BrushShape, ColorPickerOptions, Connectivity, CursorOptions, DragMode,

@@ -17,6 +17,8 @@ png.workspace = true
 flate2.workspace = true
 # PNG and JPEG reference images (decode and downscale).
 image.workspace = true
+# Turntable GIFs.
+gif.workspace = true
 glam.workspace = true
 thiserror.workspace = true
 

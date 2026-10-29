@@ -14,6 +14,8 @@ use craft_ui::docking::{
 use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Id, Stroke, Ui};
 
+use rizxel_app::ViewMode;
+
 use crate::theme;
 
 /// Every dockable region of the editor.
@@ -27,11 +29,13 @@ pub enum Panel {
     Bounds,
     History,
     References,
+    /// Render settings and the Render button (Render mode only).
+    Render,
 }
 
 impl Panel {
     /// Panels offered in *View > Panels*, in menu order.
-    pub const ALL: [Panel; 8] = [
+    pub const ALL: [Panel; 9] = [
         Panel::Viewport,
         Panel::Tools,
         Panel::Options,
@@ -40,7 +44,27 @@ impl Panel {
         Panel::References,
         Panel::Bounds,
         Panel::History,
+        Panel::Render,
     ];
+
+    /// Panels a mode offers in *View > Panels*: Render mode has no editing
+    /// or tracing panels, Model mode no Render panel.
+    pub fn offered(mode: ViewMode) -> Vec<Panel> {
+        let render_only = |p: &Panel| *p == Panel::Render;
+        let model_only = |p: &Panel| {
+            matches!(
+                p,
+                Panel::Tools | Panel::Palette | Panel::Bounds | Panel::References
+            )
+        };
+        Panel::ALL
+            .into_iter()
+            .filter(|p| match mode {
+                ViewMode::Model => !render_only(p),
+                ViewMode::Render => !model_only(p),
+            })
+            .collect()
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -52,6 +76,7 @@ impl Panel {
             Panel::Bounds => "Bound Model",
             Panel::History => "History",
             Panel::References => "References",
+            Panel::Render => "Render",
         }
     }
 
@@ -79,6 +104,7 @@ impl Panel {
             Panel::Palette | Panel::Layers | Panel::Bounds | Panel::History | Panel::References => {
                 egui::vec2(200.0, 80.0)
             }
+            Panel::Render => egui::vec2(240.0, 120.0),
         };
         PanelLimits {
             min,
@@ -111,6 +137,8 @@ fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Pane
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub layout: Layout<Panel>,
+    /// View mode this layout belongs to (its default and dock area id).
+    mode: ViewMode,
     hidden: Vec<(Panel, Location<Panel>)>,
     /// Groups collapsed to their tab strip by a double-click.
     collapsed: Vec<Collapsed>,
@@ -166,8 +194,97 @@ impl Default for Workspace {
                 root: Some(root),
                 floating: Vec::new(),
             },
+            mode: ViewMode::Model,
             hidden: Vec::new(),
             collapsed: Vec::new(),
+        }
+    }
+}
+
+impl Workspace {
+    /// Render-mode layout: render bar on top, viewport in the middle, the
+    /// Render panel on the right above Layers and History. No Tools,
+    /// Palette or Bound Model.
+    pub fn render() -> Self {
+        let inspector = split(
+            SplitAxis::Vertical,
+            SplitSize::FixedSecond(240.0),
+            tabs(Panel::Render),
+            Node::Tabs {
+                panels: vec![Panel::Layers, Panel::History],
+                active: 0,
+            },
+        );
+        let body = split(
+            SplitAxis::Horizontal,
+            SplitSize::FixedSecond(320.0),
+            tabs(Panel::Viewport),
+            inspector,
+        );
+        let root = split(
+            SplitAxis::Vertical,
+            SplitSize::FixedFirst(theme::OPTION_BAR_HEIGHT + TAB_HEIGHT),
+            tabs(Panel::Options),
+            body,
+        );
+        Self {
+            layout: Layout {
+                root: Some(root),
+                floating: Vec::new(),
+            },
+            mode: ViewMode::Render,
+            hidden: Vec::new(),
+            collapsed: Vec::new(),
+        }
+    }
+
+    /// The default layout of `mode`.
+    pub fn for_mode(mode: ViewMode) -> Self {
+        match mode {
+            ViewMode::Model => Self::default(),
+            ViewMode::Render => Self::render(),
+        }
+    }
+
+    pub fn mode(&self) -> ViewMode {
+        self.mode
+    }
+
+    /// Dock area id: one per mode, so drag state never crosses layouts.
+    fn area_id(&self) -> Id {
+        Id::new(AREA_ID).with(self.mode == ViewMode::Render)
+    }
+}
+
+/// One dock layout per view mode. Switching modes swaps them, and each keeps
+/// the user's own changes.
+#[derive(Debug, Clone)]
+pub struct Workspaces {
+    model: Workspace,
+    render: Workspace,
+}
+
+impl Default for Workspaces {
+    fn default() -> Self {
+        Self {
+            model: Workspace::default(),
+            render: Workspace::render(),
+        }
+    }
+}
+
+impl Workspaces {
+    pub fn get(&self, mode: ViewMode) -> &Workspace {
+        match mode {
+            ViewMode::Model => &self.model,
+            ViewMode::Render => &self.render,
+        }
+    }
+
+    pub fn get_mut(&mut self, mode: ViewMode) -> &mut Workspace {
+        match mode {
+            ViewMode::Model => &mut self.model,
+            ViewMode::Render => &mut self.render,
         }
     }
 }
@@ -239,7 +356,8 @@ impl Workspace {
             .into_iter()
             .filter(|p| self.is_collapsed(*p))
             .collect();
-        let output = DockArea::new(Id::new(AREA_ID)).show_with_limits(
+        let area = self.area_id();
+        let output = DockArea::new(area).show_with_limits(
             ui,
             &self.layout,
             &style,
@@ -266,7 +384,7 @@ impl Workspace {
         }
         // A double-click on a tab collapses its group to the strip, or
         // expands it again.
-        let tab_id = |panel: &Panel| Id::new(AREA_ID).with(("tab", panel));
+        let tab_id = |panel: &Panel| area.with(("tab", panel));
         if let Some(panel) = Panel::ALL.into_iter().find(|p| {
             ui.ctx()
                 .read_response(tab_id(p))
@@ -352,8 +470,8 @@ impl Workspace {
 
     /// Back to the default arrangement, cancelling any drag in flight.
     pub fn reset(&mut self, ctx: &egui::Context) {
-        craft_ui::docking::cancel_drag::<Panel>(ctx, Id::new(AREA_ID));
-        *self = Self::default();
+        craft_ui::docking::cancel_drag::<Panel>(ctx, self.area_id());
+        *self = Self::for_mode(self.mode);
     }
 }
 
@@ -450,11 +568,51 @@ mod tests {
 
     #[test]
     fn default_layout_holds_every_panel_once() {
-        let ws = Workspace::default();
-        assert!(ws.layout.validate().is_ok());
-        for panel in Panel::ALL {
-            assert!(ws.is_visible(panel), "{panel:?} missing");
+        for mode in [ViewMode::Model, ViewMode::Render] {
+            let ws = Workspace::for_mode(mode);
+            assert!(ws.layout.validate().is_ok());
+            for panel in Panel::ALL {
+                let offered = Panel::offered(mode).contains(&panel);
+                assert_eq!(ws.is_visible(panel), offered, "{mode:?}: {panel:?}");
+            }
         }
+    }
+
+    #[test]
+    fn render_layout_keeps_layers_next_to_the_render_panel() {
+        let ws = Workspace::render();
+        let groups = groups(&ws);
+        assert!(groups.contains(&vec![Panel::Render]));
+        assert!(groups.contains(&vec![Panel::Layers, Panel::History]));
+        for hidden in [Panel::Tools, Panel::Palette, Panel::Bounds] {
+            assert!(!ws.is_visible(hidden), "{hidden:?}");
+        }
+    }
+
+    #[test]
+    fn switching_modes_restores_each_layout() {
+        let mut docks = Workspaces::default();
+        docks
+            .get_mut(ViewMode::Model)
+            .set_visible(Panel::Palette, false)
+            .unwrap();
+        docks
+            .get_mut(ViewMode::Render)
+            .set_visible(Panel::History, false)
+            .unwrap();
+        // Back and forth: each mode keeps its own change.
+        assert!(!docks.get(ViewMode::Model).is_visible(Panel::Palette));
+        assert!(docks.get(ViewMode::Model).is_visible(Panel::History));
+        assert!(!docks.get(ViewMode::Render).is_visible(Panel::History));
+        assert!(docks.get(ViewMode::Render).is_visible(Panel::Render));
+        // Reset goes back to the mode's own default.
+        let ctx = egui::Context::default();
+        docks.get_mut(ViewMode::Render).reset(&ctx);
+        assert_eq!(
+            docks.get(ViewMode::Render).layout,
+            Workspace::render().layout
+        );
+        assert!(!docks.get(ViewMode::Model).is_visible(Panel::Palette));
     }
 
     fn tab_groups(node: &Node<Panel>, out: &mut Vec<Vec<Panel>>) {

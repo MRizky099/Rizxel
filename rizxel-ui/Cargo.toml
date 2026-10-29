@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "rizxel_ui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rizxel"
 path = "src/main.rs"
@@ -25,6 +29,7 @@ log.workspace = true
 env_logger.workspace = true
 image.workspace = true
 bytemuck.workspace = true
+pollster.workspace = true
 
 [dev-dependencies]
 naga.workspace = true

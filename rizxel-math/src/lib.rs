@@ -8,13 +8,15 @@ pub mod aabb;
 pub mod base64;
 pub mod layer;
 pub mod reference;
+pub mod render;
 pub mod types;
 pub mod volume;
 
 pub use aabb::Aabb;
 pub use glam::{IVec3, UVec3, Vec2, Vec3};
-pub use layer::{LayerId, LayerKind, Material, ShapeKind, VoxelBox};
+pub use layer::{LayerId, LayerKind, Material, MaterialPreset, ShapeKind, VoxelBox};
 pub use reference::{DepthMode, ImageData, RefPlane, ReferenceId, ReferenceImage, SliceFilter};
+pub use render::{RenderPreset, RenderSettings, VoxelShape};
 pub use types::{
     is_empty, BoundSize, Palette, Rgba8, Voxel, EMPTY_VOXEL, FIRST_COLOR_INDEX, MAX_PALETTE_COLORS,
 };

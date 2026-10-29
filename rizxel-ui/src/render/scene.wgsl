@@ -10,7 +10,8 @@ struct Camera {
     eye: vec4<f32>,
     // xy = target size in px, z = view mode (0 Model, 1 Render), w = grid fade distance.
     viewport: vec4<f32>,
-    // xy = grid offset on XZ (keeps lines aligned with the model bounds).
+    // xy = grid offset on XZ (keeps lines aligned with the model bounds),
+    // zw = NDC y scale and offset to the full image (tiled output).
     grid_origin: vec4<f32>,
     background: vec4<f32>,
     grid_color: vec4<f32>,
@@ -20,8 +21,17 @@ struct Camera {
     forward: vec4<f32>,
     // xyz = center of the grid fade (eye, or orbit target in orthographic).
     focus: vec4<f32>,
-    // View toggles (0 / 1): x = floor grid, y = voxel grid, z = ambient occlusion.
+    // View toggles (0 / 1): x = floor grid, y = voxel grid, z = ambient occlusion,
+    // w = transparent background.
     options: vec4<f32>,
+    // Render mode key light: xyz = unit direction toward it, w = strength.
+    light: vec4<f32>,
+    // rgb = key light color.
+    light_color: vec4<f32>,
+    // rgb = ground color, w = 1 when the ground is drawn (Render mode).
+    ground: vec4<f32>,
+    // rgb = top color of the background gradient, w = 1 for a gradient.
+    background_top: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -110,6 +120,8 @@ struct GridSample {
     axis_z: f32,
     depth: f32,
     hit: bool,
+    // Distance and grazing-angle fade of the ground (1 = near).
+    fade: f32,
 };
 
 fn grid_sample(ndc: vec2<f32>) -> GridSample {
@@ -148,6 +160,7 @@ fn grid_sample(ndc: vec2<f32>) -> GridSample {
     s.axis_z = axis_z * 0.85 * fade;
     s.depth = select(1.0, ground_depth, on_ground);
     s.hit = on_ground;
+    s.fade = fade / select(1.0, 0.45, cam.viewport.z > 0.5);
     return s;
 }
 
@@ -166,9 +179,18 @@ fn fs_grid(in: GridOut) -> GridFrag {
     let above = !eye_below_ground();
 
     var bg = cam.background.rgb;
-    if cam.viewport.z > 0.5 {
-        // Soft vertical studio gradient.
-        bg = mix(bg * 0.55, bg * 1.3, in.ndc.y * 0.5 + 0.5);
+    let render = cam.viewport.z > 0.5;
+    if render && cam.background_top.w > 0.5 {
+        // Screen-space gradient of the whole image (tiles map their NDC y).
+        let y = in.ndc.y * cam.grid_origin.z + cam.grid_origin.w;
+        bg = mix(bg, cam.background_top.rgb, clamp(y * 0.5 + 0.5, 0.0, 1.0));
+    }
+    // Render mode ground: lit by the key light, fading into the background.
+    var ground = 0.0;
+    if render && cam.ground.w > 0.5 && above && s.hit {
+        ground = s.fade;
+        let lit = cam.ground.rgb * mix(0.7, 1.0, clamp(cam.light.y, 0.0, 1.0));
+        bg = mix(bg, lit, ground);
     }
 
     // Hidden floor grid: background only.
@@ -180,6 +202,10 @@ fn fs_grid(in: GridOut) -> GridFrag {
 
     var out: GridFrag;
     out.color = vec4<f32>(color, 1.0);
+    if cam.options.w > 0.5 {
+        // Transparent output: only the voxels (premultiplied by the resolve).
+        out.color = vec4<f32>(0.0);
+    }
     out.depth = select(1.0, s.depth, above && s.hit);
     return out;
 }
@@ -311,9 +337,6 @@ struct VoxelOut {
     @location(5) ao: f32,
 };
 
-/// Key light: above, slightly front-right of the default camera, so the top
-/// face is brightest and the two visible sides read differently.
-const KEY_LIGHT: vec3<f32> = vec3<f32>(0.4, 0.85, 0.35);
 const AMBIENT: f32 = 0.35;
 
 fn voxel_out(v: VoxelIn, alpha: f32) -> VoxelOut {
@@ -384,7 +407,9 @@ fn view_dir(world: vec3<f32>) -> vec3<f32> {
 /// with a Blinn-Phong highlight (roughness sets its size, metallic tints it
 /// and darkens the diffuse part, Schlick Fresnel), plus emission.
 fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) -> vec3<f32> {
-    let l = normalize(KEY_LIGHT);
+    // Key light from the render settings (sun direction, color, strength).
+    let l = normalize(cam.light.xyz);
+    let k = cam.light.w * cam.light_color.rgb;
     let v = view_dir(world);
     let h = normalize(l + v);
     let metallic = m.params.x;
@@ -395,7 +420,7 @@ fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) 
     let ndl = dot(n, l);
     let lambert = max(ndl, 0.0);
     let half_lambert = ndl * 0.5 + 0.5;
-    let light = AMBIENT + 0.6 * lambert + 0.15 * half_lambert * half_lambert;
+    let light = AMBIENT + (0.6 * lambert + 0.15 * half_lambert * half_lambert) * k;
     let diffuse = albedo * light * (1.0 - 0.75 * metallic);
 
     let shininess = mix(512.0, 4.0, roughness);
@@ -403,7 +428,7 @@ fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) 
     let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
     // Normalized so rough highlights get wider, not brighter.
     let spec = pow(max(dot(n, h), 0.0), shininess) * (shininess + 8.0) / 64.0;
-    let specular = fresnel * spec * lambert * (1.0 - 0.6 * roughness);
+    let specular = fresnel * spec * lambert * (1.0 - 0.6 * roughness) * k;
 
     return diffuse + specular + m.emission.rgb * m.tint.rgb;
 }

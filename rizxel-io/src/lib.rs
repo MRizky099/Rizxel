@@ -30,6 +30,8 @@ pub mod format_qef;
 pub mod format_rzxl;
 pub mod format_stl;
 pub mod format_vox;
+pub mod gif_io;
+pub mod hdr;
 pub mod heightmap;
 pub mod image_io;
 pub mod interchange;
@@ -37,6 +39,7 @@ pub mod mesh_export;
 pub mod mesh_import;
 pub mod png_io;
 mod qubicle;
+pub mod shaped_export;
 pub mod slices;
 #[cfg(test)]
 mod test_samples;

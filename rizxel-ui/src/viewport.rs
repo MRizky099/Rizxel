@@ -28,10 +28,12 @@ use glam::{IVec3, Mat3, Mat4, Vec3};
 use rizxel_app::{
     AppState, Document, OrbitCamera, ViewCorner, ViewEdge, ViewFace, ViewMode, ViewTarget,
 };
-use rizxel_math::{BoundSize, ImageData, VoxelBox};
+use rizxel_math::{BoundSize, ImageData, VoxelBox, VoxelShape};
 
+use crate::render::pathtrace::{document_params, PtInputs, PtScene, PtTables, SkyCache};
 use crate::render::{
-    GpuMesh, LineInstance, RefPixels, ReferenceDraw, SceneFrame, ViewportCallback,
+    GpuMesh, LineInstance, PtFrame, RefPixels, ReferenceDraw, RenderLook, SceneFrame,
+    ViewportCallback,
 };
 use crate::theme;
 use crate::tool_input::{self, ToolInput};
@@ -83,6 +85,11 @@ pub struct MeshCache {
     /// `ImageData` keeps its bytes alive, so a key is never reused for
     /// another image while it is cached.
     images: HashMap<usize, (ImageData, Arc<RefPixels>)>,
+    /// Render mode's path-traced preview.
+    pub preview: PtPreview,
+    /// Render mode's raster shape mesh: built from these mesh keys and
+    /// shape options.
+    shaped: Option<(ShapedKey, Option<Arc<GpuMesh>>)>,
 }
 
 impl MeshCache {
@@ -207,6 +214,121 @@ impl MeshCache {
 
 /// Degrees of rotation per dragged pixel.
 const ORBIT_SPEED: f32 = 0.4;
+/// What the preview's samples were traced for: a change restarts them.
+type PreviewKey = (u64, u64, OrbitCamera, [u32; 2], Option<VoxelBox>);
+
+/// Render mode's path-traced preview: the scene on the CPU (rebuilt only
+/// when the meshes or the layer-to-material slots change) and the samples
+/// accumulated for the current view.
+#[derive(Default)]
+pub struct PtPreview {
+    /// Document id and mesh upload keys the scene was built from.
+    scene_key: Option<(u64, Vec<(u64, u64)>)>,
+    inputs: Option<PtInputs>,
+    sky: SkyCache,
+    key: Option<PreviewKey>,
+    samples: u32,
+    last_camera: Option<OrbitCamera>,
+    /// Half resolution until then (the camera moved).
+    moving_until: Option<std::time::Instant>,
+}
+
+/// How long the preview stays at half resolution after the camera moves.
+const MOVING_HALF_RES: std::time::Duration = std::time::Duration::from_millis(250);
+
+impl PtPreview {
+    /// The preview frame for `doc` in a viewport of `size_px` pixels:
+    /// adds a sample unless paused or done. Updates `view.samples_done`.
+    pub fn frame(
+        &mut self,
+        doc: &Document,
+        meshes: &DocMeshes,
+        camera: &OrbitCamera,
+        size_px: [u32; 2],
+        view: &mut rizxel_app::RenderView,
+    ) -> PtFrame {
+        let now = std::time::Instant::now();
+        if self.last_camera.is_some_and(|c| c != *camera) {
+            self.moving_until = Some(now + MOVING_HALF_RES);
+        }
+        self.last_camera = Some(*camera);
+        let moving = self.moving_until.is_some_and(|t| now < t);
+        let scale = view.scale * if moving { 0.5 } else { 1.0 };
+        let size = size_px.map(|v| ((v as f32 * scale).round() as u32).max(1));
+
+        let tables = PtTables::new(doc);
+        let mut keys = vec![meshes.opaque.key];
+        keys.extend(meshes.transparent.iter().map(|t| t.mesh.key));
+        let scene_key = (doc.id(), keys);
+        let sky = self.sky.get(&doc.data.render);
+        let rebuild = self.scene_key.as_ref() != Some(&scene_key)
+            || self
+                .inputs
+                .as_ref()
+                .is_none_or(|i| !i.tables.same_slots(&tables));
+        let inputs = match self.inputs.take() {
+            Some(mut i) if !rebuild => {
+                if *i.tables != tables {
+                    i.tables = Arc::new(tables);
+                }
+                i.sky = sky.clone();
+                i
+            }
+            _ => {
+                self.scene_key = Some(scene_key);
+                PtInputs {
+                    scene: Arc::new(PtScene::from_document(doc, &tables)),
+                    tables: Arc::new(tables),
+                    sky: sky.clone(),
+                }
+            }
+        };
+        self.inputs = Some(inputs.clone());
+
+        let key = (doc.id(), doc.revision(), *camera, size, doc.view_clip());
+        if self.key.as_ref() != Some(&key) {
+            self.key = Some(key);
+            self.samples = 0;
+        }
+        let target = doc.data.render.sample.samples;
+        let count = if view.paused || self.samples >= target {
+            0
+        } else {
+            1
+        };
+        let first = self.samples;
+        self.samples += count;
+        // The filter costs about a sample: after the first 16 samples the
+        // image is refreshed every 4th one (and at the last).
+        let resolve =
+            count > 0 && (self.samples <= 16 || self.samples % 4 == 0 || self.samples >= target);
+        view.samples_done = self.samples;
+        let params = document_params(
+            doc,
+            camera,
+            size,
+            false,
+            sky.as_ref().map(|(_, i)| i.as_ref()),
+        );
+        PtFrame {
+            inputs,
+            params,
+            first,
+            count,
+            resolve,
+            nearest: doc.data.render.sample.pixelated,
+        }
+    }
+
+    /// The preview still adds samples (keep repainting).
+    pub fn busy(&self, doc: &Document, view: &rizxel_app::RenderView) -> bool {
+        !view.paused && self.samples < doc.data.render.sample.samples
+            || self
+                .moving_until
+                .is_some_and(|t| std::time::Instant::now() < t)
+    }
+}
+
 /// Zoom exponent per scrolled point.
 const ZOOM_SPEED: f32 = 0.002;
 /// Width of the yellow bounds wireframe, in logical points.
@@ -224,13 +346,22 @@ pub struct Projection {
     /// World units covered by the viewport height in orthographic mode;
     /// `None` in perspective.
     ortho_height: Option<f32>,
+    /// Vertical field of view of the perspective camera (radians).
+    fov_y: f32,
 }
 
 impl Projection {
-    fn new(camera: &OrbitCamera, target: Vec3, rect: Rect) -> Self {
+    pub fn new(camera: &OrbitCamera, target: Vec3, rect: Rect) -> Self {
+        Self::with_fov(camera, target, rect, OrbitCamera::FOV_Y)
+    }
+
+    /// Camera with a perspective field of view of `fov_y` radians (Render
+    /// mode's lens setting).
+    pub fn with_fov(camera: &OrbitCamera, target: Vec3, rect: Rect, fov_y: f32) -> Self {
         let aspect = rect.width() / rect.height().max(1.0);
         Self {
-            view_proj: camera.view_proj(target, aspect),
+            fov_y,
+            view_proj: camera.view_proj_fov(target, aspect, fov_y),
             rect,
             eye: camera.eye(target),
             forward: -camera.eye_direction(),
@@ -244,11 +375,26 @@ impl Projection {
         self.eye
     }
 
+    /// World -> clip matrix.
+    pub fn view_proj(&self) -> Mat4 {
+        self.view_proj
+    }
+
+    /// Unit view direction.
+    pub fn forward(&self) -> Vec3 {
+        self.forward
+    }
+
+    /// Orthographic view height in world units (`None` in perspective).
+    pub fn ortho_height(&self) -> Option<f32> {
+        self.ortho_height
+    }
+
     /// On-screen size (logical points) of one world unit at `world`.
     pub fn points_per_unit(&self, world: Vec3) -> f32 {
         let span = self.ortho_height.unwrap_or_else(|| {
             let depth = (world - self.eye).dot(self.forward).max(OrbitCamera::NEAR);
-            2.0 * depth * (OrbitCamera::FOV_Y * 0.5).tan()
+            2.0 * depth * (self.fov_y * 0.5).tan()
         });
         self.rect.height() / span
     }
@@ -291,6 +437,14 @@ impl Projection {
         }
         let t = -eye.y / dir.y;
         (t > 0.0).then(|| eye + dir * t)
+    }
+}
+
+/// Field of view of the viewport: the Render settings' lens in Render mode.
+pub fn view_fov(state: &AppState) -> f32 {
+    match (state.view_mode, state.doc()) {
+        (ViewMode::Render, Some(doc)) => doc.data.render.camera.fov.to_radians(),
+        _ => OrbitCamera::FOV_Y,
     }
 }
 
@@ -344,7 +498,7 @@ pub fn show(
     }
     state.viewport_aspect = rect.width() / rect.height().max(1.0);
     let target = rizxel_app::orbit_base(bounds) + state.camera.pan;
-    let proj = Projection::new(&state.camera, target, rect);
+    let proj = Projection::with_fov(&state.camera, target, rect, view_fov(state));
 
     // --- Slice Mode: hide the camera's side, slider on the right edge -------
     if let Some(doc) = state.doc_mut() {
@@ -374,17 +528,23 @@ pub fn show(
         .into_iter()
         .chain(slider.map(|(r, _)| r))
         .collect();
-    let preview = tools.update(
-        &tool_input::Frame {
-            ui,
-            response: &response,
-            proj: &proj,
-            bmin,
-            blocked: &blocked,
-            pixels_per_point: ppp,
-        },
-        state,
-    );
+    let render_mode = state.view_mode == ViewMode::Render;
+    let preview = if render_mode {
+        render_pick(ui, &response, &proj, bmin, &blocked, state);
+        tool_input::Preview::default()
+    } else {
+        tools.update(
+            &tool_input::Frame {
+                ui,
+                response: &response,
+                proj: &proj,
+                bmin,
+                blocked: &blocked,
+                pixels_per_point: ppp,
+            },
+            state,
+        )
+    };
     // Tool edits may have changed the document this frame.
     let voxels = state.doc().map(|d| meshes.get(d, ghosts)).or(voxels);
     // Keep frames coming while background tiles arrive.
@@ -405,19 +565,55 @@ pub fn show(
                 .map(|(a, b)| LineInstance::new(a, b, color, ppp)),
         );
     }
-    if let Some(meshes) = voxels {
+    if let Some(meshes) = &voxels {
         frame.translucent = sorted_back_to_front(&proj, &meshes.transparent);
-        frame.voxels = Some(meshes.opaque);
+        frame.voxels = Some(meshes.opaque.clone());
     }
-    if let Some(doc) = state.doc() {
+    // Render mode's raster view draws the voxel shape (view only).
+    let raster_view = !(state.render_view.path_traced && state.render_view.path_tracing);
+    if let (true, Some(doc), Some(m)) = (
+        render_mode && raster_view,
+        state.documents.get(state.active_doc),
+        &voxels,
+    ) {
+        if doc.data.render.display.shape != VoxelShape::Cube || doc.data.render.display.cell < 1.0 {
+            match meshes.shaped(doc, m, bmin) {
+                Some(shaped) => {
+                    frame.voxels = Some(shaped);
+                    frame.translucent.clear();
+                }
+                None => state.tool_feedback = Some(SHAPE_FALLBACK.to_owned()),
+            }
+        }
+    }
+    if let Some(doc) = state.doc().filter(|_| !render_mode) {
         frame.references = meshes.references(doc, bmin);
+    }
+    let size_px = [
+        (rect.width() * ppp).round().max(1.0) as u32,
+        (rect.height() * ppp).round().max(1.0) as u32,
+    ];
+    // Render mode: the path-traced preview replaces the raster scene.
+    let traced = render_mode
+        && state.render_view.path_traced
+        && state.render_view.path_tracing
+        && target_format.is_some();
+    if traced {
+        if let (Some(doc), Some(m)) = (state.documents.get(state.active_doc), &voxels) {
+            let mut view = state.render_view;
+            frame.pt = Some(
+                meshes
+                    .preview
+                    .frame(doc, m, &state.camera, size_px, &mut view),
+            );
+            if meshes.preview.busy(doc, &view) {
+                ui.ctx().request_repaint();
+            }
+            state.render_view = view;
+        }
     }
     match target_format {
         Some(format) => {
-            let size_px = [
-                (rect.width() * ppp).round().max(1.0) as u32,
-                (rect.height() * ppp).round().max(1.0) as u32,
-            ];
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 ViewportCallback {
@@ -464,6 +660,193 @@ pub fn show(
 
     let axis_center = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
     paint_axis_gizmo(&painter, &state.camera, axis_center);
+}
+
+/// Voxels above which the raster view keeps cubes for the voxel shape (the
+/// path tracer draws any number).
+pub const MAX_SHAPED_VOXELS: usize = 1_000_000;
+const SHAPE_FALLBACK: &str = "Shape preview: too many voxels, the raster view shows cubes";
+
+/// What a raster shape mesh was built from: document, mesh keys, options.
+type ShapedKey = (u64, Vec<(u64, u64)>, rizxel_app::ShapeMeshOptions);
+
+fn shape_options(
+    doc: &Document,
+    quality: rizxel_app::ShapeQuality,
+) -> rizxel_app::ShapeMeshOptions {
+    let d = &doc.data.render.display;
+    rizxel_app::ShapeMeshOptions {
+        shape: d.shape,
+        cell: d.cell,
+        bevel: d.bevel,
+        quality,
+        studs: true,
+    }
+}
+
+/// The *Image* output's shape mesh (`None` for full-size cubes or too many
+/// voxels).
+fn shaped_output(doc: &Document, bmin: Vec3) -> Option<Arc<GpuMesh>> {
+    let d = &doc.data.render.display;
+    if (d.shape == VoxelShape::Cube && d.cell >= 1.0)
+        || doc.visible_voxel_count() > MAX_SHAPED_VOXELS
+    {
+        return None;
+    }
+    let mesh = doc.shaped_mesh(&shape_options(doc, rizxel_app::ShapeQuality::Medium));
+    let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(Arc::new(GpuMesh::from_mesh((doc.id(), key), &mesh, bmin)))
+}
+
+impl MeshCache {
+    /// Low-quality shape mesh of `doc` for the raster view, rebuilt only
+    /// when the meshes or the shape options change. `None` above
+    /// [`MAX_SHAPED_VOXELS`].
+    fn shaped(&mut self, doc: &Document, meshes: &DocMeshes, bmin: Vec3) -> Option<Arc<GpuMesh>> {
+        let opts = shape_options(doc, rizxel_app::ShapeQuality::Low);
+        let mut keys = vec![meshes.opaque.key];
+        keys.extend(meshes.transparent.iter().map(|t| t.mesh.key));
+        let key = (doc.id(), keys, opts);
+        if let Some((k, mesh)) = &self.shaped {
+            if *k == key {
+                return mesh.clone();
+            }
+        }
+        let mesh = (doc.visible_voxel_count() <= MAX_SHAPED_VOXELS).then(|| {
+            self.next_build += 1;
+            Arc::new(GpuMesh::from_mesh(
+                (doc.id(), self.next_build),
+                &doc.shaped_mesh(&opts),
+                bmin,
+            ))
+        });
+        self.shaped = Some((key, mesh.clone()));
+        mesh
+    }
+}
+
+/// Source of upload keys for output meshes (never shared with the viewport's).
+static OUTPUT_BUILD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
+
+/// Camera matrices of a `size`-pixel output image seen through `camera`,
+/// with the Render settings' lens. Same framing as the viewport for the
+/// same camera and aspect ratio.
+pub fn output_projection(doc: &Document, camera: &OrbitCamera, size: [u32; 2]) -> Projection {
+    let target = rizxel_app::orbit_base(doc.data.bounds) + camera.pan;
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(size[0] as f32, size[1] as f32));
+    Projection::with_fov(
+        camera,
+        target,
+        rect,
+        doc.data.render.camera.fov.to_radians(),
+    )
+}
+
+/// Scene of the *Image* output: `doc`'s Render-mode raster view through
+/// `camera` at `size` pixels, without grid lines, bounds or references.
+/// The meshes are built here (not taken from the viewport cache), so the
+/// image never shows tiles still meshing in the background.
+pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bool) -> SceneFrame {
+    let bounds = doc.data.bounds;
+    let (bmin, _) = bounds_box(bounds);
+    let proj = output_projection(doc, camera, size);
+    let target = rizxel_app::orbit_base(bounds) + camera.pan;
+    let (look, background) = RenderLook::from_settings(&doc.data.render);
+    let view = doc.view_meshes(false);
+    let gpu = |mesh: &rizxel_app::Mesh| {
+        let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Arc::new(GpuMesh::from_mesh((doc.id(), key), mesh, bmin))
+    };
+    let transparent: Vec<LayerMesh> = view
+        .transparent
+        .iter()
+        .map(|t| LayerMesh {
+            mesh: gpu(&t.mesh),
+            alpha: t.alpha,
+            center: t.center + bmin,
+        })
+        .collect();
+    SceneFrame {
+        view_proj: proj.view_proj,
+        eye: proj.eye,
+        target,
+        forward: proj.forward,
+        ortho: camera.is_ortho(),
+        distance: camera.distance,
+        grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
+        render_mode: true,
+        floor_grid: false,
+        voxel_grid: false,
+        ao,
+        background,
+        grid_color: theme::GRID_LINE,
+        axis_x: theme::AXIS_X,
+        axis_z: theme::AXIS_Z,
+        lines: Vec::new(),
+        fills: Vec::new(),
+        voxels: Some(match shaped_output(doc, bmin) {
+            Some(mesh) => mesh,
+            None => gpu(&view.opaque),
+        }),
+        translucent: if doc.data.render.display.shape == VoxelShape::Cube {
+            sorted_back_to_front(&proj, &transparent)
+        } else {
+            Vec::new()
+        },
+        materials: doc.data.materials.clone(),
+        references: Vec::new(),
+        look,
+        screen_y: [1.0, 0.0],
+        pt: None,
+    }
+}
+
+/// Render mode has no editing tools: a click on the model sets the depth
+/// of field focus there (when the lens has an aperture) and `Alt`+click
+/// makes the clicked voxel's layer active, so its material opens in the
+/// Render panel.
+fn render_pick(
+    ui: &Ui,
+    response: &egui::Response,
+    proj: &Projection,
+    bmin: Vec3,
+    blocked: &[Rect],
+    state: &mut AppState,
+) {
+    if !response.clicked_by(egui::PointerButton::Primary) {
+        return;
+    }
+    let Some(pos) = response.interact_pointer_pos() else {
+        return;
+    };
+    if blocked.iter().any(|r| r.contains(pos)) {
+        return;
+    }
+    let (origin, dir) = proj.world_ray(pos);
+    let ray = rizxel_engine::Ray::new(origin - bmin, dir);
+    let Some(doc) = state.doc_mut() else { return };
+    let area = VoxelBox::from_bounds(doc.data.bounds);
+    let hit = doc.with_visible_geometry(|vols| {
+        rizxel_engine::raycast::raycast_grid(&ray, &area, |p| {
+            vols.iter().any(|v| v.get(p) != rizxel_math::EMPTY_VOXEL)
+        })
+    });
+    let Some(hit) = hit else { return };
+    if ui.input(|i| i.modifiers.alt) {
+        if let Some(layer) = doc.layer_at(hit.voxel) {
+            doc.active_layer = layer;
+            let name = doc.data.layers[layer].name.clone();
+            state.status_message = Some(format!("Layer \"{name}\" is active"));
+        }
+        return;
+    }
+    if doc.data.render.camera.aperture > 0.0 {
+        // Distance along the view direction, which is what the lens uses.
+        let world = origin + dir * hit.t;
+        let mut s = doc.data.render.clone();
+        s.camera.focus_distance = (world - proj.eye()).dot(proj.forward).max(0.1);
+        doc.labeled("Focus", |d| d.set_render(s, false));
+    }
 }
 
 /// Translucent layers ordered farthest first by the depth of their box
@@ -605,6 +988,15 @@ fn scene_frame(
 ) -> SceneFrame {
     let camera = &state.camera;
     let view = state.view;
+    let (look, background) = match (state.view_mode, state.doc()) {
+        (ViewMode::Render, Some(doc)) => {
+            let (mut look, bg) = RenderLook::from_settings(&doc.data.render);
+            // The viewport never shows the transparency; output does.
+            look.transparent = false;
+            (look, bg)
+        }
+        _ => (RenderLook::default(), theme::WORKSPACE),
+    };
     let bold = state.doc().is_some_and(|d| d.plane.slice);
     let bound_color = if bold {
         theme::BOUND
@@ -635,10 +1027,13 @@ fn scene_frame(
         // Align grid lines with the voxel cells of the (possibly odd-sized) bounds.
         grid_origin: glam::Vec2::new(bmin.x.fract(), bmin.z.fract()),
         render_mode: state.view_mode == ViewMode::Render,
+        look,
+        screen_y: [1.0, 0.0],
+        pt: None,
         floor_grid: view.floor_grid,
         voxel_grid: view.voxel_grid,
         ao: view.ao(state.view_mode),
-        background: theme::WORKSPACE,
+        background,
         grid_color: theme::GRID_LINE,
         axis_x: theme::AXIS_X,
         axis_z: theme::AXIS_Z,

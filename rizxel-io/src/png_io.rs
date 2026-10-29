@@ -49,6 +49,23 @@ pub fn encode_rgba(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, Rz
     Ok(out)
 }
 
+/// Encodes RGBA16 pixels (`width * height * 4` values) as a 16-bit PNG.
+pub fn encode_rgba16(width: u32, height: u32, pixels: &[u16]) -> Result<Vec<u8>, RzxlError> {
+    if pixels.len() != (width * height * 4) as usize {
+        return Err(png_error("pixel buffer does not match the image size"));
+    }
+    let bytes: Vec<u8> = pixels.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Sixteen);
+        let mut writer = encoder.write_header().map_err(png_error)?;
+        writer.write_image_data(&bytes).map_err(png_error)?;
+    }
+    Ok(out)
+}
+
 /// Decodes any 8/16-bit PNG (gray, gray+alpha, RGB, RGBA, indexed) to RGBA8.
 pub fn decode_rgba(bytes: &[u8]) -> Result<RgbaImage, RzxlError> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
@@ -106,5 +123,15 @@ mod tests {
         assert_eq!(img.pixel(1, 0), [4, 5, 6, 7]);
         assert!(encode_rgba(4, 4, &pixels[..10]).is_err());
         assert!(decode_rgba(b"not a png").is_err());
+    }
+
+    #[test]
+    fn rgba16_is_stripped_to_8_bits_on_decode() {
+        let pixels: Vec<u16> = (0..16).map(|i| i * 4096 + 255).collect();
+        let png = encode_rgba16(2, 2, &pixels).unwrap();
+        assert_eq!(png[24], 16, "IHDR bit depth");
+        let img = decode_rgba(&png).unwrap();
+        assert_eq!(img.pixel(0, 0), [0, 16, 32, 48]);
+        assert!(encode_rgba16(2, 2, &pixels[..4]).is_err());
     }
 }

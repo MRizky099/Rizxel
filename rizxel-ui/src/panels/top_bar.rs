@@ -103,7 +103,9 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
             .max_rect(span(layout.switch))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    options::segmented(&mut child, "view_mode", &mut state.view_mode, &VIEW_MODES);
+    let mut mode = state.view_mode;
+    options::segmented(&mut child, "view_mode", &mut mode, &VIEW_MODES);
+    state.set_view_mode(mode);
     child
         .interact(child.min_rect(), Id::new("view_mode_hint"), Sense::hover())
         .on_hover_text("View mode: Model for editing, Render for the lit preview");
@@ -282,6 +284,23 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     .size(10.0)
                     .color(theme::TEXT_DIM),
             );
+            ui.separator();
+            if menu_item(
+                ui,
+                icon::CUBE,
+                "Shaped Mesh...",
+                "",
+                state.can_export_shaped(),
+            ) {
+                ui_state.render.export_shape = true;
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Render mode: the model as bricks, spheres, ... (OBJ, STL, GLB)",
+                )
+                .size(10.0)
+                .color(theme::TEXT_DIM),
+            );
         });
         ui.separator();
         // Goes through the app's close request, which asks about
@@ -421,6 +440,10 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
     };
     if menu_item(ui, check_glyph(state.view.ao(mode)), label, "", true) {
         state.view.toggle_ao(mode);
+    }
+    let render = mode == rizxel_app::ViewMode::Render;
+    if menu_item(ui, check_glyph(render), "Render Mode", "F5", true) {
+        state.toggle_view_mode();
     }
 }
 
@@ -888,7 +911,7 @@ fn menu_item(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: boo
 fn panels_menu(ui: &mut Ui, dock: &mut Workspace) {
     ui.menu_button(icon_label(ui, icon::SQUARES_FOUR, "Panels", None), |ui| {
         ui.set_min_width(200.0);
-        for panel in dock::Panel::ALL {
+        for panel in dock::Panel::offered(dock.mode()) {
             let closable = panel.permissions().closable;
             let mut open = dock.is_visible(panel);
             let toggle = ui.add_enabled(closable, egui::Checkbox::new(&mut open, panel.label()));
@@ -1195,6 +1218,7 @@ fn shortcut_rows(ui: &mut Ui) {
         ("Shift+G", "Show or hide the voxel grid on the model"),
         ("Shift+B", "Show or hide the model bounds"),
         ("Shift+H", "Ghosts: other layers semi-transparent"),
+        ("F5", "Model / Render mode"),
         ("Right drag (viewport)", "Orbit camera"),
         ("Middle drag (viewport)", "Pan camera"),
         ("Middle double-click", "Reset camera"),

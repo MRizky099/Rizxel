@@ -45,4 +45,9 @@ impl AppPaths {
     pub fn favorites_file(&self) -> PathBuf {
         self.root.join("favorites.json")
     }
+
+    /// Render setting presets saved by the user.
+    pub fn render_presets_file(&self) -> PathBuf {
+        self.root.join("render_presets.json")
+    }
 }

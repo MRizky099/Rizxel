@@ -20,10 +20,14 @@ pub struct RizxelApp {
     tools: ToolInput,
     /// Framebuffer format of the wgpu surface; `None` if wgpu is unavailable.
     target_format: Option<wgpu::TextureFormat>,
-    /// Dockable panel layout of the editor workspace.
-    dock: dock::Workspace,
+    /// Dockable panel layouts, one per view mode.
+    docks: dock::Workspaces,
     /// Every document is answered for: the next close request is let through.
     quitting: bool,
+    /// The window's wgpu device (renders outputs); `None` without wgpu.
+    render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// Image, photo-realistic and turntable outputs.
+    outputs: crate::output::Outputs,
 }
 
 impl RizxelApp {
@@ -39,7 +43,13 @@ impl RizxelApp {
             );
             rs.target_format
         });
-        let state = AppState::with_paths(rizxel_app::AppPaths::new());
+        let mut state = AppState::with_paths(rizxel_app::AppPaths::new());
+        // Compute shaders (not the GL backend) for the path tracer.
+        state.render_view.path_tracing = cc
+            .wgpu_render_state
+            .as_ref()
+            .is_some_and(|rs| crate::render::pathtrace::supported(&rs.adapter, &rs.device));
+        log::info!("path tracer available: {}", state.render_view.path_tracing);
         // Recovery files left by a session that did not exit cleanly.
         let ui = panels::UiState {
             recovery: state.recoverable(),
@@ -52,8 +62,10 @@ impl RizxelApp {
             meshes: viewport::MeshCache::default(),
             tools: ToolInput::default(),
             target_format,
-            dock: dock::Workspace::default(),
+            docks: dock::Workspaces::default(),
             quitting: false,
+            render_state: cc.wgpu_render_state.clone(),
+            outputs: Default::default(),
         }
     }
 
@@ -180,6 +192,9 @@ impl RizxelApp {
         if pressed(KeyboardShortcut::new(CMD, Key::N)) {
             actions::new_document(&mut self.state);
         }
+        if pressed(KeyboardShortcut::new(Modifiers::NONE, Key::F5)) {
+            self.state.toggle_view_mode();
+        }
         if pressed(KeyboardShortcut::new(CMD_SHIFT, Key::F)) {
             self.ui.zen_mode = !self.ui.zen_mode;
         }
@@ -291,7 +306,7 @@ impl eframe::App for RizxelApp {
         let meshes = &mut self.meshes;
         let tools = &mut self.tools;
         let target_format = self.target_format;
-        let dock = &mut self.dock;
+        let dock = self.docks.get_mut(state.view_mode);
         let flat = |fill| Frame::NONE.fill(fill);
 
         // Panel order matters: outermost first, central panel last.
@@ -340,6 +355,7 @@ impl eframe::App for RizxelApp {
                 dock::Panel::References => scroll_panel(ui, panel, |ui| {
                     panels::references::show(ui, state, ui_state)
                 }),
+                dock::Panel::Render => panels::render::show(ui, state, ui_state),
             });
             if let Some(error) = error {
                 log::warn!("{error}");
@@ -347,9 +363,17 @@ impl eframe::App for RizxelApp {
             }
         });
 
+        self.outputs.update(
+            &ctx,
+            self.render_state.as_ref(),
+            state,
+            &mut ui_state.render,
+        );
+
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);
         panels::export::show(&ctx, state, &mut ui_state.dialogs);
+        panels::render::shaped_dialog(&ctx, state, &mut ui_state.render);
         resize::handle_edges(&ctx);
         resize::paint_border(&ctx);
     }
