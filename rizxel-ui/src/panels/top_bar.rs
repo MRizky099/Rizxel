@@ -18,6 +18,7 @@ const CONTROL_WIDTH: f32 = 46.0;
 /// Shown in *Help ▸ About Rizxel*.
 const AUTHOR_NAME: &str = "Muhammad Rizky Abdillah";
 const AUTHOR_HANDLE: &str = "MRizky099";
+const REPO_URL: &str = "https://github.com/MRizky099/Rizxel";
 
 pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mut Workspace) {
     let bar = ui.max_rect();
@@ -1145,6 +1146,15 @@ pub fn show_dialogs(ctx: &egui::Context, _state: &mut AppState, ui_state: &mut U
                 ui.label(
                     egui::RichText::new(format!("© 2026 {AUTHOR_NAME}")).color(theme::TEXT_DIM),
                 );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Free software under the GNU General Public License v3 or later.\n\
+                         This program comes with ABSOLUTELY NO WARRANTY.",
+                    )
+                    .color(theme::TEXT_DIM),
+                );
+                ui.hyperlink_to("Source code and license", REPO_URL);
             });
     }
 

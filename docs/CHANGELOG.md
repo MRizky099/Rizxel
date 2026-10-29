@@ -5,6 +5,18 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **License: GPL-3.0-or-later** (was declared as MIT OR Apache-2.0, with no
+  license file). The full text is in `LICENSE`, `Cargo.toml` declares
+  `GPL-3.0-or-later`, and *Help ▸ About Rizxel* shows the license, the
+  no-warranty notice and a link to the source. `vendor/craft-ui` keeps its
+  MIT OR Apache-2.0 license.
+- **README** rewritten: icon and badges (CI, version, license, Rust,
+  platforms, `unsafe` forbidden), screenshots of Model mode, Render mode and a
+  path-traced render, requirements, getting started, a file format table,
+  roadmap, contributing, acknowledgements and the GPL notice. Screenshots live
+  in `docs/images/readme/`.
+
 ## [0.6.0] — 2026-10-30
 
 Milestone M5: pipeline, export and rendering. glTF / GLB, Qubicle and PLY
