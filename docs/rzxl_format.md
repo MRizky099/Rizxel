@@ -1,4 +1,4 @@
-# `.rzxl` Project Format — Version 4
+# `.rzxl` Project Format — Version 5
 
 `.rzxl` is Rizxel's native project format. Reader and writer live in
 `rizxel-io/src/format_rzxl.rs`. The shared layer types (`LayerKind`,
@@ -13,7 +13,7 @@ All integers are little-endian.
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic `RZXL` |
-| 4 | 4 | `u32` format version (currently `4`) |
+| 4 | 4 | `u32` format version (currently `5`) |
 | 8 | 4 | `u32` uncompressed body length (max 512 MiB) |
 | 12 | n | zstd-compressed UTF-8 JSON body (`ProjectFile`) |
 
@@ -30,12 +30,16 @@ save never truncates an existing project.
   "selected_color": 35,                // palette index, never 0
   "materials": [                       // v3; referenced by index
     { "name": "Neon", "metallic": 0.2, "roughness": 0.5,
-      "emission": [0.2, 0.8, 1.0], "tint": [1, 1, 1, 1] }
+      "emission": [0.2, 0.8, 1.0], "tint": [1, 1, 1, 1],
+      // v5: path tracer fields
+      "specular": 0.5, "ior": 1.5, "transmission": 0.0,
+      "clearcoat": 0.0, "emission_strength": 1.0 }
   ],
   "layers": [ /* bottom to top, see below */ ],
   "active_layer": 0,
   "bounds": [32, 32, 32],              // 1..=256 per axis
-  "references": [ /* v4, draw order; omitted when empty, see below */ ]
+  "references": [ /* v4, draw order; omitted when empty, see below */ ],
+  "render": { /* v5, Render mode settings, see below */ }
 }
 ```
 
@@ -119,6 +123,63 @@ sorted back to front, and fully transparent ones are not drawn.
 - `size` is the image's width and height; a quarter turn swaps the
   rectangle's extents on the plane.
 
+## Render settings (`RenderSettings`, version 5)
+
+Render mode's settings are saved so a render can be reproduced. Every group
+and field has a default, so a missing field (or a missing `render`, as in
+version 1–4 files) takes the default. Colors are sRGB in `0..=1`, angles
+degrees.
+
+```jsonc
+"render": {
+  "light": {
+    "sun": true, "sun_azimuth": 45, "sun_elevation": 50, "sun_size": 5,
+    "sun_intensity": 3, "sun_color": [1, 0.97, 0.92],
+    "sky": "gradient",             // uniform | gradient | image
+    "sky_color": [0.78, 0.84, 0.92], "sky_zenith": [0.45, 0.6, 0.85],
+    "sky_intensity": 1, "sky_rotation": 0,
+    "sky_image": "",               // path of an equirectangular .hdr
+    "fog": false, "fog_density": 0.01, "fog_color": [0.85, 0.88, 0.92],
+    "studio_lights": false         // fill and rim lights next to the sun
+  },
+  "sample": {
+    "samples": 256, "diffuse_bounces": 3, "specular_bounces": 6,
+    "transmission_bounces": 8, "russian_roulette": true, "clamp": 10,
+    "filter": "gaussian",          // box | gaussian
+    "pixelated": false, "denoise": "auto"   // off | auto
+  },
+  "display": {
+    "ground": true, "ground_color": [0.72, 0.72, 0.72], "shadow_catcher": false,
+    "background": "gradient",      // color | gradient | sky | transparent
+    "background_color": [0.36, 0.38, 0.42], "background_top": [0.62, 0.66, 0.72],
+    "bevel": 0.06, "seams": false,
+    "edges": false, "edge_color": [0.1, 0.1, 0.12], "edge_width": 1,
+    "shape": "cube",               // cube | brick | rounded | sphere | cylinder
+    "cell": 1                      // 0.5..=1
+  },
+  "camera": {
+    "fov": 45, "aperture": 0, "focus_distance": 64, "blades": 0,
+    "exposure": 0, "tone_map": "aces",      // linear | aces | filmic
+    "gamma": 2.2, "vignette": 0,
+    "bloom": false, "bloom_threshold": 1, "bloom_strength": 0.15
+  },
+  "output": {
+    "kind": "image",               // image | photo | turntable
+    "width": 1920, "height": 1080, "transparent": false,
+    "folder": "", "name": "{name}_render",
+    "time_limit": 0, "png16": false,
+    "turntable_frames": 36, "turntable_angle": 360,
+    "turntable_path_traced": false, "turntable_samples": 32,
+    "turntable_png": true, "turntable_gif": true, "turntable_sheet": false,
+    "gif_fps": 12
+  }
+}
+```
+
+The voxel shape is a view setting: the stored voxels never change, and
+Model mode and its exports ignore it. The camera's orientation and
+projection are view state and are not saved.
+
 ## Visible effects
 
 Every stored field changes what the editor shows:
@@ -134,6 +195,8 @@ Every stored field changes what the editor shows:
 | `layers[].material`, `materials[]` | Render mode: tint color, emission glow, roughness and metallic highlight; the tint alpha also acts as opacity. Layers panel material editor |
 | `layers[].kind.collapsed` | Layers panel: the group's rows are folded |
 | `references[]` | Textured quads in the viewport; References panel (thumbnail, name, eye and lock, plane badge, properties) |
+| `materials[].specular`, `ior`, `transmission`, `clearcoat`, `emission_strength` | Path-traced Render mode and outputs; Render panel's Material tab |
+| `render` | Render mode: the viewport preview, the Render panel and render bar, and the files the Render button writes |
 | `layers[].id`, `references[].id`, `generator` | Not shown: link targets and diagnostics |
 
 ## Validation
@@ -144,7 +207,11 @@ refuse projects that would fail the same check:
 - At most 1024 layers, 256 materials and 256-character names. Group nesting
   is at most 32 levels deep.
 - Layer ids are non-zero and unique.
-- `opacity` and every material channel are finite and inside `0..=1`.
+- `opacity` and every material channel are finite and inside `0..=1`,
+  except `ior` (`1..=3`) and `emission_strength` (`0..=100`).
+- `render` values are not rejected but clamped into range on load (sample
+  counts, bounces, sizes up to 8192, angles, colors, paths up to 1024
+  characters); non-finite numbers fall back to their defaults.
 - `material` indices exist. `crop`, shape areas and clone offsets are
   non-empty and within ±1024 voxels.
 - A `parent` must exist, be a group, and must not form a cycle.
@@ -167,11 +234,13 @@ refuse projects that would fail the same check:
 | 2 | Per-layer voxel runs. |
 | 3 | Layer ids, opacity, groups, linked clones, shape layers, crop boxes, materials, `generator`. |
 | 4 | Reference images (`references`) with their image files embedded. |
+| 5 | Render settings (`render`) and the material fields `specular`, `ior`, `transmission`, `clearcoat`, `emission_strength`. |
 
 - Each field added after version 1 has a default, so older bodies decode into
   the current structures. Version 1 and 2 layers become plain voxel layers
   with ids `1..=n`, opacity 1, no group and the default material. Version
-  1–3 projects have no reference images.
+  1–3 projects have no reference images; version 1–4 projects get the
+  default render settings and material fields.
 - Writers always write the newest version.
 - Files with a newer version are rejected (`UnsupportedVersion`). They are
   never partially loaded, because the next save would drop data the newer

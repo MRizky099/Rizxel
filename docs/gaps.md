@@ -11,7 +11,7 @@ Severity: **High** blocks real-world use · **Medium** is a noticeable limitatio
 The **Phase** column names the plan that closes the gap (see
 [`milestones.md`](plan/milestones.md)); `post` means after 1.0.
 
-> Last updated 2026-10-24.
+> Last updated 2026-10-29.
 
 ## Closed since the last revision
 
@@ -60,6 +60,11 @@ The **Phase** column names the plan that closes the gap (see
 | No heightmap import, and `voxelize` has no UI | Phase 11, `3701e78` (Heightmap import, Voxelizer dialog) |
 | No mesh export options (scale, pivot, per-layer files) | Phase 11, `5e825eb` |
 | Qubicle files aren't checked in Qubicle | Phase 11 fixes: checked in Qubicle 3.1; `.qb` orientation flag, `.qbt` face mask and groups corrected |
+| No image output: PNG render, photo-realistic render, turntables, sprite sheets | Phase 11b (*Image*, *Photo-realistic*, *Turntable* outputs) |
+| No shadows or outline shading in Render mode | Phase 11b (path tracer: shadows, GI, outline) |
+| Render mode has no layout or options of its own | Phase 11b (Render layout, render bar, Render panel) |
+| No photo-realistic rendering | Phase 11b (GPU path tracer) |
+| No render-only voxel shapes or shaped-mesh export | Phase 11b (voxel shapes, *Export Shaped Mesh*) |
 
 ## Known bugs
 
@@ -81,7 +86,6 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No image output: PNG render, photo-realistic render, turntables, sprite sheets | Medium | 11b | |
 | glTF isn't checked in Godot | Low | 12 | Blender 5.2 imports the glTF (vertex colors and palette texture), both OBJ layouts, PLY and STL with matching colors; Godot wasn't available. |
 | The Fast load OBJ doesn't load faster in Blender | Low | — | Blender 5.2 imports a 489k-triangle terrain in 1.38 s as Fast load and 0.99 s in the MagicaVoxel layout (best of three; PLY 0.40 s, GLB 4.4 s). Fast load has 38% more vertices and one material per color, so MagicaVoxel's layout stays the default; other loaders weren't timed. |
 | Fast load `Kd` colors look darker in some viewers | Low | — | `Kd` is written as linear RGB, like BrickLink Studio and as Blender reads it; Windows 3D Viewer reads it as sRGB. Rizxel's importer restores the exact colors. |
@@ -125,10 +129,11 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| No shadows or outline shading in Render mode | Medium | 11b | Phase 9 added per-vertex AO and material highlights; shadows, GI and edges come with the path tracer in Phase 11b. |
-| Render mode has no layout or options of its own | Medium | 11b | It only switches the shading; panels and tools stay as in Model mode. |
-| No photo-realistic rendering | Medium | 11b | |
-| No render-only voxel shapes (bricks with studs, spheres, cylinders) or shaped-mesh export | Low | 11b | MagicaVoxel offers these under *Display ▸ Shape*. |
+| The raster *Image* has no shadows, bevels or outline | Low | post | Those come from the path tracer (*Photo-realistic*); *Image* is the fast Phase 9 raster look with the sun direction and the voxel shape. |
+| The path tracer reaches the sky only by BSDF sampling | Low | post | No importance sampling of HDR skies, so small bright spots in an HDR image converge slowly. The sky image is referenced by path, not embedded in the `.rzxl`. |
+| The raster shape preview hides translucency | Low | post | With a shape other than Cube the raster view and *Image* draw every layer opaque; the path tracer keeps layer and material opacity. Above 1M voxels the raster view keeps cubes. |
+| *Photo-realistic* renders don't fill in in the viewport | Low | post | Progress shows in the Render panel's footer; the viewport keeps the preview (paused). |
+| Shaped export has no per-layer objects or up-axis choice | Low | post | OBJ and GLB are Y up, STL Z up; GLB has one primitive per layer material; no `.gltf` text output. |
 | Translucent layers sort per layer, not per triangle | Low | post | Interpenetrating translucent layers can blend in the wrong order; no order-independent transparency. |
 | Ambient occlusion costs triangles | Low | 12 | AO-aware merging gives about 1.8× the triangles of the plain mesh (`mesh_bench`: 89,788 vs 49,984). |
 | Loading a file still parses on the UI thread | Low | 12 | Meshing is in the background since Phase 9, but reading a large `.vox` or `.rzxl` blocks before the first frame. |
