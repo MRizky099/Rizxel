@@ -413,7 +413,7 @@ fn display_tab(ui: &mut Ui, s: &mut RenderSettings, render: &mut RenderUi) {
         let exportable = d.shape != VoxelShape::Cube;
         if ui
             .add_enabled(exportable, egui::Button::new("Export shape…"))
-            .on_hover_text("Export the model as a mesh with this shape (OBJ, STL, glTF)")
+            .on_hover_text("Export the model as a mesh with this shape (OBJ, STL, GLB)")
             .on_disabled_hover_text("Pick a shape other than Cube to export it")
             .clicked()
         {

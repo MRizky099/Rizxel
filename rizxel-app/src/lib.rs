@@ -1643,12 +1643,24 @@ impl AppState {
             bmin + hi.as_vec3(),
             self.viewport_aspect,
         );
+        // Render mode looks through the render settings' lens: keep the box
+        // filling the view at its field of view.
+        if self.view_mode == ViewMode::Render && !self.camera.is_ortho() {
+            if let Some(fov) = self.doc().map(|d| d.data.render.camera.fov.to_radians()) {
+                let k = (OrbitCamera::FOV_Y * 0.5).tan() / (fov * 0.5).tan().max(1e-3);
+                self.camera.distance = (self.camera.distance * k)
+                    .clamp(OrbitCamera::MIN_DISTANCE, OrbitCamera::MAX_DISTANCE);
+            }
+        }
     }
 
     // ------------------------------------------------------------ status
 
     /// Hint text for the status bar.
     pub fn hint(&self) -> String {
+        if self.view_mode == ViewMode::Render {
+            return "Render mode: right drag orbits, click sets the focus, Alt+click picks a layer. F5: Model mode".to_owned();
+        }
         format!(
             "{} Tool: {}",
             self.tool.label(),

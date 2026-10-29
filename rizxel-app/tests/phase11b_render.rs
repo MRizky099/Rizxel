@@ -208,3 +208,20 @@ fn model_exports_ignore_the_render_shape() {
     };
     assert_eq!(strip(a), strip(b));
 }
+
+#[test]
+fn render_mode_frames_through_the_render_lens() {
+    let mut state = two_bricks();
+    state.frame_selection();
+    let model = state.camera.distance;
+    state.set_view_mode(ViewMode::Render);
+    let doc = state.doc_mut().unwrap();
+    let mut s = doc.data.render.clone();
+    s.camera.fov = 22.5;
+    doc.set_render(s, false);
+    state.frame_selection();
+    // About tan(22.5°) / tan(11.25°) ≈ 2.08 times farther away.
+    let ratio = state.camera.distance / model;
+    assert!((ratio - 2.08).abs() < 0.05, "ratio {ratio}");
+    assert!(state.hint().starts_with("Render mode"));
+}

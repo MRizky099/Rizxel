@@ -15,12 +15,14 @@
 //!   the model
 //! - `--raster` the fast raster *Image* render instead of path tracing
 //! - `--transparent` transparent background
+//! - `--material diffuse|plastic|metal|glass|emit` gives every layer one
+//!   material with that preset
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use rizxel_app::{render_job, AppState};
-use rizxel_math::{RenderPreset, VoxelShape};
+use rizxel_math::{Material, MaterialPreset, RenderPreset, VoxelShape};
 use rizxel_ui::render::offscreen::{headless_device, OffscreenRaster};
 use rizxel_ui::render::pathtrace::{document_params, PathTracer, PhotoJob, PtInputs, SkyCache};
 
@@ -39,6 +41,7 @@ fn main() {
     let mut pitch = 30.0f32;
     let mut raster = false;
     let mut transparent = false;
+    let mut material = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -77,6 +80,15 @@ fn main() {
             "--pitch" => pitch = value().parse().unwrap_or_else(|e| fail(e)),
             "--raster" => raster = true,
             "--transparent" => transparent = true,
+            "--material" => {
+                let v = value();
+                material = Some(
+                    MaterialPreset::ALL
+                        .into_iter()
+                        .find(|p| p.label().eq_ignore_ascii_case(&v))
+                        .unwrap_or_else(|| fail(format!("unknown material {v}"))),
+                )
+            }
             _ if arg.starts_with("--") => fail(format!("unknown option {arg}")),
             _ => paths.push(PathBuf::from(arg)),
         }
@@ -102,6 +114,7 @@ fn main() {
     state.viewport_aspect = size[0] as f32 / size[1] as f32;
     state.camera.yaw = yaw;
     state.camera.pitch = pitch;
+    state.set_view_mode(rizxel_app::ViewMode::Render);
     let doc = state.doc_mut().unwrap_or_else(|| fail("nothing opened"));
     let mut s = doc.data.render.clone();
     if let Some(p) = preset {
@@ -112,6 +125,22 @@ fn main() {
     }
     s.output.transparent = transparent;
     doc.set_render(s, false);
+    if let Some(preset) = material {
+        let mut m = Material::new(preset.label());
+        m.apply_preset(preset);
+        doc.set_materials(vec![m]);
+        for i in 0..doc.data.layers.len() {
+            let props = doc.data.layers[i].props.clone();
+            doc.set_layer_props(
+                i,
+                rizxel_app::LayerProps {
+                    material: Some(0),
+                    ..props
+                },
+                false,
+            );
+        }
+    }
     state.frame_selection();
     eprintln!("bounds {:?}", state.doc().map(|d| d.data.bounds));
     let doc = state.doc().unwrap_or_else(|| fail("nothing opened"));
