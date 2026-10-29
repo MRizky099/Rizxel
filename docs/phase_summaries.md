@@ -21,6 +21,8 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 10b | Layer hierarchy and reference images | ✅ Done | `v0.5.0` |
 | 10c | Box select, lines and curves, Transform tool | ✅ Done | `v0.5.0` |
 | 10d | Workspace and 0.5.0 | ✅ Done | `v0.5.0` |
+| 11 | Pipeline and export | ✅ Done | `v0.6.0` |
+| 11b | Render mode, path tracer and render output | ✅ Done | `v0.6.0` |
 
 ---
 
@@ -302,7 +304,7 @@ Plan: [`rizxel_phase10d_implementation_plan.md`](plan/rizxel_phase10d_implementa
 
 Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementation_plan.md)
 
-**Delivered** (branch `claude/phase11-pipeline-export-6102dc`, not released yet)
+**Delivered** (PR #10, tag `v0.6.0`)
 - `format_gltf.rs`: hand-written glTF 2.0 / GLB with one node per visible layer, group
   nodes, clone instancing (`ExportLayer::instance_of`), vertex colors or the palette
   texture and per-layer PBR materials; `mesh_export::Pivot` shared by every mesh
@@ -328,7 +330,7 @@ Plan: [`rizxel_phase11_implementation_plan.md`](plan/rizxel_phase11_implementati
 
 Plan: [`rizxel_phase11b_implementation_plan.md`](plan/rizxel_phase11b_implementation_plan.md)
 
-**Delivered** (branch `claude/phase11-pipeline-export-6102dc`, not pushed or released)
+**Delivered** (PR #11, tag `v0.6.0`)
 - `rizxel-math/src/render.rs`: `RenderSettings` (light, sample, display, camera, output),
   built-in presets and `sanitize`; `Material` gains specular, IOR, transmission, clear
   coat and emission strength with presets. `.rzxl` version 5 stores them; older files

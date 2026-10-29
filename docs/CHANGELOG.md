@@ -5,6 +5,13 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-30
+
+Milestone M5: pipeline, export and rendering. glTF / GLB, Qubicle and PLY
+formats, OBJ layouts, slices, mesh voxelizing and heightmaps, then a Render
+mode with a progressive GPU path tracer, Image, Photo-realistic and Turntable
+outputs, voxel shapes and shaped-mesh export.
+
 ### Phase 11b: Render mode, path tracer and render output (2026-10-29)
 
 - **Render mode is a rendering workspace** with its own panel layout (kept separately

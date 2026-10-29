@@ -7,11 +7,13 @@ A native voxel editor written in pure Rust. Rizxel uses `egui` for the interface
 [CADCraft](https://github.com/storytold/cadcraft), and its voxel model and tools draw on
 Goxel, MagicaVoxel and Qubicle.
 
-> Status: pre-release (`0.5.0`). Phases 1–10d are in place: the editing tools, import/export,
+> Status: pre-release (`0.6.0`). Phases 1–11b are in place: the editing tools, import/export,
 > Slice Mode, CI, safe editing (save prompt, autosave, clipboard, transforms), visual
-> fidelity (orthographic camera, opacity, materials, ambient occlusion) and editing power
+> fidelity (orthographic camera, opacity, materials, ambient occlusion), editing power
 > (selection operations, Mask Mode, structure and palette tools, the layer tree, reference
-> images, lines, the Transform tool and a tabbed workspace). See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+> images, lines, the Transform tool and a tabbed workspace) and the pipeline (glTF,
+> Qubicle and PLY formats, mesh and heightmap import, a Render mode with a GPU path
+> tracer, render output and shaped-mesh export). See [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
 
 ## Features
 
@@ -45,8 +47,15 @@ Goxel, MagicaVoxel and Qubicle.
 - **Workspace**: dockable and floating panels in tab groups with scrolling tab strips,
   document tabs (`name*.rzxl` while unsaved), Zen mode, and a frameless window with a
   custom title bar holding the Model / Render switch.
+- **Render mode**: a rendering workspace with a progressive GPU path tracer (Vulkan or
+  Metal), sun, sky, HDR and studio lights, presets, materials with glass, metal and
+  emission, depth of field, a denoiser, and voxel shapes (cubes, rounded, bricks with
+  studs). Outputs: *Image* (raster), *Photo-realistic* (path traced, up to 8192 px) and
+  *Turntable* (frames, contact sheet or GIF), plus shaped-mesh export to OBJ, STL or GLB.
 - **Files**: native `.rzxl` (zstd-compressed JSON). Rizxel can also import and export
-  MagicaVoxel `.vox`, Goxel `.gox`, Wavefront `.obj` + `.mtl` and `.stl`.
+  MagicaVoxel `.vox`, Goxel `.gox`, Qubicle `.qb` / `.qbt` / `.qef`, Wavefront `.obj` +
+  `.mtl`, `.stl` and `.ply`, export glTF 2.0 / GLB and image slices, and import meshes
+  (voxelized) and heightmaps.
 
 ## Quick start
 
