@@ -363,8 +363,12 @@ impl eframe::App for RizxelApp {
             }
         });
 
-        self.outputs
-            .update(self.render_state.as_ref(), state, &mut ui_state.render);
+        self.outputs.update(
+            &ctx,
+            self.render_state.as_ref(),
+            state,
+            &mut ui_state.render,
+        );
 
         // Modal dialogs and frameless window chrome draw on top of everything.
         panels::top_bar::show_dialogs(&ctx, state, ui_state);

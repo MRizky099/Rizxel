@@ -116,9 +116,182 @@ pub fn unpremultiply(pixels: &mut [u8]) {
     }
 }
 
+/// Camera yaw (degrees) of each turntable frame, starting at `start` and
+/// turning `angle` in `frames` equal steps (a full turn does not repeat
+/// the first frame at the end).
+pub fn turntable_yaws(start: f32, frames: u32, angle: f32) -> Vec<f32> {
+    let frames = frames.max(1);
+    let step = angle / frames as f32;
+    (0..frames)
+        .map(|i| (start + step * i as f32).rem_euclid(360.0))
+        .collect()
+}
+
+/// Largest sprite sheet side in pixels.
+pub const MAX_SHEET_SIDE: u32 = 16_384;
+
+/// Grid of turntable frames in one sprite sheet image, row by row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetLayout {
+    pub columns: u32,
+    pub rows: u32,
+    /// Size of one frame.
+    pub frame: [u32; 2],
+    pub count: u32,
+}
+
+impl SheetLayout {
+    /// The squarest grid for `count` frames of `frame` pixels.
+    pub fn new(count: u32, frame: [u32; 2]) -> Self {
+        let count = count.max(1);
+        let columns = (count as f64).sqrt().ceil() as u32;
+        Self {
+            columns,
+            rows: count.div_ceil(columns),
+            frame,
+            count,
+        }
+    }
+
+    /// Sheet size in pixels.
+    pub fn size(&self) -> [u32; 2] {
+        [self.columns * self.frame[0], self.rows * self.frame[1]]
+    }
+
+    /// `[x, y, width, height]` of frame `i`.
+    pub fn rect(&self, i: u32) -> [u32; 4] {
+        [
+            (i % self.columns) * self.frame[0],
+            (i / self.columns) * self.frame[1],
+            self.frame[0],
+            self.frame[1],
+        ]
+    }
+}
+
+/// Lays `frames` out in a sprite sheet. Refused above
+/// [`MAX_SHEET_SIDE`] (the frames are still written on their own).
+pub fn compose_sheet(frames: &[RgbaImage]) -> Result<(RgbaImage, SheetLayout), String> {
+    let first = frames.first().ok_or("no frames")?;
+    let layout = SheetLayout::new(frames.len() as u32, [first.width, first.height]);
+    let [w, h] = layout.size();
+    if w > MAX_SHEET_SIDE || h > MAX_SHEET_SIDE {
+        return Err(format!(
+            "a {w}×{h} sprite sheet is too large (limit {MAX_SHEET_SIDE} px): use a smaller size or fewer frames"
+        ));
+    }
+    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    for (i, f) in frames.iter().enumerate() {
+        let [x, y, fw, fh] = layout.rect(i as u32);
+        if (f.width, f.height) != (fw, fh) {
+            return Err(format!("frame {i} has another size"));
+        }
+        for row in 0..fh {
+            let src = (row * fw * 4) as usize;
+            let dst = (((y + row) * w + x) * 4) as usize;
+            pixels[dst..dst + (fw * 4) as usize]
+                .copy_from_slice(&f.pixels[src..src + (fw * 4) as usize]);
+        }
+    }
+    Ok((
+        RgbaImage {
+            width: w,
+            height: h,
+            pixels,
+        },
+        layout,
+    ))
+}
+
+/// JSON describing a sprite sheet: the image, frame size, grid, playback
+/// speed and each frame's rectangle and camera angle.
+pub fn sheet_json(layout: &SheetLayout, image: &str, fps: u32, yaws: &[f32]) -> String {
+    let frames: Vec<serde_json::Value> = (0..layout.count)
+        .map(|i| {
+            let [x, y, w, h] = layout.rect(i);
+            serde_json::json!({
+                "index": i,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "yaw": yaws.get(i as usize).copied().unwrap_or(0.0),
+            })
+        })
+        .collect();
+    let json = serde_json::json!({
+        "image": image,
+        "frame_width": layout.frame[0],
+        "frame_height": layout.frame[1],
+        "columns": layout.columns,
+        "rows": layout.rows,
+        "fps": fps,
+        "frames": frames,
+    });
+    serde_json::to_string_pretty(&json).unwrap_or_default()
+}
+
+/// Writes a looping GIF of `frames`.
+pub fn save_gif(path: &Path, frames: &[RgbaImage], fps: u32) -> std::io::Result<()> {
+    let bytes = rizxel_io::gif_io::encode_gif(frames, fps).map_err(io_error)?;
+    write_file(path, &bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turntable_frames_turn_evenly() {
+        let yaws = turntable_yaws(45.0, 36, 360.0);
+        assert_eq!(yaws.len(), 36);
+        assert_eq!(yaws[0], 45.0);
+        assert!((yaws[1] - 55.0).abs() < 1e-4);
+        assert!((yaws[35] - 35.0).abs() < 1e-3, "wraps past 360");
+        let half = turntable_yaws(0.0, 4, 180.0);
+        assert_eq!(half, vec![0.0, 45.0, 90.0, 135.0]);
+        assert_eq!(turntable_yaws(10.0, 0, 360.0), vec![10.0]);
+    }
+
+    #[test]
+    fn sprite_sheet_rects_and_json() {
+        let layout = SheetLayout::new(36, [64, 48]);
+        assert_eq!((layout.columns, layout.rows), (6, 6));
+        assert_eq!(layout.size(), [384, 288]);
+        assert_eq!(layout.rect(7), [64, 48, 64, 48]);
+        let odd = SheetLayout::new(5, [10, 10]);
+        assert_eq!((odd.columns, odd.rows), (3, 2));
+
+        let frames: Vec<RgbaImage> = (0..5u8)
+            .map(|i| RgbaImage {
+                width: 2,
+                height: 2,
+                pixels: vec![i * 40; 16],
+            })
+            .collect();
+        let (sheet, layout) = compose_sheet(&frames).unwrap();
+        assert_eq!((sheet.width, sheet.height), (6, 4));
+        assert_eq!(sheet.pixel(2, 2), [160; 4], "frame 4 is at column 1, row 1");
+        assert_eq!(sheet.pixel(3, 3), [160; 4]);
+        assert_eq!(sheet.pixel(4, 2), [0; 4], "the last cell stays empty");
+        assert_eq!(sheet.pixel(0, 0), [0; 4]);
+        let json: serde_json::Value =
+            serde_json::from_str(&sheet_json(&layout, "s.png", 12, &[0.0, 72.0])).unwrap();
+        assert_eq!(json["frames"].as_array().unwrap().len(), 5);
+        assert_eq!(json["frames"][1]["x"], 2);
+        assert_eq!(json["frames"][1]["yaw"], 72.0);
+        assert_eq!(json["columns"], 3);
+
+        let huge = vec![
+            RgbaImage {
+                width: 9000,
+                height: 1,
+                pixels: vec![0; 36_000],
+            };
+            4
+        ];
+        assert!(compose_sheet(&huge).is_err());
+    }
 
     #[test]
     fn stems_fill_the_pattern() {
