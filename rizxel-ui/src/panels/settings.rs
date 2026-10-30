@@ -132,9 +132,12 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, dialog: &mut Option<Setti
             }
         });
         ui.separator();
+        // One height for every tab, so the dialog doesn't jump when the tab
+        // changes; less in a small window.
+        let height = (ctx.content_rect().height() - 200.0).clamp(160.0, 420.0);
         egui::ScrollArea::vertical()
-            .max_height(420.0)
-            .auto_shrink([false, true])
+            .max_height(height)
+            .auto_shrink([false, false])
             .show(ui, |ui| match d.tab {
                 Tab::General => general(ui, d),
                 Tab::Viewport => viewport(ui, d),
@@ -184,7 +187,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, dialog: &mut Option<Setti
 
 fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
     ui.label(label);
-    add(ui);
+    ui.horizontal(add);
     ui.end_row();
 }
 

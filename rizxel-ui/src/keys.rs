@@ -86,9 +86,25 @@ pub fn captured_chord(input: &egui::InputState) -> Option<(Key, Modifiers)> {
             repeat: false,
             modifiers,
             ..
-        } => Some((*key, *modifiers)),
+        } if !is_modifier(*key) => Some((*key, *modifiers)),
         _ => None,
     })
+}
+
+/// A modifier on its own: egui sends these as key presses too, before the
+/// key they modify, so a capture waits for the key that follows.
+fn is_modifier(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::SuperLeft
+            | Key::SuperRight
+    )
 }
 
 #[cfg(test)]
@@ -111,6 +127,23 @@ mod tests {
             repeat,
             modifiers,
         }
+    }
+
+    #[test]
+    fn capture_waits_for_the_key_after_the_modifiers() {
+        let mut input = egui::InputState::default();
+        input.events = vec![
+            press(Key::ControlLeft, Modifiers::COMMAND, false),
+            press(Key::ShiftLeft, Modifiers::COMMAND | Modifiers::SHIFT, false),
+        ];
+        assert_eq!(captured_chord(&input), None);
+        input
+            .events
+            .push(press(Key::U, Modifiers::COMMAND | Modifiers::SHIFT, false));
+        assert_eq!(
+            captured_chord(&input),
+            Some((Key::U, Modifiers::COMMAND | Modifiers::SHIFT))
+        );
     }
 
     #[test]

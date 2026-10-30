@@ -9,6 +9,7 @@ use egui::{RichText, Sense, TextureHandle, Ui};
 use egui_phosphor::regular as icon;
 use rizxel_app::AppState;
 
+use crate::widgets::icon_label;
 use crate::{actions, theme, thumbnails};
 
 /// Open start screen and its thumbnail textures.
@@ -62,8 +63,15 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
     let recent: Vec<PathBuf> = state.recent.paths().to_vec();
     let mut choice = None;
     let mut show_again = state.settings.general.start_screen;
+    // Up to four cards a row and two rows, fewer when the window is small,
+    // so the header and the Close row always stay on screen.
+    let screen_size = ctx.content_rect().size();
+    let columns = ((screen_size.x - 280.0) / (CARD.x + 12.0))
+        .floor()
+        .clamp(1.0, 4.0);
+    let list_height = (screen_size.y - 220.0).clamp(CARD.y + 12.0, 2.0 * (CARD.y + 12.0));
     let modal = egui::Modal::new(egui::Id::new("start_screen")).show(ctx, |ui| {
-        ui.set_width(4.0 * (CARD.x + 12.0) + 180.0);
+        ui.set_width(columns * (CARD.x + 12.0) + 180.0);
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(icon::CUBE)
@@ -79,13 +87,13 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
             });
         });
         ui.add_space(8.0);
-        ui.horizontal_top(|ui| {
+        let row = ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(160.0);
                 let big = |ui: &mut Ui, glyph: &str, text: &str| {
                     ui.add_sized(
                         [160.0, 34.0],
-                        egui::Button::new(RichText::new(format!("{glyph}  {text}")).size(14.0)),
+                        egui::Button::new(icon_label(ui, glyph, text, Some(14.0))),
                     )
                     .clicked()
                 };
@@ -96,7 +104,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
                     choice = Some(Choice::Open);
                 }
             });
-            ui.separator();
+            // Room for the divider, painted below: a separator here would
+            // take the whole screen height inside the modal.
+            ui.add_space(17.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new("Recent").font(theme::semibold(13.0)));
                 if recent.is_empty() {
@@ -107,7 +117,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
                     return;
                 }
                 egui::ScrollArea::vertical()
-                    .max_height(2.0 * (CARD.y + 12.0))
+                    .max_height(list_height)
                     .show(ui, |ui| {
                         egui::Grid::new("start_recent")
                             .spacing([12.0, 12.0])
@@ -117,7 +127,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
                                     if card(ui, path, thumb.as_ref()).clicked() {
                                         choice = Some(Choice::Recent(path.clone()));
                                     }
-                                    if i % 4 == 3 {
+                                    if (i + 1) % columns as usize == 0 {
                                         ui.end_row();
                                     }
                                 }
@@ -125,6 +135,12 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
                     });
             });
         });
+        let x = row.response.rect.left() + 160.0 + ui.spacing().item_spacing.x + 8.0;
+        ui.painter().vline(
+            x,
+            row.response.rect.y_range(),
+            egui::Stroke::new(1.0, theme::SEPARATOR),
+        );
         ui.add_space(6.0);
         ui.separator();
         ui.horizontal(|ui| {

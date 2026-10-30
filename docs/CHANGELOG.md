@@ -57,6 +57,11 @@ packages, file association.
   roadmap, contributing, acknowledgements and the GPL notice. Screenshots live
   in `docs/images/readme/`.
 
+### Fixed
+- **Tool Options bar** in a narrow window: when a tool's options were wider than
+  the bar (the Brush at the default 1080 px), the bar showed only its scroll arrow
+  and no options. The options now scroll beside the arrows.
+
 ## [0.6.0] — 2026-10-30
 
 Milestone M5: pipeline, export and rendering. glTF / GLB, Qubicle and PLY
