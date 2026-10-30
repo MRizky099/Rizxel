@@ -23,7 +23,7 @@ model in layers, and then render it with a progressive GPU path tracer, all in o
 lightweight app. Its voxel model and tools draw on Goxel, MagicaVoxel and Qubicle, and
 it reads and writes their file formats.
 
-> **Status: pre-release (`0.6.0`).** Rizxel is under active development, and the
+> **Status: beta (`0.9.0`).** Rizxel is under active development, and the
 > `.rzxl` format may still change before 1.0 (older files keep loading). See the
 > [changelog](docs/CHANGELOG.md) and [roadmap](#roadmap).
 
@@ -285,8 +285,8 @@ rizxel-math    L0  Rgba8, Palette, BoundSize, Aabb, VoxelVolume (16³ sparse til
 | 0.2 – 0.4 | CI, safe editing, visual fidelity | ✅ Released |
 | 0.5 | Editing power: selection, structure and palette tools, layer tree, reference images, Transform tool, docking | ✅ Released |
 | 0.6 | Pipeline and rendering: glTF, Qubicle, PLY, Render mode, path tracer | ✅ Released |
-| 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ⏳ Next (done on the branch, release pending) |
-| 0.10 | Beta 2: user guide, `.rzxl` format candidate, signed builds | ⏳ Planned |
+| 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ✅ Released (beta) |
+| 0.10 | Beta 2: user guide, `.rzxl` format candidate, signed builds | ⏳ Next |
 | 1.0 | Stable release, planned after the beta feedback | 💡 Later |
 
 Known limitations are tracked in [`docs/gaps.md`](docs/gaps.md).

@@ -23,6 +23,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 10d | Workspace and 0.5.0 | ✅ Done | `v0.5.0` |
 | 11 | Pipeline and export | ✅ Done | `v0.6.0` |
 | 11b | Render mode, path tracer and render output | ✅ Done | `v0.6.0` |
+| 12 | Beta: settings and packaging | ✅ Done | `v0.9.0` |
 
 ---
 
@@ -375,7 +376,7 @@ Plan: [`rizxel_phase11b_implementation_plan.md`](plan/rizxel_phase11b_implementa
 
 Plan: [`rizxel_phase12_implementation_plan.md`](plan/rizxel_phase12_implementation_plan.md)
 
-**Delivered** (branch `claude/phase12-beta`, not released yet)
+**Delivered** (PR #13, tag `v0.9.0`)
 - `rizxel-app/src/settings.rs` and `keymap.rs`: `Settings` in `settings.json`
   (versioned, unknown keys kept, per-key fallback) and a `Keymap` of `ActionId` →
   `KeyChord`s with conflict detection and reserved clipboard / `Enter` / `Esc` chords.

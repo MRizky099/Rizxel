@@ -24,7 +24,7 @@ save never truncates an existing project.
 
 ```jsonc
 {
-  "generator": "Rizxel 0.6.0",        // writer, diagnostics only
+  "generator": "Rizxel 0.9.0",        // writer, diagnostics only
   "name": "hero",
   "palette": { "colors": [{ "r": 0, "g": 0, "b": 0, "a": 255 }, ...] },
   "selected_color": 35,                // palette index, never 0

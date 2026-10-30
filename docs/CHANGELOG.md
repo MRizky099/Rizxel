@@ -5,8 +5,12 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
-Phase 12 (milestone M6, the 0.9.0 beta): settings, saved layout, start screen,
-packages, file association.
+## [0.9.0] — 2026-10-30
+
+Milestone M6, the first beta. Phase 12: settings and a remappable keymap, saved
+layout and window state, a start screen, installers for Windows, Linux and macOS
+built by a tagged release workflow, `.rzxl` file association and a single window.
+Rizxel is now licensed GPL-3.0-or-later, and the README was rewritten.
 
 ### Added
 - **Settings dialog** (toolbar gear, *File ▸ Settings…*, `Ctrl+,`) with General (UI
