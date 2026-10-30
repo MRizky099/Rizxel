@@ -19,6 +19,8 @@
 //!   PNG or JPEG file embedded in base64.
 //! - **5**: render settings ([`ProjectFile::render`]) and the material fields
 //!   `specular`, `ior`, `transmission`, `clearcoat` and `emission_strength`.
+//! - **6**: render display fields `voxel_lines`, `voxel_line_*`,
+//!   `floor_grid`, `floor_grid_*` and `matte` (the *Voxel Icon* look).
 //!
 //! Compatibility rules:
 //! - Every field added after version 1 has a serde default, so older bodies
@@ -46,7 +48,7 @@ use crate::image_io::{check_reference, MAX_REFERENCE_SIDE};
 use serde::{Deserialize, Serialize};
 
 pub const RZXL_MAGIC: [u8; 4] = *b"RZXL";
-pub const RZXL_VERSION: u32 = 5;
+pub const RZXL_VERSION: u32 = 6;
 pub const RZXL_EXTENSION: &str = "rzxl";
 
 /// Hard limit on the decompressed body to guard against corrupt/malicious files.
@@ -664,7 +666,19 @@ mod tests {
         p.materials[1].clearcoat = 0.7;
         let mut buf = Vec::new();
         write_rzxl(&mut buf, &p).unwrap();
-        assert_eq!(&buf[4..8], &5u32.to_le_bytes());
+        assert_eq!(&buf[4..8], &RZXL_VERSION.to_le_bytes());
+        assert_eq!(read_rzxl(buf.as_slice()).unwrap(), p);
+    }
+
+    #[test]
+    fn version_6_voxel_icon_settings_roundtrip() {
+        let mut p = rich_sample();
+        p.render = rizxel_math::RenderPreset::VoxelIcon.apply(&p.render);
+        p.render.display.voxel_line_width = 0.1;
+        p.render.display.floor_grid_spacing = 8;
+        let mut buf = Vec::new();
+        write_rzxl(&mut buf, &p).unwrap();
+        assert_eq!(&buf[4..8], &6u32.to_le_bytes());
         assert_eq!(read_rzxl(buf.as_slice()).unwrap(), p);
     }
 
@@ -704,6 +718,21 @@ mod tests {
             rizxel_math::render::MAX_OUTPUT_SIDE
         );
         assert_eq!(back.render.light.sun_elevation, 90.0);
+        let mut p = sample();
+        p.render.display.voxel_line_width = 50.0;
+        p.render.display.floor_grid_spacing = 1000;
+        let json = serde_json::to_string(&p).unwrap();
+        let back = read_rzxl(raw_file(6, &json).as_slice()).unwrap();
+        assert_eq!(back.render.display.voxel_line_width, 0.25);
+        assert_eq!(back.render.display.floor_grid_spacing, 16);
+        // Version 5 display settings have no lines, grid or matte.
+        let mut v5 = serde_json::to_value(sample()).unwrap();
+        let display = v5["render"]["display"].as_object_mut().unwrap();
+        display
+            .retain(|k, _| !k.contains("voxel_line") && !k.contains("floor_grid") && k != "matte");
+        let back = read_rzxl(raw_file(5, &v5.to_string()).as_slice()).unwrap();
+        let d = &back.render.display;
+        assert!(!d.voxel_lines && !d.floor_grid && !d.matte);
         // Materials out of range are refused, as in version 3.
         let mut p = sample();
         p.materials = vec![Material {

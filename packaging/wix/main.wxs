@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Rizxel MSI (WiX Toolset 5). Per-user: installs to %LocalAppData%\Programs\Rizxel
-  without admin rights and registers .rzxl under HKCU\Software\Classes; uninstall
-  removes both. Built by .github/workflows/release.yml:
+  (changeable in the setup) without admin rights and registers .rzxl under
+  HKCU\Software\Classes; uninstall removes both. Built by .github/workflows/release.yml:
 
     wix build packaging/wix/main.wxs -ext WixToolset.UI.wixext
-      -d Version=0.10.0 -d Stage=<staged files> -d Assets=assets -o Rizxel.msi
+      -d Version=0.11.0 -d Stage=<staged files> -d Assets=assets -o Rizxel.msi
 
   <Stage> holds rizxel.exe, LICENSE, License.rtf, THIRD_PARTY_LICENSES.html,
   README.md and craft-ui\{LICENSE-MIT,LICENSE-APACHE,NOTICE}.
@@ -29,7 +29,16 @@
 
     <!-- The GPL is shown for information; it needs no acceptance to run Rizxel. -->
     <WixVariable Id="WixUILicenseRtf" Value="$(var.Stage)\License.rtf" />
-    <ui:WixUI Id="WixUI_Minimal" />
+    <!-- Welcome, license, then a page to change the install folder. The
+         install stays per user without admin rights, so the folder has to be
+         one the user can write to (not Program Files). -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <!-- An upgrade installs to the folder the previous version used. -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Id="PreviousInstallDir" Root="HKCU" Key="Software\Rizxel"
+                      Name="InstallDir" Type="raw" />
+    </Property>
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsDir" Name="Programs">
@@ -71,7 +80,9 @@
     <!--
       .rzxl file association (same values as Settings > Associate in portable
       builds, rizxel-ui/src/file_assoc.rs). The document icon is the exe's icon
-      resource 2. .vox and .gox only get an Open with entry.
+      resource 2. Only .rzxl: other formats (.vox, .gox, ...) are left to their
+      own programs. Upgrading from 0.9/0.10 removes their old Open with entries
+      along with the rest of the previous version.
     -->
     <Component Id="FileAssociation" Directory="INSTALLFOLDER" Guid="7e4d3c2b-9a8f-4b6e-8d1c-5f2a3b4c6e44">
       <RegistryValue Root="HKCU" Key="Software\Classes\.rzxl" Type="string" Value="Rizxel.Project" KeyPath="yes" />
@@ -80,16 +91,9 @@
       <RegistryValue Root="HKCU" Key="Software\Classes\Rizxel.Project" Type="string" Value="Rizxel Project" />
       <RegistryValue Root="HKCU" Key="Software\Classes\Rizxel.Project\DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]rizxel.exe&quot;,-2" />
       <RegistryValue Root="HKCU" Key="Software\Classes\Rizxel.Project\shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]rizxel.exe&quot; &quot;%1&quot;" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\Rizxel.Model" Type="string" Value="Voxel Model" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\Rizxel.Model\DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]rizxel.exe&quot;,0" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\Rizxel.Model\shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]rizxel.exe&quot; &quot;%1&quot;" />
       <RegistryValue Root="HKCU" Key="Software\Classes\Applications\rizxel.exe" Name="FriendlyAppName" Type="string" Value="Rizxel" />
       <RegistryValue Root="HKCU" Key="Software\Classes\Applications\rizxel.exe\shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]rizxel.exe&quot; &quot;%1&quot;" />
       <RegistryValue Root="HKCU" Key="Software\Classes\Applications\rizxel.exe\SupportedTypes" Name=".rzxl" Type="string" Value="" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\Applications\rizxel.exe\SupportedTypes" Name=".vox" Type="string" Value="" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\Applications\rizxel.exe\SupportedTypes" Name=".gox" Type="string" Value="" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\.vox\OpenWithProgids" Name="Rizxel.Model" Type="string" Value="" />
-      <RegistryValue Root="HKCU" Key="Software\Classes\.gox\OpenWithProgids" Name="Rizxel.Model" Type="string" Value="" />
     </Component>
 
     <Feature Id="Main" Title="Rizxel">

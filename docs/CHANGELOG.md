@@ -5,6 +5,73 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-31
+
+Milestone M7b, the third beta: Phases 12b (fix for the model missing after opening),
+12c (layer multi-select and grouping), 12d (grid line width and plane grids) and 12e
+(the *Voxel Icon* render look), plus new icons, Extrude Add/Subtract and an install
+folder choice. Projects saved by 0.11.0 are `.rzxl` version 6, which 0.10 cannot open.
+
+### Added
+- **Extrude: Add / Subtract.** The option bar's Add and Subtract buttons now work with
+  Extrude (its own setting, separate from the drawing tools' operation). Holding `Shift`
+  switches to the other one while held, and the buttons and the face highlight show
+  which one a click will use.
+- **Windows installer: choose the install folder.** The setup has a page to change the
+  folder (default `%LocalAppData%\Programs\Rizxel`; still per user, no admin rights).
+  An upgrade reuses the folder of the installed version.
+- **Layers: multi-select** (Phase 12c). `Ctrl`+click toggles a layer, `Shift`+click
+  selects a range of rows (a collapsed group is one row), `Ctrl+A` over the panel selects
+  every layer and `Esc` clears. `Ctrl+G` groups the selected layers into a new group in
+  one undo step; dragging a selected row moves the whole selection in its order; the
+  eye, lock, delete, duplicate and *Merge Selected* act on every selected layer.
+- **Layers: select on click** (Phase 12c). Clicking a voxel layer selects all its
+  voxels, so Move, Delete, Copy and Transform act on the whole layer. Clicking through
+  layers is one undo step. *Settings ▸ General ▸ Clicking a layer selects its voxels*
+  (on by default) turns it off.
+- **Grid line width and opacity** (Phase 12d). *Settings ▸ Viewport* sets the voxel grid's
+  line width (0.5–4 px) and opacity and the floor grid's line width; *View ▸ Show* has a
+  quick voxel grid width slider. Grid lines now have a smooth anti-aliased edge at any
+  width.
+- **Voxel Icon look** (Phase 12e). Render mode can draw a thin line around every voxel
+  face, outer edges included (*Display ▸ Voxel lines*: color, width in voxels,
+  opacity), and a grid on the ground (*Display ▸ Floor grid*: color, width, spacing,
+  fade, glow), in the raster and path-traced previews and outputs. Lines are
+  anti-aliased and fade to their average tint when thinner than a pixel; the *Image*
+  output renders at 2× and scales down when they are on. *View ▸ Floor Grid* (`G`)
+  toggles the render floor grid in Render mode.
+- **Matte** (Phase 12e): *Display ▸ Matte* shows every material without shine (view
+  only), and the Material tab has a *Matte* preset button.
+- **Voxel Icon render preset** (Phase 12e) and the `assets/samples/rizxel_r.rzxl` sample
+  that reproduces Rizxel's icon. The `render` example takes `--preset icon`, `--sun
+  AZ,EL` and `--zoom`.
+- **Voxel cells on the work plane and slice sheet** (Phase 12d). With the voxel grid on,
+  the active work plane and the slice sheet show the voxel cell lines, aligned to voxel
+  boundaries and fading out when zoomed far out (no moiré on 256³ bounds).
+
+### Changed
+- **New icons.** A new application icon (rendered "R"), `.rzxl` document icon and
+  README banner. The small logo in the title bar, the document tabs, the start screen
+  and *About* replaces the cube glyph.
+- **`.rzxl` version 6** (Phase 12e) stores the voxel line, floor grid and matte
+  settings. Files of versions 1–5 load with them off; Rizxel 0.10 cannot open version 6
+  files.
+- **Only `.rzxl` is associated with Rizxel.** The installer, *Settings ▸ General ▸
+  Associate .rzxl Files*, the Linux desktop entry and the macOS bundle no longer add
+  *Open with* entries for `.vox` and `.gox`. Installing or re-associating removes the
+  entries 0.9 and 0.10 wrote; `.vox` and `.gox` still open through *File ▸ Open*.
+
+### Fixed
+- **Model missing after opening a project.** Opening a model that spans more than four
+  16³ tiles (for example a full 32³ model) could show an empty viewport until a layer's
+  visibility was toggled. The start-screen thumbnail rendered in the same frame meshed
+  the document through the viewport's cache and threw away the tiles that were still
+  meshing in the background. Output renders (thumbnail, *Image*, raster turntable) now
+  build their own meshes (`Document::output_meshes`), and the viewport also re-reads its
+  meshes whenever anything else changed them (`Document::view_generation`). The same
+  race could leave the viewport stale after rendering an *Image* right after a large
+  paste, import or undo.
+
 ## [0.10.0] — 2026-10-30
 
 Milestone M7, the second beta. Phase 12a: a user guide with in-app help, the `.rzxl`

@@ -391,10 +391,19 @@ pub struct ExtrudeOptions {
     pub threshold: u8,
     /// Depth of a click without drag; dragging adds to it.
     pub depth: u32,
+    /// Subtract: carve inward instead of building outward. Holding `Shift`
+    /// flips it while held.
+    #[serde(default)]
+    pub carve: bool,
 }
 
 impl ExtrudeOptions {
     pub const MAX_DEPTH: u32 = 256;
+
+    /// Whether a click carves, with `Shift` (`flip`) held or not.
+    pub const fn carves(&self, flip: bool) -> bool {
+        self.carve != flip
+    }
 }
 
 impl Default for ExtrudeOptions {
@@ -404,6 +413,7 @@ impl Default for ExtrudeOptions {
             use_color: false,
             threshold: 0,
             depth: 1,
+            carve: false,
         }
     }
 }
@@ -500,5 +510,15 @@ mod tests {
         assert!(!Tool::Plane.uses_voxel_op());
         assert!(!Tool::Fill.uses_voxel_op());
         assert!(!Tool::Selection.uses_voxel_op());
+    }
+
+    #[test]
+    fn shift_flips_the_extrude_direction() {
+        let mut e = ExtrudeOptions::default();
+        assert!(!e.carves(false));
+        assert!(e.carves(true), "Add + Shift carves");
+        e.carve = true;
+        assert!(e.carves(false));
+        assert!(!e.carves(true), "Subtract + Shift builds");
     }
 }

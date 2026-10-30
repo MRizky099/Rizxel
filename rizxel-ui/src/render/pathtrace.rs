@@ -200,9 +200,12 @@ impl PtTables {
                 1.0,
             ];
         }
+        // Render ▸ Matte shows every material without shine (view only).
+        let matte = doc.data.render.display.matte;
+        let look = |m: &Material| if matte { m.matte() } else { m.clone() };
         let default = Material::default();
         let mut keys: Vec<(Option<u32>, u8)> = vec![(None, 255)];
-        let mut materials = Box::new([PtMaterial::new(&default, 1.0); 256]);
+        let mut materials = Box::new([PtMaterial::new(&look(&default), 1.0); 256]);
         let mut layer_slots = Vec::new();
         for i in 0..doc.data.layers.len() {
             let material = doc.data.layers[i]
@@ -218,7 +221,7 @@ impl PtTables {
                 None if keys.len() < 256 => {
                     keys.push(key);
                     let m = material.map_or(&default, |m| &doc.data.materials[m as usize]);
-                    materials[keys.len() - 1] = PtMaterial::new(m, f32::from(key.1) / 255.0);
+                    materials[keys.len() - 1] = PtMaterial::new(&look(m), f32::from(key.1) / 255.0);
                     keys.len() - 1
                 }
                 None => 255,
@@ -277,6 +280,10 @@ pub struct PtParams {
     film: [f32; 4],
     bloom: [f32; 4],
     edges: [f32; 4],
+    voxel_lines: [f32; 4],
+    floor_grid: [f32; 4],
+    lines: [f32; 4],
+    footprint: [f32; 4],
 }
 
 /// Camera of a path-traced image.
@@ -523,6 +530,60 @@ pub fn build_params(
             0.0,
         ],
         edges: c4(d.edge_color, if d.edges { d.edge_width } else { 0.0 }),
+        voxel_lines: c4(
+            linear(d.voxel_line_color),
+            if s.effective_voxel_lines() {
+                d.voxel_line_width
+            } else {
+                0.0
+            },
+        ),
+        floor_grid: c4(
+            linear(d.floor_grid_color),
+            if s.effective_floor_grid() {
+                d.floor_grid_width
+            } else {
+                0.0
+            },
+        ),
+        lines: [
+            d.voxel_line_opacity,
+            d.floor_grid_spacing as f32,
+            floor_grid_fade_radius(s, dims),
+            d.floor_grid_glow,
+        ],
+        footprint: {
+            let (spread, width) = pixel_footprint(camera, target.image);
+            let center = grid_origin + Vec3::new(dims[0] as f32, 0.0, dims[2] as f32) * 0.5;
+            [spread, width, center.x, center.z]
+        },
+    }
+}
+
+/// Floor grid fade radius in voxels (0 = no fade): the setting is in
+/// lengths of the bounds' longest side.
+pub fn floor_grid_fade_radius(s: &RenderSettings, dims: [u32; 3]) -> f32 {
+    s.display.floor_grid_fade * dims.into_iter().max().unwrap_or(1) as f32
+}
+
+/// Size of one pixel of an `image`-sized picture seen through `camera`:
+/// the angle between neighboring pixels' rays (perspective) and the
+/// width of a pixel in world units (orthographic), measured at the image
+/// center. Lines thinner than this alias, so the shaders widen them to it.
+pub fn pixel_footprint(camera: &PtCamera, image: [u32; 2]) -> (f32, f32) {
+    let inv = camera.view_proj.inverse();
+    let step = 2.0 / image[1].max(1) as f32;
+    let ray = |y: f32| {
+        let near = inv.project_point3(Vec3::new(0.0, y, 0.0));
+        let far = inv.project_point3(Vec3::new(0.0, y, 1.0));
+        (near, (far - near).normalize_or_zero())
+    };
+    let (n0, d0) = ray(0.0);
+    let (n1, d1) = ray(step);
+    if camera.ortho {
+        (0.0, n0.distance(n1))
+    } else {
+        (d0.angle_between(d1), 0.0)
     }
 }
 
@@ -1635,8 +1696,8 @@ mod tests {
 
     #[test]
     fn struct_sizes_match_wgsl() {
-        // mat4 + 9 vec4 + 6 vec4 (lights) + 12 vec4.
-        assert_eq!(std::mem::size_of::<PtParams>(), 64 + 27 * 16);
+        // mat4 + 9 vec4 + 6 vec4 (lights) + 16 vec4.
+        assert_eq!(std::mem::size_of::<PtParams>(), 64 + 31 * 16);
         assert_eq!(std::mem::size_of::<PtMaterial>(), 64);
     }
 

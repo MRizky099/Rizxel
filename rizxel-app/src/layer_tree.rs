@@ -166,6 +166,32 @@ impl LayerTree {
         std::iter::successors(self.parent(i), |&a| self.parent(a)).take(MAX_GROUP_DEPTH)
     }
 
+    /// Rows of the Layers panel, top to bottom: every layer except those
+    /// inside a group for which `collapsed` is true.
+    pub fn visible_rows(&self, collapsed: impl Fn(usize) -> bool) -> Vec<usize> {
+        (0..self.len())
+            .rev()
+            .filter(|&i| !self.ancestors(i).any(&collapsed))
+            .collect()
+    }
+
+    /// The row that shows layer `i` in the Layers panel: `i`, or its
+    /// outermost ancestor for which `collapsed` is true.
+    pub fn shown_row(&self, i: usize, collapsed: impl Fn(usize) -> bool) -> usize {
+        self.ancestors(i)
+            .filter(|&a| collapsed(a))
+            .last()
+            .unwrap_or(i)
+    }
+
+    /// Deepest group containing every layer of `indices` (`None`: the top
+    /// level, or `indices` is empty).
+    pub fn common_parent(&self, indices: &[usize]) -> Option<usize> {
+        let (&first, rest) = indices.split_first()?;
+        self.ancestors(first)
+            .find(|&a| rest.iter().all(|&i| self.is_ancestor(a, i)))
+    }
+
     /// Deepest depth inside the subtree of `i`, relative to `i` (0 when it
     /// has no children).
     pub fn subtree_height(&self, i: usize) -> usize {

@@ -25,6 +25,10 @@ pub const UNDO_LIMIT_RANGE: std::ops::RangeInclusive<usize> = 16..=4096;
 pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
 /// Longest autosave interval in minutes (`0` turns autosave off).
 pub const MAX_AUTOSAVE_MINUTES: u32 = 60;
+/// Range of the voxel and floor grid line widths, in pixels.
+pub const GRID_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 0.5..=4.0;
+/// Range of the voxel grid opacity.
+pub const GRID_OPACITY_RANGE: std::ops::RangeInclusive<f32> = 0.1..=1.0;
 
 /// Color theme. Only the dark theme exists so far.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +73,8 @@ pub struct GeneralSettings {
     pub autosave_minutes: u32,
     /// Show the start screen when no file was opened from the command line.
     pub start_screen: bool,
+    /// Clicking a voxel layer in the Layers panel selects all its voxels.
+    pub layer_click_selects_voxels: bool,
     #[serde(flatten)]
     pub other: Map<String, Value>,
 }
@@ -81,6 +87,7 @@ impl Default for GeneralSettings {
             undo_limit: crate::history::DEFAULT_UNDO_LIMIT,
             autosave_minutes: 2,
             start_screen: true,
+            layer_click_selects_voxels: true,
             other: Map::new(),
         }
     }
@@ -93,6 +100,12 @@ pub struct ViewportSettings {
     pub floor_grid: bool,
     /// Voxel grid on the model at start.
     pub voxel_grid: bool,
+    /// Voxel grid line width in pixels.
+    pub voxel_grid_width: f32,
+    /// Voxel grid line opacity.
+    pub voxel_grid_opacity: f32,
+    /// Floor grid line width in pixels.
+    pub floor_grid_width: f32,
     /// Model-mode background, `None` for the theme's.
     pub background: Option<[u8; 3]>,
     /// Start in orthographic projection.
@@ -107,6 +120,9 @@ impl Default for ViewportSettings {
         Self {
             floor_grid: true,
             voxel_grid: false,
+            voxel_grid_width: 1.0,
+            voxel_grid_opacity: 0.35,
+            floor_grid_width: 1.0,
             background: None,
             orthographic: false,
             camera_controls: CameraControls::Rizxel,
@@ -263,6 +279,17 @@ impl Settings {
             .undo_limit
             .clamp(*UNDO_LIMIT_RANGE.start(), *UNDO_LIMIT_RANGE.end());
         g.autosave_minutes = g.autosave_minutes.min(MAX_AUTOSAVE_MINUTES);
+        let v = &mut self.viewport;
+        let clamp = |x: f32, r: &std::ops::RangeInclusive<f32>, default: f32| {
+            if x.is_finite() {
+                x.clamp(*r.start(), *r.end())
+            } else {
+                default
+            }
+        };
+        v.voxel_grid_width = clamp(v.voxel_grid_width, &GRID_WIDTH_RANGE, 1.0);
+        v.floor_grid_width = clamp(v.floor_grid_width, &GRID_WIDTH_RANGE, 1.0);
+        v.voxel_grid_opacity = clamp(v.voxel_grid_opacity, &GRID_OPACITY_RANGE, 0.35);
     }
 
     /// Autosave interval, `None` when autosave is off.
@@ -320,6 +347,10 @@ mod tests {
         s.general.autosave_minutes = 5;
         s.viewport.camera_controls = CameraControls::AltMouse;
         s.viewport.background = Some([10, 20, 30]);
+        s.viewport.voxel_grid_width = 2.5;
+        s.viewport.voxel_grid_opacity = 0.6;
+        s.viewport.floor_grid_width = 1.5;
+        s.general.layer_click_selects_voxels = false;
         s.paths.export_folder = Some(PathBuf::from("/exports"));
         s.keymap
             .set(ActionId::Undo, vec![KeyChord::parse("Ctrl+U").unwrap()])
@@ -382,5 +413,25 @@ mod tests {
         assert!(s.viewport.voxel_grid);
         assert_eq!(s.keymap, Keymap::default());
         assert_eq!(s.paths, PathSettings::default());
+    }
+
+    #[test]
+    fn older_files_get_the_new_defaults() {
+        // A 0.10.0 settings file: no grid style, no layer click setting.
+        let v = serde_json::json!({
+            "version": 1,
+            "general": { "undo_limit": 64 },
+            "viewport": { "voxel_grid": true, "floor_grid": false },
+        });
+        let s = Settings::from_value(v);
+        assert!(s.general.layer_click_selects_voxels);
+        assert_eq!(s.viewport.voxel_grid_width, 1.0);
+        assert_eq!(s.viewport.voxel_grid_opacity, 0.35);
+        assert_eq!(s.viewport.floor_grid_width, 1.0);
+        let out = Settings::from_value(serde_json::json!({
+            "viewport": { "voxel_grid_width": 40.0, "voxel_grid_opacity": 0.0 },
+        }));
+        assert_eq!(out.viewport.voxel_grid_width, *GRID_WIDTH_RANGE.end());
+        assert_eq!(out.viewport.voxel_grid_opacity, *GRID_OPACITY_RANGE.start());
     }
 }

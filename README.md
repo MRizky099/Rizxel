@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="assets/Rizxel_icon_128x128.png" alt="Rizxel icon" width="96">
-
-# Rizxel
+<img src="assets/GitHub_README_banner.png" alt="Rizxel" width="100%">
 
 **A native voxel art editor written in pure Rust, with a built-in path tracer.**
 
@@ -23,7 +21,7 @@ model in layers, and then render it with a progressive GPU path tracer, all in o
 lightweight app. Its voxel model and tools draw on Goxel, MagicaVoxel and Qubicle, and
 it reads and writes their file formats.
 
-> **Status: beta (`0.10.0`).** Rizxel is under active development. The `.rzxl`
+> **Status: beta (`0.11.0`).** Rizxel is under active development. The `.rzxl`
 > format has a [candidate compatibility promise](docs/rzxl_format.md#compatibility-promise-candidate)
 > that becomes binding at 1.0. The [user guide](https://mrizky099.github.io/Rizxel/)
 > covers every tool, panel and format. See the
@@ -52,6 +50,11 @@ it reads and writes their file formats.
 | Editing tools on the left, the viewport with the view cube in the middle, and the palette, layer tree and history on the right. | A 1920×1080 *Photo-realistic* render of the same model with the **Studio White** preset and the **Brick** voxel shape. |
 
 The demo model comes from `cargo run -p rizxel-app --example sample_model`.
+
+<img src="docs/images/readme/voxel_icon.png" alt="The rizxel_r sample rendered with the Voxel Icon preset: a blue voxel R outlined cell by cell on a dark floor with a glowing grid" width="480">
+
+The **Voxel Icon** preset on `assets/samples/rizxel_r.rzxl`: voxel lines, a glowing floor
+grid and matte materials, path traced at 1024×1024.
 
 ## Features
 
@@ -89,8 +92,9 @@ The demo model comes from `cargo run -p rizxel-app --example sample_model`.
 - **Render mode**: its own workspace with a progressive GPU path tracer (Vulkan or
   Metal): sun, sky, HDR
   and studio lights, presets, materials with glass, metal and emission, depth of field,
-  a denoiser, and view-only voxel shapes (cubes, rounded, bricks with studs, spheres,
-  cylinders).
+  a denoiser, view-only voxel shapes (cubes, rounded, bricks with studs, spheres,
+  cylinders), and the *Voxel Icon* look: lines around every voxel, a glowing floor grid
+  and a matte override.
 - **Render outputs**: *Image* (fast raster), *Photo-realistic* (path traced, up to
   8192 px) and *Turntable* (a PNG sequence, a sprite sheet or a GIF), plus export of the shaped
   mesh to OBJ, STL or GLB.
@@ -219,9 +223,9 @@ Then run the platform's script from the repository root:
 
 | Platform | Script | Needs |
 |---|---|---|
-| Windows | `pwsh packaging/wix/build.ps1 -Version 0.10.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
-| Linux | `sh packaging/appimage/build.sh 0.10.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
-| macOS | `sh packaging/macos/build.sh 0.10.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
+| Windows | `pwsh packaging/wix/build.ps1 -Version 0.11.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
+| Linux | `sh packaging/appimage/build.sh 0.11.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
+| macOS | `sh packaging/macos/build.sh 0.11.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
 
 ## Controls
 
@@ -300,7 +304,8 @@ rizxel-math    L0  Rgba8, Palette, BoundSize, Aabb, VoxelVolume (16³ sparse til
 | 0.6 | Pipeline and rendering: glTF, Qubicle, PLY, Render mode, path tracer | ✅ Released |
 | 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ✅ Released (beta) |
 | 0.10 | Beta 2: user guide and in-app help, `.rzxl` format candidate with fixtures, sample models, pre-releases | ✅ Released (beta) |
-| 1.0 | Stable release: binding format promise, signed builds; scope planned after the 0.10 feedback | ⏳ Next |
+| 0.11 | Beta 3: layer multi-select and grouping, grid width and plane grids, *Voxel Icon* render look, new icons | ✅ Released (beta) |
+| 1.0 | Stable release: binding format promise, signed builds; scope planned after the beta feedback | ⏳ Next |
 
 Known limitations are tracked in [`docs/gaps.md`](docs/gaps.md).
 

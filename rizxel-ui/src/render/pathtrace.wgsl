@@ -564,6 +564,77 @@ fn seam_factor(c: vec3<i32>, n: vec3<f32>, p: vec3<f32>) -> f32 {
     return f;
 }
 
+/// Width of one pixel, at distance `t` along the ray `rd`, measured along
+/// the in-plane axis `v` of a surface with normal `n` (an oblique view
+/// stretches the pixel along the axis that tilts away).
+fn pixel_footprint(t: f32, rd: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> f32 {
+    let base = params.footprint.x * t + params.footprint.y;
+    let nd = max(abs(dot(n, rd)), 0.05);
+    let dv = dot(rd, v);
+    return base * sqrt(1.0 + dv * dv / (nd * nd));
+}
+
+/// Coverage of a line `width` wide at distance `d` from its center. A line
+/// thinner than the pixel footprint `fp` is drawn `fp` wide with its
+/// opacity scaled down, so far lines fade to their average tint instead of
+/// breaking up; the edge is a ramp half a footprint wide, so each sample
+/// is already anti-aliased and the jittered samples smooth the rest.
+fn line_cover(d: f32, width: f32, fp: f32) -> f32 {
+    let w = max(width, fp);
+    return saturate((0.5 * w - d) / max(0.5 * fp, 1e-6) + 0.5) * (width / w);
+}
+
+/// Voxel lines: how much of the line color shows at `p` (voxel space) on
+/// the face with normal `n` of cell `c`, hit at distance `t` along `rd`.
+/// Every cell border counts, not only where two voxels touch.
+fn voxel_line_factor(c: vec3<i32>, n: vec3<f32>, p: vec3<f32>, t: f32, rd: vec3<f32>) -> f32 {
+    let width = params.voxel_lines.w;
+    if width <= 0.0 {
+        return 0.0;
+    }
+    let local = p - vec3<f32>(c);
+    let axes = face_axes(n);
+    var clear = 1.0;
+    for (var i = 0; i < 2; i++) {
+        let axis = axes[i];
+        let x = clamp(dot(local, axis), 0.0, 1.0);
+        let d = min(x, 1.0 - x);
+        clear *= 1.0 - line_cover(d, width, pixel_footprint(t, rd, n, axis));
+    }
+    return (1.0 - clear) * params.lines.x;
+}
+
+/// Floor grid: line coverage at ground point `p` (world space) hit at
+/// distance `t` along `rd`, faded out away from the model.
+fn floor_grid_factor(p: vec3<f32>, t: f32, rd: vec3<f32>) -> f32 {
+    let width = params.floor_grid.w;
+    if width <= 0.0 {
+        return 0.0;
+    }
+    let spacing = params.lines.y;
+    let n = vec3<f32>(0.0, 1.0, 0.0);
+    // Lines sit on voxel borders: the bounds' corner is on one.
+    let coord = (p.xz - params.grid.xz) / spacing;
+    let d = abs(fract(coord - 0.5) - 0.5) * spacing;
+    let cx = line_cover(d.x, width, pixel_footprint(t, rd, n, vec3<f32>(1.0, 0.0, 0.0)));
+    let cz = line_cover(d.y, width, pixel_footprint(t, rd, n, vec3<f32>(0.0, 0.0, 1.0)));
+    var k = 1.0 - (1.0 - cx) * (1.0 - cz);
+    let radius = params.lines.z;
+    if radius > 0.0 {
+        k *= 1.0 - smoothstep(0.25 * radius, radius, length(p.xz - params.footprint.zw));
+    }
+    return k;
+}
+
+/// The ground with the floor grid mixed in by coverage `k`: the lines take
+/// their color and glow.
+fn grid_surface(k: f32) -> Surface {
+    var m = ground_surface();
+    m.base = mix(m.base, params.floor_grid.rgb, k);
+    m.emission = params.floor_grid.rgb * (params.lines.w * k);
+    return m;
+}
+
 // ------------------------------------------------------------------ BSDF
 
 fn onb(n: vec3<f32>) -> mat3x3<f32> {
@@ -1065,9 +1136,18 @@ fn trace_path(cam: CameraRay) -> PathResult {
             break;
         }
         let p = ro + rd * hit.t;
+        var grid = 0.0;
+        if hit.kind == 2u {
+            grid = floor_grid_factor(p, hit.t, rd);
+        }
         if hit.kind == 2u && primary && catcher_on() {
-            res.background = catcher_ratio(p);
-            return res;
+            // The grid lines cover the catcher with their own alpha: a
+            // sample on a line is a line, the others see the background.
+            if rand() >= grid {
+                res.background = catcher_ratio(p);
+                return res;
+            }
+            grid = 1.0;
         }
         var m: Surface;
         var n = hit.n;
@@ -1076,9 +1156,12 @@ fn trace_path(cam: CameraRay) -> PathResult {
             if hit.stud == 0u {
                 n = bevel_normal(hit.cell, n, to_voxel(p));
                 m.base *= seam_factor(hit.cell, hit.n, to_voxel(p));
+                let line = voxel_line_factor(hit.cell, hit.n, to_voxel(p), hit.t, rd);
+                m.base = mix(m.base, params.voxel_lines.rgb, line);
+                m.emission *= 1.0 - line;
             }
         } else {
-            m = ground_surface();
+            m = grid_surface(grid);
         }
         // Translucent voxels: let the ray through with the missing opacity.
         if m.opacity < 1.0 && rand() > m.opacity {

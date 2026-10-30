@@ -126,6 +126,10 @@ fn main() {
     let mut studio = RenderPreset::StudioWhite.apply(&RenderSettings::default());
     studio.display.shape = VoxelShape::Brick;
     configs.push(("Studio White + Brick", studio));
+    configs.push((
+        "Voxel Icon (lines, floor grid)",
+        RenderPreset::VoxelIcon.apply(&RenderSettings::default()),
+    ));
 
     println!();
     println!("| Settings | Preview 1280×720 | Photo 1920×1080, {photo_spp} spp |");

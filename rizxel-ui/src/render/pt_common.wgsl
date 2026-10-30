@@ -57,6 +57,17 @@ struct Params {
     bloom: vec4<f32>,
     // rgb = outline color (sRGB), w = outline width in px (0 = off).
     edges: vec4<f32>,
+    // rgb = voxel line color, w = line width in voxels (0 = off).
+    voxel_lines: vec4<f32>,
+    // rgb = floor grid line color, w = line width in voxels (0 = off).
+    floor_grid: vec4<f32>,
+    // x = voxel line opacity, y = floor grid spacing (voxels), z = floor
+    // grid fade radius (0 = no fade), w = floor grid glow.
+    lines: vec4<f32>,
+    // x = angle between neighboring pixels' rays (perspective), y = width
+    // of a pixel in world units (orthographic), zw = XZ center of the floor
+    // grid fade.
+    footprint: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;

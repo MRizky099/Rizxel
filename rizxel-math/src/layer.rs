@@ -256,6 +256,19 @@ impl Material {
                 self.emission = [1.0; 3];
                 self.emission_strength = 4.0;
             }
+            MaterialPreset::Matte => *self = self.matte(),
+        }
+    }
+
+    /// This material without shine: rough, low specular, no metal or clear
+    /// coat. Color, emission and transmission stay (Render ▸ *Matte*).
+    pub fn matte(&self) -> Material {
+        Material {
+            metallic: 0.0,
+            roughness: 0.85,
+            specular: 0.25,
+            clearcoat: 0.0,
+            ..self.clone()
         }
     }
 }
@@ -268,15 +281,18 @@ pub enum MaterialPreset {
     Metal,
     Glass,
     Emit,
+    /// Shine-free color (the *Voxel Icon* look).
+    Matte,
 }
 
 impl MaterialPreset {
-    pub const ALL: [MaterialPreset; 5] = [
+    pub const ALL: [MaterialPreset; 6] = [
         MaterialPreset::Diffuse,
         MaterialPreset::Plastic,
         MaterialPreset::Metal,
         MaterialPreset::Glass,
         MaterialPreset::Emit,
+        MaterialPreset::Matte,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -286,6 +302,7 @@ impl MaterialPreset {
             MaterialPreset::Metal => "Metal",
             MaterialPreset::Glass => "Glass",
             MaterialPreset::Emit => "Emit",
+            MaterialPreset::Matte => "Matte",
         }
     }
 }
@@ -357,6 +374,19 @@ mod tests {
             m.apply_preset(p);
             assert!(m.is_valid(), "{p:?}");
         }
+        // Matte keeps color, emission and transmission and drops the shine.
+        let shiny = Material {
+            metallic: 1.0,
+            roughness: 0.1,
+            clearcoat: 0.9,
+            emission: [0.5; 3],
+            transmission: 0.4,
+            ..Material::new("Shiny")
+        };
+        let matte = shiny.matte();
+        assert_eq!((matte.metallic, matte.roughness), (0.0, 0.85));
+        assert_eq!((matte.specular, matte.clearcoat), (0.25, 0.0));
+        assert_eq!((matte.emission, matte.transmission), ([0.5; 3], 0.4));
         // Version 3/4 bodies have none of the new fields.
         let old: Material =
             serde_json::from_str(r#"{"name":"Old","metallic":0.1,"roughness":0.4}"#).unwrap();

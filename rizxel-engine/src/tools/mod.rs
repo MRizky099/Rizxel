@@ -206,7 +206,7 @@ impl Tool {
                 "Click to select connected voxels of a similar color. Shift: add, Ctrl: subtract."
             }
             Tool::Extrude => {
-                "Click or drag a face (or the selection) to extrude it. Shift: carve inward."
+                "Click or drag a face (or the selection) to extrude it. Shift: switch Add/Subtract while held."
             }
             Tool::Fill => {
                 "Click to flood-fill with the active color (inside the selection if any)."

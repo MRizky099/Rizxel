@@ -178,6 +178,11 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 
     vertical_divider(ui, DIVIDER_HEIGHT);
 
+    if state.tool == Tool::Extrude {
+        extrude_op_controls(ui, state, icons);
+        return;
+    }
+
     // Operations only affect the drawing tools; others show them dimmed.
     let ops_enabled = state.tool.uses_voxel_op();
     for op in [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Join] {
@@ -187,6 +192,50 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     vertical_divider(ui, DIVIDER_HEIGHT);
 
     op_button(ui, state, icons, VoxelOp::Paint, ops_enabled, theme::PAINT);
+}
+
+/// Extrude's own Add/Subtract (its `carve` option, not the drawing tools'
+/// operation). Holding `Shift` shows, and uses, the other one.
+fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
+    let shift = ui.input(|i| i.modifiers.shift);
+    let carves = state.options.extrude.carves(shift);
+    for (op, carve) in [(VoxelOp::Add, false), (VoxelOp::Subtract, true)] {
+        let response = icon_texture_button(
+            ui,
+            icons.get(op),
+            carves == carve,
+            true,
+            Some(theme::ACCENT),
+        );
+        let tip = if carve {
+            "Subtract: carve the face region inward (hold Shift to switch)"
+        } else {
+            "Add: build the face region outward (hold Shift to switch)"
+        };
+        if response.on_hover_text(tip).clicked() {
+            state.options.extrude.carve = carve;
+        }
+    }
+    let unused = |op: VoxelOp| format!("{} (not used by the Extrude tool)", op.label());
+    icon_texture_button(
+        ui,
+        icons.get(VoxelOp::Join),
+        false,
+        false,
+        Some(theme::ACCENT),
+    )
+    .on_hover_text(unused(VoxelOp::Join));
+
+    vertical_divider(ui, DIVIDER_HEIGHT);
+
+    icon_texture_button(
+        ui,
+        icons.get(VoxelOp::Paint),
+        false,
+        false,
+        Some(theme::PAINT),
+    )
+    .on_hover_text(unused(VoxelOp::Paint));
 }
 
 fn op_button(

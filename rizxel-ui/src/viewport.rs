@@ -32,7 +32,7 @@ use rizxel_math::{BoundSize, ImageData, VoxelBox, VoxelShape};
 
 use crate::render::pathtrace::{document_params, PtInputs, PtScene, PtTables, SkyCache};
 use crate::render::{
-    GpuMesh, LineInstance, PtFrame, RefPixels, ReferenceDraw, RenderLook, SceneFrame,
+    GpuMesh, GridStyle, LineInstance, PtFrame, RefPixels, ReferenceDraw, RenderLook, SceneFrame,
     ViewportCallback,
 };
 use crate::theme;
@@ -63,6 +63,8 @@ type BuildKey = (u64, Option<VoxelBox>, bool, Option<usize>);
 /// A document's last build, with the source mesh behind each GPU mesh.
 struct CacheEntry {
     key: BuildKey,
+    /// [`Document::view_generation`] the meshes were taken at.
+    generation: u64,
     meshes: DocMeshes,
     sources: Vec<(Arc<rizxel_app::Mesh>, Arc<GpuMesh>)>,
 }
@@ -101,14 +103,18 @@ impl MeshCache {
             ghosts,
             ghosts.then_some(doc.active_layer),
         );
-        // Same build: only background tiles that finished can change it.
+        // Same build: only background tiles that finished can change it,
+        // or another caller meshing the document (it may have redone tiles
+        // the pool was still working on).
         let view = match self.entries.get(&doc.id()) {
             Some(entry) if entry.key == key => match doc.poll_view_meshes() {
                 Some(view) => view,
-                None => return entry.meshes.clone(),
+                None if entry.generation == doc.view_generation() => return entry.meshes.clone(),
+                None => doc.view_meshes_background(ghosts),
             },
             _ => doc.view_meshes_background(ghosts),
         };
+        let generation = doc.view_generation();
         let old = self.entries.remove(&doc.id());
         let (bmin, _) = bounds_box(doc.data.bounds);
         let mut sources = Vec::new();
@@ -149,6 +155,7 @@ impl MeshCache {
             doc.id(),
             CacheEntry {
                 key,
+                generation,
                 meshes: meshes.clone(),
                 sources,
             },
@@ -574,6 +581,7 @@ pub fn show(
     // --- Scene (wgpu) -------------------------------------------------------
     let mut frame = scene_frame(state, &proj, target, bmin, bmax, ppp);
     frame.fills.extend(preview.fills);
+    frame.planes.extend(preview.planes);
     frame.lines.extend(preview.lines);
     if let Some((lo, hi)) = occupied.filter(|_| state.view.model_bounds) {
         let color = theme::BOUND.gamma_multiply(0.45);
@@ -664,7 +672,7 @@ pub fn show(
     if projection_button(ui, &state.camera, projection_rect) {
         state.camera.toggle_projection();
     }
-    view_toggles(ui, &mut state.view, toggles_rect);
+    view_toggles(ui, state, toggles_rect);
 
     if meshing {
         painter.text(
@@ -769,8 +777,9 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
     let (bmin, _) = bounds_box(bounds);
     let proj = output_projection(doc, camera, size);
     let target = rizxel_app::orbit_base(bounds) + camera.pan;
-    let (look, background) = RenderLook::from_settings(&doc.data.render);
-    let view = doc.view_meshes(false);
+    let d = bounds.0;
+    let (look, background) = RenderLook::from_settings(&doc.data.render, bmin, [d.x, d.y, d.z]);
+    let view = doc.output_meshes(false);
     let gpu = |mesh: &rizxel_app::Mesh| {
         let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Arc::new(GpuMesh::from_mesh((doc.id(), key), mesh, bmin))
@@ -802,6 +811,8 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
         axis_z: theme::AXIS_Z,
         lines: Vec::new(),
         fills: Vec::new(),
+        planes: Vec::new(),
+        grid_style: GridStyle::default(),
         voxels: Some(match shaped_output(doc, bmin) {
             Some(mesh) => mesh,
             None => gpu(&view.opaque),
@@ -1008,7 +1019,8 @@ fn scene_frame(
     let view = state.view;
     let (look, background) = match (state.view_mode, state.doc()) {
         (ViewMode::Render, Some(doc)) => {
-            let (mut look, bg) = RenderLook::from_settings(&doc.data.render);
+            let d = doc.data.bounds.0;
+            let (mut look, bg) = RenderLook::from_settings(&doc.data.render, bmin, [d.x, d.y, d.z]);
             // The viewport never shows the transparency; output does.
             look.transparent = false;
             (look, bg)
@@ -1054,7 +1066,8 @@ fn scene_frame(
         look,
         screen_y: [1.0, 0.0],
         pt: None,
-        floor_grid: view.floor_grid,
+        // Render mode draws the document's floor grid (`RenderLook`) instead.
+        floor_grid: view.floor_grid && state.view_mode != ViewMode::Render,
         voxel_grid: view.voxel_grid,
         ao: view.ao(state.view_mode),
         background,
@@ -1063,6 +1076,8 @@ fn scene_frame(
         axis_z: theme::AXIS_Z,
         lines,
         fills: Vec::new(),
+        planes: Vec::new(),
+        grid_style: GridStyle::from_settings(&state.settings.viewport),
         voxels: None,
         translucent: Vec::new(),
         materials: state
@@ -1431,11 +1446,15 @@ fn view_toggles_rect(rect: Rect) -> Rect {
     )
 }
 
-/// Floor grid, voxel grid and model bounds buttons (same as *View ▸ Show*).
-fn view_toggles(ui: &mut Ui, view: &mut rizxel_app::ViewOptions, rect: Rect) {
+/// Floor grid, voxel grid and model bounds buttons (same as *View ▸ Show*;
+/// in Render mode the floor grid button is the document's render grid).
+fn view_toggles(ui: &mut Ui, state: &mut AppState, rect: Rect) {
     use egui_phosphor::regular as icon;
+    let mut floor = state.floor_grid_shown();
+    let was_floor = floor;
+    let view = &mut state.view;
     let toggles: [(&mut bool, &str, &str); 3] = [
-        (&mut view.floor_grid, icon::GRID_FOUR, "Floor Grid (G)"),
+        (&mut floor, icon::GRID_FOUR, "Floor Grid (G)"),
         (&mut view.voxel_grid, icon::HASH, "Voxel Grid (Shift+G)"),
         (
             &mut view.model_bounds,
@@ -1472,6 +1491,9 @@ fn view_toggles(ui: &mut Ui, view: &mut rizxel_app::ViewOptions, rect: Rect) {
                 theme::TEXT_DIM
             },
         );
+    }
+    if floor != was_floor {
+        state.toggle_floor_grid();
     }
 }
 
@@ -1847,5 +1869,41 @@ mod tests {
         ];
         assert!(point_in_convex(Pos2::new(0.5, 0.5), &q));
         assert!(!point_in_convex(Pos2::new(1.5, 0.5), &q));
+    }
+
+    /// A 32³ model in all 8 tiles of 16³, more than meshes synchronously.
+    fn eight_tile_doc() -> Document {
+        let mut doc = Document::new("t");
+        doc.set_bounds(BoundSize::new(32, 32, 32), false);
+        let cubes = (0..8).flat_map(|t: i32| {
+            let o = IVec3::new(t & 1, (t >> 1) & 1, (t >> 2) & 1) * 16 + IVec3::splat(4);
+            (0..27).map(move |i| (o + IVec3::new(i % 3, i / 3 % 3, i / 9), 5))
+        });
+        doc.set_voxels(0, cubes, false);
+        doc
+    }
+
+    #[test]
+    fn output_frame_does_not_drop_background_viewport_tiles() {
+        // A freshly opened model meshes in the background; a thumbnail or
+        // Image output rendered meanwhile must not leave the viewport empty.
+        let doc = eight_tile_doc();
+        let mut cache = MeshCache::default();
+        assert!(cache.get(&doc, false).opaque.indices.is_empty());
+        assert!(doc.view_meshing(), "the first mesh goes to the pool");
+        let frame = output_frame(&doc, &OrbitCamera::default(), [64, 64], false);
+        assert!(!frame.voxels.unwrap().indices.is_empty());
+        let start = std::time::Instant::now();
+        while doc.view_meshing() && start.elapsed() < std::time::Duration::from_secs(10) {
+            cache.get(&doc, false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Late tiles from a drained request would have had time to land.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let meshes = cache.get(&doc, false);
+        assert!(
+            !meshes.opaque.indices.is_empty(),
+            "the viewport shows the model once meshing is done"
+        );
     }
 }

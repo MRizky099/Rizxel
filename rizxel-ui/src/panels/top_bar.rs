@@ -79,7 +79,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
 
     // App icon.
     let icon_rect = span((0.0, ICON_WIDTH));
-    crate::widgets::paint_icon(ui, icon_rect, icon::CUBE, 15.0, theme::ACCENT);
+    crate::icons::paint_logo(ui, icon_rect, 18.0, true);
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -460,23 +460,62 @@ fn camera_items(ui: &mut Ui, state: &mut AppState) {
 /// View > Show: what the viewport draws besides the model (also on the
 /// viewport's toggle buttons).
 fn show_menu(ui: &mut Ui, state: &mut AppState) {
+    let mut save_grid_width = false;
     ui.menu_button(icon_label(ui, icon::EYE, "Show", None), |ui| {
         ui.set_min_width(200.0);
         let keys = [A::FloorGrid, A::VoxelGrid, A::ModelBounds].map(|a| sc(state, a));
+        // Render mode: the document's render floor grid (an undoable edit).
+        let render = state.view_mode == rizxel_app::ViewMode::Render;
+        let label = if render {
+            "Floor Grid (render)"
+        } else {
+            "Floor Grid"
+        };
+        if menu_item(
+            ui,
+            check_glyph(state.floor_grid_shown()),
+            label,
+            &keys[0],
+            true,
+        ) {
+            state.toggle_floor_grid();
+        }
         let view = &mut state.view;
         for ((on, label), shortcut) in [
-            (&mut view.floor_grid, "Floor Grid"),
             (&mut view.voxel_grid, "Voxel Grid"),
             (&mut view.model_bounds, "Model Bounds"),
         ]
         .into_iter()
-        .zip(&keys)
+        .zip(&keys[1..])
         {
             if menu_item(ui, check_glyph(*on), label, shortcut, true) {
                 *on = !*on;
             }
+            if label == "Voxel Grid" {
+                // Quick width, live and remembered (Settings ▸ Viewport).
+                let width = &mut state.settings.viewport.voxel_grid_width;
+                let r = ui
+                    .horizontal(|ui| {
+                        ui.add_space(22.0);
+                        ui.add(
+                            egui::Slider::new(width, rizxel_app::settings::GRID_WIDTH_RANGE)
+                                .step_by(0.25)
+                                .suffix(" px")
+                                .text("width"),
+                        )
+                    })
+                    .inner
+                    .on_hover_text("Voxel grid line width");
+                save_grid_width = r.drag_stopped() || (r.changed() && !r.dragged());
+            }
         }
     });
+    if save_grid_width {
+        if let Err(e) = state.save_settings() {
+            log::warn!("settings: {e}");
+            state.status_message = Some(format!("Failed to save the settings: {e}"));
+        }
+    }
     let ghosts = state.view.ghosts;
     if menu_item(
         ui,
@@ -702,6 +741,14 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
         d.active_layer()
             .is_some_and(|l| l.kind().is_group() || l.props.parent.is_some())
     });
+    let selected = state
+        .doc()
+        .map_or(0, |d| d.normalized_layer_selection().len());
+    let group_label = if selected > 1 {
+        format!("Group Selected ({selected} layers)")
+    } else {
+        "Group Layer".to_owned()
+    };
     if menu_item(ui, icon::FOLDER_PLUS, "New Group", "", has_doc) {
         if let Some(d) = state.doc_mut() {
             d.add_group();
@@ -710,11 +757,11 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     if menu_item(
         ui,
         icon::FOLDER_SIMPLE_PLUS,
-        "Group Layer",
+        &group_label,
         &sc(state, A::Group),
         has_doc,
     ) {
-        state.group_active_layer();
+        state.group_selected_layers();
     }
     if menu_item(
         ui,
@@ -1258,10 +1305,9 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
             .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(icon::CUBE)
-                            .font(theme::icon(28.0))
-                            .color(theme::ACCENT),
+                    ui.add(
+                        egui::Image::new(&crate::icons::logo(ui.ctx()))
+                            .fit_to_exact_size(egui::Vec2::splat(36.0)),
                     );
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new("Rizxel").font(theme::semibold(16.0)));

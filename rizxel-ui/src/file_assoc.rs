@@ -1,6 +1,6 @@
 //! *Settings ▸ General ▸ Associate .rzxl files*: per-user registration of
-//! this copy of Rizxel as the handler of `.rzxl` (and an *Open with* entry
-//! for `.vox` and `.gox`) for portable builds. The installers register the
+//! this copy of Rizxel as the handler of `.rzxl`, and of no other extension,
+//! for portable builds. The installers register the
 //! same entries themselves. Only on the user's click, never automatically,
 //! and always undoable.
 //!
@@ -15,12 +15,13 @@ use std::path::{Path, PathBuf};
 
 /// ProgID of Rizxel projects (Windows) and the desktop/app id elsewhere.
 pub const PROG_ID: &str = "Rizxel.Project";
-/// ProgID of the *Open with* entry for `.vox` and `.gox`.
-pub const MODEL_PROG_ID: &str = "Rizxel.Model";
+/// ProgID of the *Open with* entry for `.vox` and `.gox` that 0.9 and 0.10
+/// wrote. No longer registered; [`register`] and [`unregister`] remove it.
+pub const LEGACY_MODEL_PROG_ID: &str = "Rizxel.Model";
 pub const APP_ID: &str = "io.github.mrizky099.rizxel";
 pub const MIME_TYPE: &str = "application/x-rizxel";
-/// Opened with Rizxel but not claimed (MagicaVoxel and Goxel own them).
-pub const OPEN_WITH: [&str; 2] = ["vox", "gox"];
+/// Extensions 0.9 and 0.10 added *Open with* entries for.
+pub const LEGACY_OPEN_WITH: [&str; 2] = ["vox", "gox"];
 
 // ---------------------------------------------------------------- Windows
 
@@ -45,7 +46,7 @@ fn reg(key: &str, name: Option<&str>, value: &str) -> RegValue {
 pub fn registry_values(exe: &Path) -> Vec<RegValue> {
     let exe = exe.display().to_string();
     let open = format!("\"{exe}\" \"%1\"");
-    let mut v = vec![
+    vec![
         reg(".rzxl", None, PROG_ID),
         reg(".rzxl", Some("Content Type"), MIME_TYPE),
         reg(".rzxl\\OpenWithProgids", Some(PROG_ID), ""),
@@ -56,17 +57,6 @@ pub fn registry_values(exe: &Path) -> Vec<RegValue> {
             &format!("\"{exe}\",-2"),
         ),
         reg(&format!("{PROG_ID}\\shell\\open\\command"), None, &open),
-        reg(MODEL_PROG_ID, None, "Voxel Model"),
-        reg(
-            &format!("{MODEL_PROG_ID}\\DefaultIcon"),
-            None,
-            &format!("\"{exe}\",0"),
-        ),
-        reg(
-            &format!("{MODEL_PROG_ID}\\shell\\open\\command"),
-            None,
-            &open,
-        ),
         reg(
             "Applications\\rizxel.exe",
             Some("FriendlyAppName"),
@@ -82,20 +72,7 @@ pub fn registry_values(exe: &Path) -> Vec<RegValue> {
             Some(".rzxl"),
             "",
         ),
-    ];
-    for ext in OPEN_WITH {
-        v.push(reg(
-            &format!(".{ext}\\OpenWithProgids"),
-            Some(MODEL_PROG_ID),
-            "",
-        ));
-        v.push(reg(
-            "Applications\\rizxel.exe\\SupportedTypes",
-            Some(&format!(".{ext}")),
-            "",
-        ));
-    }
-    v
+    ]
 }
 
 /// Where registry values go: `reg.exe` on the real hive, or a map in tests.
@@ -106,10 +83,28 @@ pub trait Registry {
     fn delete_key(&mut self, key: &str) -> std::io::Result<()>;
 }
 
-/// Registers `exe` as the `.rzxl` handler.
+/// Registers `exe` as the `.rzxl` handler, dropping the `.vox`/`.gox`
+/// entries an older Rizxel wrote.
 pub fn register(reg: &mut dyn Registry, exe: &Path) -> std::io::Result<()> {
+    remove_legacy(reg)?;
     for v in registry_values(exe) {
         reg.set(&v)?;
+    }
+    Ok(())
+}
+
+/// Removes the `.vox`/`.gox` *Open with* entries of 0.9 and 0.10.
+fn remove_legacy(reg: &mut dyn Registry) -> std::io::Result<()> {
+    reg.delete_key(LEGACY_MODEL_PROG_ID)?;
+    for ext in LEGACY_OPEN_WITH {
+        reg.delete_value(
+            &format!(".{ext}\\OpenWithProgids"),
+            Some(LEGACY_MODEL_PROG_ID),
+        )?;
+        reg.delete_value(
+            "Applications\\rizxel.exe\\SupportedTypes",
+            Some(&format!(".{ext}")),
+        )?;
     }
     Ok(())
 }
@@ -126,15 +121,12 @@ pub fn is_registered(reg: &dyn Registry, exe: &Path) -> bool {
 /// it still points to Rizxel; other programs' entries stay.
 pub fn unregister(reg: &mut dyn Registry) -> std::io::Result<()> {
     reg.delete_key(PROG_ID)?;
-    reg.delete_key(MODEL_PROG_ID)?;
+    remove_legacy(reg)?;
     reg.delete_key("Applications\\rizxel.exe")?;
     reg.delete_value(".rzxl\\OpenWithProgids", Some(PROG_ID))?;
     if reg.get(".rzxl", None).as_deref() == Some(PROG_ID) {
         reg.delete_value(".rzxl", None)?;
         reg.delete_value(".rzxl", Some("Content Type"))?;
-    }
-    for ext in OPEN_WITH {
-        reg.delete_value(&format!(".{ext}\\OpenWithProgids"), Some(MODEL_PROG_ID))?;
     }
     Ok(())
 }
@@ -259,9 +251,6 @@ impl Registry for RegExe {
 
 /// The `.desktop` entry for `exe`.
 pub fn desktop_entry(exe: &Path) -> String {
-    let mimes: Vec<String> = std::iter::once(MIME_TYPE.to_owned())
-        .chain(OPEN_WITH.iter().map(|e| format!("application/x-{e}")))
-        .collect();
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
@@ -271,10 +260,9 @@ pub fn desktop_entry(exe: &Path) -> String {
          Icon={APP_ID}\n\
          Terminal=false\n\
          Categories=Graphics;3DGraphics;\n\
-         MimeType={};\n\
+         MimeType={MIME_TYPE};\n\
          StartupWMClass=rizxel\n",
         exe.display(),
-        mimes.join(";")
     )
 }
 
@@ -451,7 +439,7 @@ pub fn settings_section(ui: &mut egui::Ui, status: &mut Option<String>) {
         };
         if ui
             .button(label)
-            .on_hover_text("Per user, no admin rights. Also adds Open with for .vox and .gox.")
+            .on_hover_text("Per user, no admin rights. Only .rzxl; other formats are left alone.")
             .clicked()
         {
             *status = Some(match set_associated(!on) {
@@ -494,10 +482,13 @@ mod tests {
             reg.get(r"Rizxel.Project\DefaultIcon", None).as_deref(),
             Some(r#""C:\Tools\Rizxel\rizxel.exe",-2"#)
         );
-        assert_eq!(
-            reg.get(r".vox\OpenWithProgids", Some(MODEL_PROG_ID))
-                .as_deref(),
-            Some("")
+        assert!(
+            // The other program's `.vox` default is not ours.
+            reg.values.iter().all(|((k, n), _)| !k.starts_with(r".vox\")
+                && !k.starts_with(r".gox\")
+                && !k.starts_with(LEGACY_MODEL_PROG_ID)
+                && n.as_deref().is_none_or(|n| n != ".vox" && n != ".gox")),
+            "only .rzxl is registered"
         );
         assert!(!is_registered(&reg, Path::new(r"D:\other\rizxel.exe")));
 
@@ -510,6 +501,31 @@ mod tests {
         })
         .unwrap();
         assert_eq!(reg, left, "only the other program's entry is left");
+    }
+
+    #[test]
+    fn register_and_unregister_drop_the_legacy_vox_gox_entries() {
+        let legacy = [
+            (r".vox\OpenWithProgids", Some(LEGACY_MODEL_PROG_ID)),
+            (r".gox\OpenWithProgids", Some(LEGACY_MODEL_PROG_ID)),
+            (r"Applications\rizxel.exe\SupportedTypes", Some(".vox")),
+            (r"Applications\rizxel.exe\SupportedTypes", Some(".gox")),
+            (r"Rizxel.Model\shell\open\command", None),
+        ];
+        let old = || {
+            let mut r = MemoryRegistry::default();
+            for (key, name) in legacy {
+                r.set(&reg(key, name, "")).unwrap();
+            }
+            r
+        };
+        let gone = |reg: &MemoryRegistry| legacy.iter().all(|&(k, n)| reg.get(k, n).is_none());
+        let mut r = old();
+        register(&mut r, Path::new(r"C:\a\rizxel.exe")).unwrap();
+        assert!(gone(&r));
+        let mut r = old();
+        unregister(&mut r).unwrap();
+        assert!(r.values.is_empty(), "nothing of an older Rizxel is left");
     }
 
     #[test]
@@ -554,7 +570,7 @@ mod tests {
         assert!(xdg_registered(&dir, exe));
         assert!(!xdg_registered(&dir, Path::new("/elsewhere/rizxel")));
         let desktop = std::fs::read_to_string(&xdg_files(&dir)[0]).unwrap();
-        assert!(desktop.contains("MimeType=application/x-rizxel;application/x-vox;"));
+        assert!(desktop.contains("MimeType=application/x-rizxel;\n"));
         assert!(desktop.contains("Exec=\"/opt/Rizxel.AppImage\" %f"));
         let mime = std::fs::read_to_string(&xdg_files(&dir)[1]).unwrap();
         assert!(mime.contains("<glob pattern=\"*.rzxl\"/>"));

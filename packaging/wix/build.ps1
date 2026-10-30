@@ -1,6 +1,6 @@
 # Builds Rizxel-<version>-windows-x64.zip and Rizxel-<version>-windows-x64.msi
 # from a release build.
-#   pwsh packaging/wix/build.ps1 -Version 0.10.0 [-NoMsi]
+#   pwsh packaging/wix/build.ps1 -Version 0.11.0 [-NoMsi]
 # Needs target/release/rizxel.exe and THIRD_PARTY_LICENSES.html at the repo
 # root; the MSI also needs the WiX Toolset 5 `wix` tool with the UI extension:
 #   dotnet tool install --global wix --version 5.0.2

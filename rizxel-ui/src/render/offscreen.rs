@@ -4,6 +4,10 @@
 //! Large images are drawn in tiles of at most [`TILE`] pixels: each tile
 //! crops the projection to its part of the frame, so a 8192² render never
 //! needs more GPU memory than one tile's MSAA targets.
+//!
+//! With Render mode's voxel lines or floor grid on, the image is drawn at
+//! twice the size and each tile is box-filtered down as it is read back
+//! (Phase 12e), so thin lines print clean without a 2x full-size buffer.
 
 use eframe::egui_wgpu::wgpu;
 use glam::Mat4;
@@ -190,6 +194,34 @@ pub fn tile_screen_y(full: [f32; 2], size: [u32; 2], tile: [u32; 4]) -> [f32; 2]
     [full[0] * scale, full[0] * offset + full[1]]
 }
 
+/// Supersampling factor of the *Image* output: 2 with Render mode's voxel
+/// lines or floor grid (thin analytic lines print cleaner), else 1.
+pub fn supersampling(frame: &SceneFrame) -> u32 {
+    if frame.look.voxel_lines.is_some() || frame.look.floor_grid.is_some() {
+        2
+    } else {
+        1
+    }
+}
+
+/// Box-filters an RGBA8 image of even `size` to half its size.
+pub fn downsample_2x(pixels: &[u8], size: [u32; 2]) -> Vec<u8> {
+    let (w, h) = (size[0] as usize, size[1] as usize);
+    let mut out = vec![0u8; (w / 2) * (h / 2) * 4];
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            for c in 0..4 {
+                let at = |dx: usize, dy: usize| {
+                    u32::from(pixels[((2 * y + dy) * w + 2 * x + dx) * 4 + c])
+                };
+                let sum = at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1);
+                out[(y * (w / 2) + x) * 4 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Tiles covering a `size` image, row by row: `[x0, y0, x1, y1]`.
 pub fn tiles(size: [u32; 2], tile: u32) -> Vec<[u32; 4]> {
     let tile = tile.max(1);
@@ -214,8 +246,10 @@ impl OffscreenRaster {
         }
     }
 
-    /// Renders `frame` at `size` pixels. With `frame.look.transparent` the
-    /// background has alpha 0 and the image is straight (unpremultiplied).
+    /// Renders `frame` at `size` pixels, supersampled 2x when it has voxel
+    /// lines or a floor grid ([`supersampling`]). With
+    /// `frame.look.transparent` the background has alpha 0 and the image is
+    /// straight (unpremultiplied).
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -224,12 +258,16 @@ impl OffscreenRaster {
         size: [u32; 2],
     ) -> RgbaImage {
         let size = size.map(|v| v.max(1));
+        let ss = supersampling(frame);
+        let big = size.map(|v| v * ss);
         let mut pixels = vec![0u8; (size[0] * size[1] * 4) as usize];
-        for t in tiles(size, TILE) {
+        // TILE is even, so every tile of the large image maps onto whole
+        // output pixels.
+        for t in tiles(big, TILE) {
             let tile_size = [t[2] - t[0], t[3] - t[1]];
             let mut tile_frame = frame.clone();
-            tile_frame.view_proj = crop_view_proj(frame.view_proj, size, t);
-            tile_frame.screen_y = tile_screen_y(frame.screen_y, size, t);
+            tile_frame.view_proj = crop_view_proj(frame.view_proj, big, t);
+            tile_frame.screen_y = tile_screen_y(frame.screen_y, big, t);
             let mut encoder = device.create_command_encoder(&Default::default());
             self.renderer.render_scene(
                 device,
@@ -243,11 +281,19 @@ impl OffscreenRaster {
             let Some(targets) = &self.renderer.targets else {
                 continue;
             };
-            let tile_pixels =
+            let mut tile_pixels =
                 read_rgba8(device, queue, &targets.resolve_texture, [0, 0], tile_size);
+            let mut tile_size = tile_size;
+            if ss == 2 {
+                // Premultiplied (transparent output) or opaque: averaging is
+                // right either way.
+                tile_pixels = downsample_2x(&tile_pixels, tile_size);
+                tile_size = tile_size.map(|v| v / 2);
+            }
+            let (x0, y0) = ((t[0] / ss) as usize, (t[1] / ss) as usize);
             let row = (tile_size[0] * 4) as usize;
             for (y, src) in tile_pixels.chunks_exact(row).enumerate() {
-                let start = (((t[1] as usize + y) * size[0] as usize) + t[0] as usize) * 4;
+                let start = (((y0 + y) * size[0] as usize) + x0) * 4;
                 pixels[start..start + row].copy_from_slice(src);
             }
         }
@@ -396,5 +442,97 @@ mod tests {
         // The whole image as one tile changes nothing.
         let same = crop_view_proj(vp, size, [0, 0, 400, 200]);
         assert!(same.abs_diff_eq(vp, 1e-5));
+    }
+
+    /// A 4x4-voxel plane sheet at y = 1 seen straight from above in
+    /// orthographic, 20 px per voxel: pixel `20 * k` is centered on the cell
+    /// boundary `x = k`.
+    fn plane_frame(voxel_grid: bool, width_px: f32) -> SceneFrame {
+        use crate::render::{GridStyle, PlaneVertex, RenderLook};
+        use egui::Color32;
+        use glam::camera::rh::{proj::directx::orthographic, view::look_at_mat4};
+        let (lo, hi) = (-0.025, 3.975);
+        // View-space up is -Z, so z grows down the image.
+        let proj = orthographic(lo, hi, -hi, -lo, 0.1, 50.0);
+        let eye = Vec3::new(0.0, 10.0, 0.0);
+        let view = look_at_mat4(eye, Vec3::new(0.0, 1.0, 0.0), Vec3::NEG_Z);
+        let view_proj = proj * view;
+        let q = [
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(4.0, 1.0, 0.0),
+            Vec3::new(4.0, 1.0, 4.0),
+            Vec3::new(0.0, 1.0, 4.0),
+        ];
+        SceneFrame {
+            view_proj,
+            eye,
+            target: Vec3::new(0.0, 1.0, 0.0),
+            forward: Vec3::NEG_Y,
+            ortho: true,
+            distance: 9.0,
+            grid_origin: glam::Vec2::ZERO,
+            render_mode: false,
+            floor_grid: false,
+            voxel_grid,
+            ao: false,
+            background: Color32::BLACK,
+            grid_color: Color32::WHITE,
+            axis_x: Color32::RED,
+            axis_z: Color32::BLUE,
+            lines: Vec::new(),
+            fills: Vec::new(),
+            planes: PlaneVertex::quad(
+                q,
+                1,
+                Color32::from_rgba_unmultiplied(0, 0, 200, 128),
+                Color32::WHITE,
+            )
+            .to_vec(),
+            grid_style: GridStyle {
+                voxel_width: width_px,
+                voxel_opacity: 1.0,
+                ..GridStyle::default()
+            },
+            voxels: None,
+            translucent: Vec::new(),
+            materials: Vec::new(),
+            references: Vec::new(),
+            look: RenderLook::default(),
+            screen_y: [1.0, 0.0],
+            pt: None,
+        }
+    }
+
+    #[test]
+    fn plane_sheet_shows_voxel_cells_with_the_voxel_grid() {
+        let Some(Headless { device, queue, .. }) = headless_device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut raster = OffscreenRaster::new(&device);
+        let mut render =
+            |grid, width| raster.render(&device, &queue, &plane_frame(grid, width), [80, 80]);
+        let red = |img: &RgbaImage, x: u32| img.pixel(x, 30)[0];
+        // Cell center x = 1.5 (pixel 30), boundary x = 1 (pixel 20).
+        let thin = render(true, 1.0);
+        let center = red(&thin, 30);
+        assert!(
+            red(&thin, 20) > center + 100,
+            "a cell boundary shows a line: {} vs {center}",
+            red(&thin, 20)
+        );
+        assert!(red(&thin, 22).abs_diff(center) < 8, "1 px lines stay thin");
+        let wide = render(true, 4.0);
+        assert!(
+            red(&wide, 21) > red(&thin, 21) + 60,
+            "a wider line covers 1 px off the boundary: {} vs {}",
+            red(&wide, 21),
+            red(&thin, 21)
+        );
+        assert!(red(&wide, 22) > red(&thin, 22) + 30, "and fades past it");
+        // Voxel grid off: the plain fill.
+        let plain = render(false, 4.0);
+        assert_eq!(plain.pixel(20, 30), plain.pixel(30, 30));
+        assert_eq!(plain.pixel(30, 30), thin.pixel(30, 30));
     }
 }

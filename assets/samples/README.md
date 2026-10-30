@@ -10,6 +10,7 @@ with *File ▸ Open...* or by dropping them on the window.
 | `lantern.rzxl` | Render mode: glass panes (transmission), a glowing flame (emission), a dusk sky, rounded voxels, bloom. Press `F5`. |
 | `tree.rzxl` | Groups and procedural layers: the crown is a group of sphere shape layers, one of them a linked clone. |
 | `cottage.rzxl` | A house in layers inside a group: walls, glass windows, door, roof, gables and chimney; renders with the Brick shape. |
+| `rizxel_r.rzxl` | The "R" of Rizxel's icon with the *Voxel Icon* render preset: voxel lines, a glowing floor grid, matte. Press `F5`. |
 
 ## License
 

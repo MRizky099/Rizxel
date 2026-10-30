@@ -9,13 +9,15 @@
 //! Options:
 //! - `--spp N` samples per pixel (default: the file's render settings)
 //! - `--size WxH` (default 960x720)
-//! - `--preset studio|outdoor|night|flat`
+//! - `--preset studio|outdoor|night|flat|icon`
 //! - `--shape cube|brick|rounded|sphere|cylinder`
 //! - `--yaw DEG`, `--pitch DEG` camera angles (default 45, 30), framed on
 //!   the model
+//! - `--sun AZ,EL` sun azimuth and elevation in degrees
+//! - `--zoom F` camera distance times F after framing (default 1)
 //! - `--raster` the fast raster *Image* render instead of path tracing
 //! - `--transparent` transparent background
-//! - `--material diffuse|plastic|metal|glass|emit` gives every layer one
+//! - `--material diffuse|plastic|metal|glass|emit|matte` gives every layer one
 //!   material with that preset
 //! - `--export-shaped FILE` also writes the shaped mesh (`.obj`, `.stl` or
 //!   `.glb`, needs `--shape`)
@@ -41,6 +43,8 @@ fn main() {
     let mut shape = None;
     let mut yaw = 45.0f32;
     let mut pitch = 30.0f32;
+    let mut zoom = 1.0f32;
+    let mut sun: Option<(f32, f32)> = None;
     let mut raster = false;
     let mut transparent = false;
     let mut material = None;
@@ -67,6 +71,7 @@ fn main() {
                     "outdoor" => RenderPreset::OutdoorSun,
                     "night" => RenderPreset::NightEmissive,
                     "flat" => RenderPreset::FlatPixel,
+                    "icon" => RenderPreset::VoxelIcon,
                     other => fail(format!("unknown preset {other}")),
                 })
             }
@@ -81,6 +86,15 @@ fn main() {
             }
             "--yaw" => yaw = value().parse().unwrap_or_else(|e| fail(e)),
             "--pitch" => pitch = value().parse().unwrap_or_else(|e| fail(e)),
+            "--sun" => {
+                let v = value();
+                let (az, el) = v.split_once(',').unwrap_or_else(|| fail("--sun AZ,EL"));
+                sun = Some((
+                    az.parse().unwrap_or_else(|e| fail(e)),
+                    el.parse().unwrap_or_else(|e| fail(e)),
+                ));
+            }
+            "--zoom" => zoom = value().parse().unwrap_or_else(|e| fail(e)),
             "--raster" => raster = true,
             "--transparent" => transparent = true,
             "--export-shaped" => export_shaped = Some(PathBuf::from(value())),
@@ -134,6 +148,10 @@ fn main() {
     if let Some(shape) = shape {
         s.display.shape = shape;
     }
+    if let Some((az, el)) = sun {
+        s.light.sun_azimuth = az;
+        s.light.sun_elevation = el;
+    }
     s.output.transparent = transparent;
     doc.set_render(s, false);
     if let Some(preset) = material {
@@ -153,6 +171,7 @@ fn main() {
         }
     }
     state.frame_selection();
+    state.camera.distance *= zoom;
     eprintln!("bounds {:?}", state.doc().map(|d| d.data.bounds));
     if let Some(path) = &export_shaped {
         let e = rizxel_app::ShapedExport::default();

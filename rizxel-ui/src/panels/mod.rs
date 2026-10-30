@@ -45,6 +45,10 @@ pub struct UiState {
     /// Guide page a keyboard command asked to open (opened next frame,
     /// where the context is at hand).
     pub open_guide: Option<String>,
+    /// The pointer was over the Layers panel last frame: `Ctrl+A` then
+    /// selects every layer instead of every voxel. Cleared after the
+    /// shortcuts run, set again by the panel.
+    pub layers_hovered: bool,
 }
 
 impl UiState {

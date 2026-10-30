@@ -459,7 +459,7 @@ impl ActionId {
             SelectionToLayer => "Selection to a new layer (copy)",
             SelectionToLayerCut => "Selection to a new layer (cut)",
             MaskMode => "Mask Mode: protect the selection",
-            Group => "Group the active layer",
+            Group => "Group the selected layers",
             Ungroup => "Ungroup",
             RotateCcw => "Rotate 90° counterclockwise (facing axis)",
             RotateCw => "Rotate 90° clockwise (facing axis)",

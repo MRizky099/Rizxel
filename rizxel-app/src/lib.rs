@@ -12,6 +12,7 @@ pub mod favorites;
 pub mod history;
 pub mod interchange;
 pub mod keymap;
+pub mod layer_select;
 pub mod layer_tree;
 pub mod paths;
 pub mod recent;
@@ -1388,16 +1389,28 @@ impl AppState {
         });
     }
 
-    /// *Layer ▸ Group Layer* (`Ctrl+G`): wraps the active layer (a group
-    /// with its contents) in a new group.
-    pub fn group_active_layer(&mut self) {
+    /// *Layer ▸ Group* (`Ctrl+G`): the layers selected in the Layers panel
+    /// into a new group; with only the active layer selected, wraps it (a
+    /// group with its contents) in a new group.
+    pub fn group_selected_layers(&mut self) {
         let Some(d) = self.doc_mut() else { return };
-        let index = d.active_layer;
-        if d.group_layer(index).is_none() {
+        let n = d.normalized_layer_selection().len();
+        if d.group_selected_layers().is_none() {
             self.status_message = Some(format!(
-                "Group Layer: groups nest at most {} levels deep",
+                "Group: groups nest at most {} levels deep",
                 rizxel_io::MAX_GROUP_DEPTH
             ));
+        } else if n > 1 {
+            self.status_message = Some(format!("Grouped {n} layers"));
+        }
+    }
+
+    /// `Ctrl+A` over the Layers panel: selects every layer.
+    pub fn select_all_layers(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.select_all_layers();
+            let n = d.selected_layer_count();
+            self.status_message = Some(format!("Selected {n} layers"));
         }
     }
 
@@ -1490,6 +1503,34 @@ impl AppState {
             ViewMode::Model => ViewMode::Render,
             ViewMode::Render => ViewMode::Model,
         });
+    }
+
+    /// Whether *View ▸ Floor Grid* is checked: the document's render floor
+    /// grid in Render mode, the editing grid in Model mode.
+    pub fn floor_grid_shown(&self) -> bool {
+        match (self.view_mode, self.doc()) {
+            (ViewMode::Render, Some(doc)) => doc.data.render.effective_floor_grid(),
+            _ => self.view.floor_grid,
+        }
+    }
+
+    /// *View ▸ Floor Grid* (`G`). In Render mode it toggles the document's
+    /// render floor grid as an undoable render-settings edit (turning it
+    /// on also turns the ground on, which it lies on); in Model mode the
+    /// editing grid.
+    pub fn toggle_floor_grid(&mut self) {
+        let shown = self.floor_grid_shown();
+        match (self.view_mode, self.doc_mut()) {
+            (ViewMode::Render, Some(doc)) => {
+                let mut s = doc.data.render.clone();
+                s.display.floor_grid = !shown;
+                if !shown {
+                    s.display.ground = true;
+                }
+                doc.labeled("Floor Grid", |d| d.set_render(s, false));
+            }
+            _ => self.view.floor_grid = !self.view.floor_grid,
+        }
     }
 
     /// Saves the active document's render settings as user preset `name`.
@@ -2224,5 +2265,27 @@ mod tests {
         c.snap(ViewTarget::Face(ViewFace::Front));
         c.pan_screen(0.0, 0.5, 90f32.to_radians());
         assert!((c.pan.y - c.distance).abs() < 1e-3, "{:?}", c.pan);
+    }
+
+    #[test]
+    fn floor_grid_toggle_follows_the_view_mode() {
+        let mut s = AppState::default();
+        assert!(s.floor_grid_shown());
+        s.toggle_floor_grid();
+        assert!(!s.view.floor_grid && !s.floor_grid_shown());
+
+        // Render mode: the document's floor grid, undoable, ground on.
+        s.set_view_mode(ViewMode::Render);
+        let doc = s.doc_mut().unwrap();
+        let mut r = doc.data.render.clone();
+        r.display.ground = false;
+        doc.set_render(r, false);
+        assert!(!s.floor_grid_shown());
+        s.toggle_floor_grid();
+        let d = &s.doc().unwrap().data.render.display;
+        assert!(d.floor_grid && d.ground && s.floor_grid_shown());
+        assert!(!s.view.floor_grid, "the editing grid is left alone");
+        s.undo();
+        assert!(!s.doc().unwrap().data.render.display.floor_grid);
     }
 }

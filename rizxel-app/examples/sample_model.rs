@@ -17,13 +17,17 @@
 //!   sphere shape layers and linked clones.
 //! - `cottage.rzxl`: a small house in layers (walls, roof, windows, door,
 //!   chimney) with glass windows, rendered with the Brick voxel shape.
+//! - `rizxel_r.rzxl`: the "R" of Rizxel's icon, set up with the *Voxel
+//!   Icon* render preset (voxel lines, glowing floor grid, matte).
 
 use std::path::{Path, PathBuf};
 
 use glam::IVec3;
 use rizxel_app::{Document, LayerProps};
 use rizxel_math::render::{BackgroundMode, OutputKind, SkyMode, ToneMap};
-use rizxel_math::{BoundSize, LayerId, Material, Rgba8, ShapeKind, VoxelBox, VoxelShape};
+use rizxel_math::{
+    BoundSize, LayerId, Material, RenderPreset, Rgba8, ShapeKind, VoxelBox, VoxelShape,
+};
 
 /// Palette of the themed samples: slots 1.. in this order.
 const COLORS: [(u8, u8, u8); 16] = [
@@ -76,6 +80,7 @@ fn main() {
             ("lantern", lantern()),
             ("tree", tree()),
             ("cottage", cottage()),
+            ("rizxel_r", rizxel_r()),
         ] {
             save(&mut doc, &dir.join(format!("{name}.rzxl")));
         }
@@ -156,6 +161,53 @@ fn cuboid(a: IVec3, b: IVec3, color: u8) -> Vec<(IVec3, u8)> {
         }
     }
     cells
+}
+
+/// The letter of Rizxel's icon, front view, `#` = voxel. Row 0 is the top.
+const LETTER_R: [&str; 15] = [
+    "#########..",
+    "##########.",
+    "###########",
+    "####...####",
+    "####...####",
+    "####...####",
+    "###########",
+    "##########.",
+    "#########..",
+    "####.####..",
+    "####..####.",
+    "####..####.",
+    "####...####",
+    "####...####",
+    "####....###",
+];
+
+/// Rizxel's icon: a blue "R", 5 voxels deep, standing on a dark floor with
+/// a glowing grid (the *Voxel Icon* render preset).
+fn rizxel_r() -> Document {
+    let depth = 5;
+    let (w, h) = (LETTER_R[0].len() as i32, LETTER_R.len() as i32);
+    let mut doc = Document::new("rizxel_r");
+    doc.set_bounds(BoundSize::new(w as u32 + 2, h as u32 + 1, depth + 2), false);
+    doc.set_palette_color(1, Rgba8::rgb(0x3a, 0x55, 0xf0), false);
+    doc.rename_layer(0, "R".to_owned());
+    let mut cells = Vec::new();
+    for (row, line) in LETTER_R.iter().enumerate() {
+        for (x, c) in line.chars().enumerate() {
+            if c != '#' {
+                continue;
+            }
+            for z in 1..=depth as i32 {
+                cells.push((IVec3::new(x as i32 + 1, h - 1 - row as i32, z), 1));
+            }
+        }
+    }
+    doc.set_voxels(0, cells, false);
+    let mut s = RenderPreset::VoxelIcon.apply(&doc.data.render);
+    s.output.width = 1024;
+    s.output.height = 1024;
+    doc.set_render(s, false);
+    doc
 }
 
 /// The README's demo model.

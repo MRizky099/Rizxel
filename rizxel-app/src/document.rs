@@ -416,6 +416,9 @@ struct ViewCache {
     layers: HashMap<LayerId, TileMeshCache>,
     /// The last result, updated in place by [`Document::poll_view_meshes`].
     last: ViewMeshes,
+    /// Bumped whenever `last` changes, so the viewport notices a change it
+    /// did not make itself (see [`Document::view_generation`]).
+    generation: u64,
 }
 
 /// Geometry of the effectively visible layers for one revision, in layer
@@ -463,6 +466,13 @@ pub struct Document {
     /// Mask Mode: tool writes skip the selected cells of their layer. Mirrors
     /// `ToolOptions::mask_selection` (set by the app). Not part of history.
     pub mask_selection: bool,
+    /// Layers selected in the Layers panel, in the order they were picked
+    /// (see [`Document::selected_layer_ids`]). View state: not in history
+    /// and not saved.
+    pub(crate) selected_layers: Vec<LayerId>,
+    /// Row a `Shift`+click range starts from (the last plain or `Ctrl`
+    /// click).
+    pub(crate) layer_anchor: Option<LayerId>,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -520,6 +530,8 @@ impl Document {
             last_box: None,
             transform: None,
             mask_selection: false,
+            selected_layers: Vec::new(),
+            layer_anchor: None,
             geometry: RefCell::new(None),
             view_cache: RefCell::new(ViewCache::default()),
         }
@@ -696,6 +708,20 @@ impl Document {
         self.view_meshes_with(ghosts, true)
     }
 
+    /// Meshes for an output (thumbnail, *Image*, turntable frame): the same
+    /// as [`Document::view_meshes`], built from scratch on this thread. They
+    /// never touch the viewport's cache, whose tiles may still be waiting
+    /// for the pool.
+    pub fn output_meshes(&self, ghosts: bool) -> ViewMeshes {
+        self.build_view_meshes(&mut ViewCache::default(), ghosts, false)
+    }
+
+    /// Changes whenever the viewport meshes ([`Document::view_meshes`] and
+    /// friends) change, including through a caller other than the viewport.
+    pub fn view_generation(&self) -> u64 {
+        self.view_cache.borrow().generation
+    }
+
     /// True while background meshing for the viewport is in progress.
     pub fn view_meshing(&self) -> bool {
         let cache = self.view_cache.borrow();
@@ -725,10 +751,27 @@ impl Document {
                 }
             }
         }
+        if changed {
+            cache.generation += 1;
+        }
         changed.then(|| cache.last.clone())
     }
 
     fn view_meshes_with(&self, ghosts: bool, background: bool) -> ViewMeshes {
+        let mut cache = self.view_cache.borrow_mut();
+        let out = self.build_view_meshes(&mut cache, ghosts, background);
+        cache.last = out.clone();
+        cache.generation += 1;
+        out
+    }
+
+    /// Meshes the visible layers into `cache`'s tiles.
+    fn build_view_meshes(
+        &self,
+        cache: &mut ViewCache,
+        ghosts: bool,
+        background: bool,
+    ) -> ViewMeshes {
         let clip = self.view_clip();
         let clipped = |v: &VoxelVolume| match clip {
             Some(c) => v.cropped(&c),
@@ -736,8 +779,6 @@ impl Document {
         };
         self.with_visible_layers(|layers| {
             let palette = &self.data.palette;
-            let mut cache = self.view_cache.borrow_mut();
-            let cache = &mut *cache;
             let mut opaque = Vec::new();
             let mut out = ViewMeshes::default();
             let mut kept = Vec::new();
@@ -811,7 +852,6 @@ impl Document {
                 // Nothing opaque: drop the cache so no late tile lands here.
                 None => cache.opaque = TileMeshCache::default(),
             }
-            cache.last = out.clone();
             out
         })
     }
@@ -875,6 +915,18 @@ impl Document {
         self.tag_history();
         edit.apply(&mut self.data);
         self.history.push(edit, merge);
+        self.edits += 1;
+        self.touch();
+        self.check_structure();
+    }
+
+    /// Applies `edit` and records it as a step named `label`, folded into
+    /// the previous step when that one has the same name (see
+    /// [`crate::history::History::push_folded`]).
+    pub(crate) fn apply_folded(&mut self, edit: Edit, label: &str) {
+        self.tag_history();
+        edit.apply(&mut self.data);
+        self.history.push_folded(edit, label);
         self.edits += 1;
         self.touch();
         self.check_structure();
@@ -1985,7 +2037,7 @@ impl Document {
     // ------------------------------------------------------ layer helpers
 
     /// Next free layer id.
-    fn next_layer_id(&self) -> LayerId {
+    pub(crate) fn next_layer_id(&self) -> LayerId {
         self.data
             .layers
             .iter()
@@ -2931,25 +2983,42 @@ impl Document {
         if index >= self.data.layers.len() {
             return false;
         }
-        let range = self.data.tree().subtree(index);
         let mut next = self.next_layer_id();
+        let edits = self.duplicate_edits(index, &mut next, &mut Vec::new());
+        let count = edits.len();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = index + count;
+        true
+    }
+
+    /// Edits copying layer `index` with its subtree just above itself.
+    /// Copies get ids from `next` on; the copy of `index` gets a name not in
+    /// `names`, which it is added to.
+    pub(crate) fn duplicate_edits(
+        &self,
+        index: usize,
+        next: &mut LayerId,
+        names: &mut Vec<String>,
+    ) -> Vec<Edit> {
+        let range = self.data.tree().subtree(index);
         let ids: HashMap<LayerId, LayerId> = range
             .clone()
             .map(|i| {
-                let id = (self.data.layers[i].id, next);
-                next = next.saturating_add(1);
+                let id = (self.data.layers[i].id, *next);
+                *next = next.saturating_add(1);
                 id
             })
             .collect();
         let start = range.start;
-        let edits: Vec<Edit> = range
+        range
             .map(|i| {
                 let source = &self.data.layers[i];
                 let mut layer = source.clone();
                 layer.selection = Selection::default();
                 layer.id = ids[&source.id];
                 if i == index {
-                    layer.name = self.unique_name_from(&format!("{} copy", source.name));
+                    layer.name = self.unique_name_among(&format!("{} copy", source.name), names);
+                    names.push(layer.name.clone());
                 } else {
                     layer.props.parent = source.props.parent.map(|p| ids[&p]);
                 }
@@ -2963,11 +3032,7 @@ impl Document {
                     layer,
                 }
             })
-            .collect();
-        let count = edits.len();
-        self.apply(Edit::Batch(edits), false);
-        self.active_layer = index + count;
-        true
+            .collect()
     }
 
     /// Wraps layer `index` (a group with its subtree) in a new group at the
@@ -3156,7 +3221,7 @@ impl Document {
     /// True when layer `index` can be painted into and removed by a merge:
     /// the target must store voxels, sources must have geometry and must not
     /// be needed by layers that survive the merge.
-    fn mergeable(&self, target: usize, sources: &[usize]) -> bool {
+    pub(crate) fn mergeable(&self, target: usize, sources: &[usize]) -> bool {
         let target_ok = self
             .data
             .layers
@@ -3219,7 +3284,7 @@ impl Document {
 
     /// Builds one undo step that paints `sources` (ascending, all above
     /// `target`) onto `target` in draw order, then removes them.
-    fn merge_into(&self, target: usize, sources: &[usize]) -> Edit {
+    pub(crate) fn merge_into(&self, target: usize, sources: &[usize]) -> Edit {
         let mut working = self.data.layers[target].volume.clone();
         let mut changes = Vec::new();
         for &i in sources {
@@ -3376,8 +3441,16 @@ impl Document {
     }
 
     /// `base`, or `base 2`, `base 3`... when that name is taken.
-    fn unique_name_from(&self, base: &str) -> String {
-        let taken = |name: &str| self.data.layers.iter().any(|l| l.name == name);
+    pub(crate) fn unique_name_from(&self, base: &str) -> String {
+        self.unique_name_among(base, &[])
+    }
+
+    /// Like [`Document::unique_name_from`], also avoiding `extra` (names
+    /// of layers about to be added).
+    pub(crate) fn unique_name_among(&self, base: &str, extra: &[String]) -> String {
+        let taken = |name: &str| {
+            self.data.layers.iter().any(|l| l.name == name) || extra.iter().any(|n| n == name)
+        };
         if !taken(base) {
             return base.to_owned();
         }

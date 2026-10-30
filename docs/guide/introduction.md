@@ -7,7 +7,7 @@ games and 3D printing.
 
 ![Model mode: tools, viewport, palette and layer tree](https://raw.githubusercontent.com/MRizky099/Rizxel/main/docs/images/readme/model_mode.png)
 
-This guide covers version **0.10** (Beta 2). Rizxel is still a beta: please report
+This guide covers version **0.11** (Beta 3). Rizxel is still a beta: please report
 problems in the [issue tracker](https://github.com/MRizky099/Rizxel/issues) (*Help ▸
 Report an Issue*).
 

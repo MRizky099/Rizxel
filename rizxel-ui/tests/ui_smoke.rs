@@ -290,3 +290,48 @@ fn help_opens_the_user_guide() {
         )]
     );
 }
+
+/// The Layers panel with the app's shortcut dispatch first.
+fn layers_panel(ui: &mut egui::Ui, w: &mut World) {
+    let ctx = ui.ctx().clone();
+    if !w.fonts {
+        rizxel_ui::theme::install_fonts(&ctx);
+        rizxel_ui::theme::apply(&ctx);
+        w.fonts = true;
+        ctx.request_repaint();
+        return;
+    }
+    rizxel_ui::app::dispatch_shortcuts(&ctx, &mut w.state, &mut w.ui);
+    panels::sidebar::layers(ui, &mut w.state, &mut w.ui);
+}
+
+#[test]
+fn ctrl_click_two_layers_and_group_them() {
+    let mut state = AppState::default();
+    let d = state.doc_mut().unwrap();
+    d.add_layer();
+    d.add_layer();
+    let names: Vec<String> = d.data.layers.iter().map(|l| l.name.clone()).collect();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(320.0, 700.0))
+        .build_ui_state(layers_panel, World::new(state));
+    h.run();
+    h.get_by_label(&names[0]).click();
+    h.run();
+    h.get_by_label(&names[2])
+        .click_modifiers(Modifiers::COMMAND);
+    h.run();
+    assert_eq!(h.state().state.doc().unwrap().selected_layer_count(), 2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    h.run();
+    let doc = h.state().state.doc().unwrap();
+    let group = doc.active_layer().unwrap();
+    assert!(group.kind().is_group());
+    let parent = |name: &str| {
+        let l = doc.data.layers.iter().find(|l| l.name == name).unwrap();
+        l.props.parent
+    };
+    assert_eq!(parent(&names[0]), Some(group.id));
+    assert_eq!(parent(&names[2]), Some(group.id));
+    assert_eq!(parent(&names[1]), None, "the unselected layer stays out");
+}

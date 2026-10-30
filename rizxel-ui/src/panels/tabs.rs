@@ -142,18 +142,11 @@ fn tab(
     } else {
         theme::TEXT_DIM
     };
-    let icon_color = if active {
-        theme::ACCENT
-    } else {
-        theme::TEXT_DIM
-    };
-    painter.text(
-        rect.left_center() + egui::vec2(16.0, 0.0),
-        Align2::LEFT_CENTER,
-        icon::CUBE,
-        theme::icon(11.0),
-        icon_color,
+    let logo_rect = Rect::from_center_size(
+        rect.left_center() + egui::vec2(23.0, 0.0),
+        egui::Vec2::splat(14.0),
     );
+    crate::icons::paint_logo(ui, logo_rect, 14.0, active || hovered);
 
     // Title, clipped before the close button.
     let text_clip =

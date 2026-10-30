@@ -1,4 +1,4 @@
-# `.rzxl` Project Format — Version 5
+# `.rzxl` Project Format — Version 6
 
 `.rzxl` is Rizxel's native project format. Reader and writer live in
 `rizxel-io/src/format_rzxl.rs`. The shared layer types (`LayerKind`,
@@ -13,7 +13,7 @@ All integers are little-endian.
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic `RZXL` |
-| 4 | 4 | `u32` format version (currently `5`) |
+| 4 | 4 | `u32` format version (currently `6`) |
 | 8 | 4 | `u32` uncompressed body length (max 512 MiB) |
 | 12 | n | zstd-compressed UTF-8 JSON body (`ProjectFile`) |
 
@@ -24,7 +24,7 @@ save never truncates an existing project.
 
 ```jsonc
 {
-  "generator": "Rizxel 0.10.0",       // writer, diagnostics only
+  "generator": "Rizxel 0.11.0",       // writer, diagnostics only
   "name": "hero",
   "palette": { "colors": [{ "r": 0, "g": 0, "b": 0, "a": 255 }, ...] },
   "selected_color": 35,                // palette index, never 0
@@ -123,11 +123,12 @@ sorted back to front, and fully transparent ones are not drawn.
 - `size` is the image's width and height; a quarter turn swaps the
   rectangle's extents on the plane.
 
-## Render settings (`RenderSettings`, version 5)
+## Render settings (`RenderSettings`, version 5; line fields version 6)
 
 Render mode's settings are saved so a render can be reproduced. Every group
 and field has a default, so a missing field (or a missing `render`, as in
-version 1–4 files) takes the default. Colors are sRGB in `0..=1`, angles
+version 1–4 files) takes the default; version 5 files load with voxel lines,
+the floor grid and matte off. Colors are sRGB in `0..=1`, angles
 degrees.
 
 ```jsonc
@@ -155,7 +156,18 @@ degrees.
     "bevel": 0.06, "seams": false,
     "edges": false, "edge_color": [0.1, 0.1, 0.12], "edge_width": 1,
     "shape": "cube",               // cube | brick | rounded | sphere | cylinder
-    "cell": 1                      // 0.5..=1
+    "cell": 1,                     // 0.5..=1
+    // v6: a line around every voxel face (cube shape with cell 1 only)
+    "voxel_lines": false, "voxel_line_color": [0.02, 0.03, 0.12],
+    "voxel_line_width": 0.04,      // voxels, 0.005..=0.25
+    "voxel_line_opacity": 0.85,
+    // v6: grid lines on the ground (drawn only with "ground": true)
+    "floor_grid": false, "floor_grid_color": [1, 0.88, 0.8],
+    "floor_grid_width": 0.03,      // voxels, 0.005..=0.25
+    "floor_grid_spacing": 1,       // voxels between lines, 1..=16
+    "floor_grid_fade": 1.5,        // fade radius in lengths of the bounds' longest side, 0 = none, ..=8
+    "floor_grid_glow": 0.6,        // light the lines give off, 0..=4
+    "matte": false                 // v6: show every material matte (view only)
   },
   "camera": {
     "fov": 45, "aperture": 0, "focus_distance": 64, "blades": 0,
@@ -176,8 +188,9 @@ degrees.
 }
 ```
 
-The voxel shape is a view setting: the stored voxels never change, and
-Model mode and its exports ignore it. The camera's orientation and
+The voxel shape and `matte` are view settings: the stored voxels and
+materials never change, and Model mode and its exports ignore them. Floor
+grid lines run along voxel borders through the bounds' corner. The camera's orientation and
 projection are view state and are not saved.
 
 ## Visible effects
@@ -197,6 +210,7 @@ Every stored field changes what the editor shows:
 | `references[]` | Textured quads in the viewport; References panel (thumbnail, name, eye and lock, plane badge, properties) |
 | `materials[].specular`, `ior`, `transmission`, `clearcoat`, `emission_strength` | Path-traced Render mode and outputs; Render panel's Material tab |
 | `render` | Render mode: the viewport preview, the Render panel and render bar, and the files the Render button writes |
+| `render.display.voxel_lines`, `floor_grid`, `matte` and their fields | Render mode: lines around the voxels, the grid on the ground, matte materials (raster and path traced); Render panel ▸ Display, *View ▸ Floor Grid* |
 | `layers[].id`, `references[].id`, `generator` | Not shown: link targets and diagnostics |
 
 ## Validation
@@ -238,12 +252,14 @@ refuse projects that would fail the same check:
 | 3 | Layer ids, opacity, groups, linked clones, shape layers, crop boxes, materials, `generator`. |
 | 4 | Reference images (`references`) with their image files embedded. |
 | 5 | Render settings (`render`) and the material fields `specular`, `ior`, `transmission`, `clearcoat`, `emission_strength`. |
+| 6 | Render display fields `voxel_lines`, `voxel_line_color`, `voxel_line_width`, `voxel_line_opacity`, `floor_grid`, `floor_grid_color`, `floor_grid_width`, `floor_grid_spacing`, `floor_grid_fade`, `floor_grid_glow`, `matte`. |
 
 - Each field added after version 1 has a default, so older bodies decode into
   the current structures. Version 1 and 2 layers become plain voxel layers
   with ids `1..=n`, opacity 1, no group and the default material. Version
   1–3 projects have no reference images; version 1–4 projects get the
-  default render settings and material fields.
+  default render settings and material fields; version 1–5 projects have
+  voxel lines, the floor grid and matte off.
 - Writers always write the newest version.
 - Files with a newer version are rejected (`UnsupportedVersion`). They are
   never partially loaded, because the next save would drop data the newer
@@ -254,13 +270,14 @@ refuse projects that would fail the same check:
 ## Compatibility promise (candidate)
 
 Version 5, as written by Rizxel 0.10.0, is the candidate for the 1.0 format.
-The promise below is a **candidate** during the 0.10 beta and becomes
-**binding with Rizxel 1.0**.
+The promise below is a **candidate** during the 0.x betas and becomes
+**binding with Rizxel 1.0**. Version 6 (0.11.0) follows it: it only adds
+fields, each with a default, and bumps the version.
 
-During the beta (0.10.x):
+During the betas (0.10.x, 0.11.x):
 
 - Rizxel keeps loading every file saved by 0.10.0 or later, and every file of
-  versions 1–5.
+  versions 1–6.
 - A breaking change (a field dropped or read differently) is still allowed,
   but only with a CHANGELOG entry that says how to migrate old files.
 
@@ -276,9 +293,11 @@ From 1.0 on, for all of 1.x:
 4. Unknown fields stay ignored, never an error.
 
 The fixtures in `rizxel-io/tests/fixtures/rzxl_0_10/` were saved by 0.10.0
-and are never regenerated. Every CI build loads them and checks their
-contents (`rizxel-io/tests/rzxl_fixtures.rs`), and opens them as documents
-(`rizxel-app/tests/rzxl_fuzz.rs`). Together they use every field below.
+(version 5), the ones in `rzxl_0_11/` by 0.11.0 (version 6), and they are
+never regenerated. Every CI build loads them and checks their contents
+(`rizxel-io/tests/rzxl_fixtures.rs`); the 0.10.0 files are also opened as
+documents (`rizxel-app/tests/rzxl_fuzz.rs`). Together they use every field
+below.
 
 | Fixture | Covers |
 |---|---|
@@ -288,6 +307,7 @@ contents (`rizxel-io/tests/rzxl_fixtures.rs`), and opens them as documents
 | `references.rzxl` | Reference images on all three planes, PNG and JPEG, every placement and display option |
 | `render.rzxl` | Every render setting away from its default |
 | `max_bounds.rzxl` | 256³ bounds, voxels in the corners |
+| `rzxl_0_11/voxel_icon.rzxl` | Every version 6 display field away from its default |
 
 ### Fields and the version that added them
 
@@ -301,6 +321,7 @@ contents (`rizxel-io/tests/rzxl_fixtures.rs`), and opens them as documents
 | `references[]` (`id`, `name`, `image`, `visible`, `locked`, `plane`, `offset`, `size`, `rotation`, `flip_u`, `flip_v`, `opacity`, `depth`, `slice`) | 4 |
 | `materials[].specular`, `ior`, `transmission`, `clearcoat`, `emission_strength` | 5 |
 | `render` (`light`, `sample`, `display`, `camera`, `output` and their fields) | 5 |
+| `render.display.voxel_lines`, `voxel_line_color`, `voxel_line_width`, `voxel_line_opacity`, `floor_grid`, `floor_grid_color`, `floor_grid_width`, `floor_grid_spacing`, `floor_grid_fade`, `floor_grid_glow`, `matte` | 6 |
 
 ### Robustness
 

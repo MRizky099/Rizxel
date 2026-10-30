@@ -12,6 +12,8 @@
 //!   (see [`eye_below_ground`]).
 //! - Thick screen-space lines (yellow model bounds).
 //! - Filled translucent triangles (hovered ground cell).
+//! - Plane sheets (Phase 12d): the work plane and the slice sheet, filled
+//!   and, with the voxel grid on, crossed by procedural voxel cell lines.
 //! - Opaque voxel mesh (Phase 4): greedy-meshed quads with per-vertex palette
 //!   colors, flat-shaded in Model mode and Lambert-lit in Render mode. The
 //!   vertex/index buffers are re-uploaded only when the mesh key changes.
@@ -29,6 +31,8 @@ use std::sync::Arc;
 
 pub mod offscreen;
 pub mod pathtrace;
+#[cfg(test)]
+mod voxel_icon_tests;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
@@ -71,6 +75,60 @@ struct CameraUniform {
     ground: [f32; 4],
     /// rgb = top color of the background gradient, w = 1 for a gradient.
     background_top: [f32; 4],
+    /// x = voxel grid width (px), y = voxel grid opacity, z = floor grid
+    /// width (px), w = 1 when the plane sheets show cell lines.
+    grid_style: [f32; 4],
+    /// x = voxel grid width in voxel units (`0`: pixels, `grid_style.x`).
+    voxel_units: [f32; 4],
+    /// Render mode voxel lines: rgb = color, w = opacity.
+    voxel_lines: [f32; 4],
+    /// Render mode floor grid: rgb = color, w = glow.
+    floor_lines: [f32; 4],
+    /// x = voxel line width in voxels (0 = off), y = floor grid width in
+    /// voxels (0 = off), z = floor grid spacing, w = floor grid fade radius
+    /// (0 = no fade).
+    line_style: [f32; 4],
+    /// xy = XZ center of the floor grid fade, zw = XZ of a floor grid line
+    /// crossing (the bounds' corner).
+    floor_center: [f32; 4],
+}
+
+/// Line widths and opacity of the grids (Phase 12d).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridStyle {
+    /// Voxel grid line width in pixels.
+    pub voxel_width: f32,
+    /// Voxel grid (and plane grid) line opacity.
+    pub voxel_opacity: f32,
+    /// Floor grid line width in pixels (the major lines and axes scale
+    /// with it).
+    pub floor_width: f32,
+    /// Voxel grid width in voxel units instead of pixels, so a large output
+    /// keeps the preview's proportions (Render mode, Phase 12e).
+    pub voxel_units: Option<f32>,
+}
+
+impl Default for GridStyle {
+    fn default() -> Self {
+        Self {
+            voxel_width: 1.0,
+            voxel_opacity: 0.35,
+            floor_width: 1.0,
+            voxel_units: None,
+        }
+    }
+}
+
+impl GridStyle {
+    /// Model-mode style from the viewport settings.
+    pub fn from_settings(v: &rizxel_app::settings::ViewportSettings) -> Self {
+        Self {
+            voxel_width: v.voxel_grid_width,
+            voxel_opacity: v.voxel_grid_opacity,
+            floor_width: v.floor_grid_width,
+            voxel_units: None,
+        }
+    }
 }
 
 /// One thick line segment (instanced; see `vs_line`).
@@ -108,6 +166,29 @@ impl FillVertex {
             pos: pos.to_array(),
             color: rgba(color),
         }
+    }
+}
+
+/// Vertex of a plane sheet (see `vs_plane`): the sheet's fill, the color of
+/// its cell lines and the plane's normal axis (0 = X, 1 = Y, 2 = Z).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct PlaneVertex {
+    pub pos: [f32; 3],
+    pub fill: [f32; 4],
+    pub line: [f32; 4],
+    pub axis: u32,
+}
+
+impl PlaneVertex {
+    /// The two triangles of the sheet with corners `q` (in order around it).
+    pub fn quad(q: [Vec3; 4], axis: usize, fill: Color32, line: Color32) -> [Self; 6] {
+        [0, 1, 2, 0, 2, 3].map(|i| Self {
+            pos: q[i].to_array(),
+            fill: rgba(fill),
+            line: rgba(line),
+            axis: axis.min(2) as u32,
+        })
     }
 }
 
@@ -211,11 +292,19 @@ pub type MaterialTable = [GpuMaterial; MATERIAL_SLOTS];
 
 /// Material table: the default material, then `materials` (extra ones
 /// beyond the last slot are dropped, matching [`rizxel_app::Document::material_slot`]).
-pub fn material_table(materials: &[rizxel_math::Material]) -> Box<MaterialTable> {
-    let default = GpuMaterial::new(&rizxel_math::Material::default());
+/// With `matte` every material is drawn without shine (Render ▸ *Matte*).
+pub fn material_table(materials: &[rizxel_math::Material], matte: bool) -> Box<MaterialTable> {
+    let gpu = |m: &rizxel_math::Material| {
+        if matte {
+            GpuMaterial::new(&m.matte())
+        } else {
+            GpuMaterial::new(m)
+        }
+    };
+    let default = gpu(&rizxel_math::Material::default());
     let mut table = Box::new([default; MATERIAL_SLOTS]);
     for (slot, m) in table[1..].iter_mut().zip(materials) {
-        *slot = GpuMaterial::new(m);
+        *slot = gpu(m);
     }
     table
 }
@@ -293,6 +382,34 @@ impl std::fmt::Debug for PtFrame {
     }
 }
 
+/// Lines around every voxel face (Render mode, Phase 12e).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoxelLines {
+    pub color: [f32; 3],
+    /// Width in voxels.
+    pub width: f32,
+    pub opacity: f32,
+}
+
+/// Grid lines on the Render mode ground (Phase 12e). Positions are world
+/// space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloorGrid {
+    pub color: [f32; 3],
+    /// Width in voxels.
+    pub width: f32,
+    /// Voxels between lines.
+    pub spacing: f32,
+    /// Distance from `center` where the lines are gone (0 = no fade).
+    pub fade_radius: f32,
+    /// Lines brighten by this (they give off light in the path tracer).
+    pub glow: f32,
+    /// XZ center of the fade.
+    pub center: Vec2,
+    /// XZ of a line crossing.
+    pub origin: Vec2,
+}
+
 /// Render mode's look from the document's render settings: key light,
 /// ground and background (colors in sRGB, like the rest of the scene).
 #[derive(Clone, Debug, PartialEq)]
@@ -309,6 +426,10 @@ pub struct RenderLook {
     pub background_top: Option<[f32; 3]>,
     /// Background pixels get alpha 0 (PNG output).
     pub transparent: bool,
+    pub voxel_lines: Option<VoxelLines>,
+    pub floor_grid: Option<FloorGrid>,
+    /// Every material drawn matte.
+    pub matte: bool,
 }
 
 impl Default for RenderLook {
@@ -321,13 +442,21 @@ impl Default for RenderLook {
             ground: None,
             background_top: None,
             transparent: false,
+            voxel_lines: None,
+            floor_grid: None,
+            matte: false,
         }
     }
 }
 
 impl RenderLook {
-    /// Look of `s`; returns it with the background's bottom color.
-    pub fn from_settings(s: &rizxel_math::RenderSettings) -> (Self, Color32) {
+    /// Look of `s` for a model whose bounds start at `bmin` (world) and
+    /// span `dims` voxels; returns it with the background's bottom color.
+    pub fn from_settings(
+        s: &rizxel_math::RenderSettings,
+        bmin: Vec3,
+        dims: [u32; 3],
+    ) -> (Self, Color32) {
         use rizxel_math::render::{sun_direction, BackgroundMode};
         let l = &s.light;
         let d = &s.display;
@@ -357,6 +486,21 @@ impl RenderLook {
             ground: d.ground.then_some(d.ground_color),
             background_top: top,
             transparent: d.background == BackgroundMode::Transparent || s.output.transparent,
+            voxel_lines: s.effective_voxel_lines().then_some(VoxelLines {
+                color: d.voxel_line_color,
+                width: d.voxel_line_width,
+                opacity: d.voxel_line_opacity,
+            }),
+            floor_grid: s.effective_floor_grid().then(|| FloorGrid {
+                color: d.floor_grid_color,
+                width: d.floor_grid_width,
+                spacing: d.floor_grid_spacing as f32,
+                fade_radius: pathtrace::floor_grid_fade_radius(s, dims),
+                glow: d.floor_grid_glow,
+                center: Vec2::new(bmin.x + dims[0] as f32 * 0.5, bmin.z + dims[2] as f32 * 0.5),
+                origin: Vec2::new(bmin.x, bmin.z),
+            }),
+            matte: d.matte,
         };
         (look, srgb(bottom))
     }
@@ -388,6 +532,10 @@ pub struct SceneFrame {
     pub axis_z: Color32,
     pub lines: Vec<LineInstance>,
     pub fills: Vec<FillVertex>,
+    /// Plane sheets (work plane, slice sheet), drawn before the fills.
+    pub planes: Vec<PlaneVertex>,
+    /// Grid line widths and opacity.
+    pub grid_style: GridStyle,
     /// Opaque voxel mesh in world space (`None` = nothing to draw).
     pub voxels: Option<Arc<GpuMesh>>,
     /// Translucent layer meshes with their alpha, farthest first.
@@ -456,6 +604,31 @@ impl SceneFrame {
             },
             background_top: match self.look.background_top {
                 Some([r, g, b]) => [r, g, b, 1.0],
+                None => [0.0; 4],
+            },
+            grid_style: [
+                self.grid_style.voxel_width,
+                self.grid_style.voxel_opacity,
+                self.grid_style.floor_width,
+                flag(self.voxel_grid),
+            ],
+            voxel_units: [self.grid_style.voxel_units.unwrap_or(0.0), 0.0, 0.0, 0.0],
+            voxel_lines: match self.look.voxel_lines {
+                Some(l) => [l.color[0], l.color[1], l.color[2], l.opacity],
+                None => [0.0; 4],
+            },
+            floor_lines: match self.look.floor_grid {
+                Some(g) => [g.color[0], g.color[1], g.color[2], g.glow],
+                None => [0.0; 4],
+            },
+            line_style: [
+                self.look.voxel_lines.map_or(0.0, |l| l.width),
+                self.look.floor_grid.map_or(0.0, |g| g.width),
+                self.look.floor_grid.map_or(1.0, |g| g.spacing),
+                self.look.floor_grid.map_or(0.0, |g| g.fade_radius),
+            ],
+            floor_center: match self.look.floor_grid {
+                Some(g) => [g.center.x, g.center.y, g.origin.x, g.origin.y],
                 None => [0.0; 4],
             },
         }
@@ -613,6 +786,8 @@ pub struct ViewportRenderer {
     grid_under_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     fill_pipeline: wgpu::RenderPipeline,
+    /// Plane sheets with procedural cell lines (blended like the fills).
+    plane_pipeline: wgpu::RenderPipeline,
     voxel_pipeline: wgpu::RenderPipeline,
     /// Translucent layers: alpha blended, depth tested, no depth write.
     translucent_pipeline: wgpu::RenderPipeline,
@@ -630,6 +805,7 @@ pub struct ViewportRenderer {
     reference_order: Vec<(usize, bool)>,
     lines: DynBuffer,
     fills: DynBuffer,
+    planes: DynBuffer,
     opaque: MeshSlot,
     /// Translucent layer meshes by key.
     translucent: HashMap<(u64, u64), MeshSlot>,
@@ -640,6 +816,7 @@ pub struct ViewportRenderer {
     targets: Option<Targets>,
     line_count: u32,
     fill_count: u32,
+    plane_count: u32,
     /// Path tracer of the Render-mode preview (created on first use).
     pt: Option<pathtrace::PathTracer>,
     /// Blit of the path-traced image: tracer generation, nearest, group.
@@ -840,6 +1017,35 @@ impl ViewportRenderer {
             cache: None,
         });
 
+        let plane_attrs = wgpu::vertex_attr_array![
+            0 => Float32x3, 1 => Float32x4, 2 => Float32x4, 3 => Uint32
+        ];
+        let plane_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rizxel_planes"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_plane"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<PlaneVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &plane_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: depth(false, wgpu::CompareFunction::LessEqual),
+            multisample: msaa,
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_plane"),
+                compilation_options: Default::default(),
+                targets: &alpha,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let voxel_attrs = wgpu::vertex_attr_array![
             0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Uint32, 4 => Float32
         ];
@@ -1022,6 +1228,7 @@ impl ViewportRenderer {
             grid_under_pipeline,
             line_pipeline,
             fill_pipeline,
+            plane_pipeline,
             voxel_pipeline,
             translucent_pipeline,
             blit_pipeline,
@@ -1047,6 +1254,11 @@ impl ViewportRenderer {
                 "rizxel_fills",
                 std::mem::size_of::<FillVertex>() as u64,
             ),
+            planes: DynBuffer::new(
+                device,
+                "rizxel_planes",
+                std::mem::size_of::<PlaneVertex>() as u64,
+            ),
             opaque: MeshSlot::new(device),
             translucent: HashMap::new(),
             translucent_order: Vec::new(),
@@ -1054,6 +1266,7 @@ impl ViewportRenderer {
             targets: None,
             line_count: 0,
             fill_count: 0,
+            plane_count: 0,
             pt: None,
             pt_blit: None,
             pt_shown: false,
@@ -1355,9 +1568,12 @@ impl ViewportRenderer {
             .upload(device, queue, bytemuck::cast_slice(&frame.fills));
         self.line_count = frame.lines.len() as u32;
         self.fill_count = frame.fills.len() as u32;
+        self.planes
+            .upload(device, queue, bytemuck::cast_slice(&frame.planes));
+        self.plane_count = frame.planes.len() as u32;
         self.upload_voxels(device, queue, frame);
         self.upload_references(device, queue, frame);
-        let table = material_table(&frame.materials);
+        let table = material_table(&frame.materials, frame.look.matte);
         if self.materials.as_ref() != Some(&table) {
             queue.write_buffer(&self.material_buffer, 0, bytemuck::cast_slice(&table[..]));
             self.materials = Some(table);
@@ -1426,6 +1642,11 @@ impl ViewportRenderer {
             pass.draw(0..3, 0..1);
         }
 
+        if self.plane_count > 0 {
+            pass.set_pipeline(&self.plane_pipeline);
+            pass.set_vertex_buffer(0, self.planes.buffer.slice(..));
+            pass.draw(0..self.plane_count, 0..1);
+        }
         if self.fill_count > 0 {
             pass.set_pipeline(&self.fill_pipeline);
             pass.set_vertex_buffer(0, self.fills.buffer.slice(..));
@@ -1501,8 +1722,11 @@ mod tests {
 
     #[test]
     fn gpu_struct_sizes_match_wgsl() {
-        // WGSL struct: 2 mat4 + 14 vec4 = 128 + 224 bytes.
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 352);
+        // WGSL struct: 2 mat4 + 20 vec4 = 128 + 320 bytes, 16-byte aligned.
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 448);
+        assert_eq!(std::mem::size_of::<CameraUniform>() % 16, 0);
+        // vec3 + vec4 + vec4 + u32.
+        assert_eq!(std::mem::size_of::<PlaneVertex>(), 48);
         // vec3 + vec3 + vec4 + f32 (tightly packed vertex attributes).
         assert_eq!(std::mem::size_of::<LineInstance>(), 44);
         assert_eq!(std::mem::size_of::<FillVertex>(), 28);
@@ -1635,6 +1859,8 @@ mod tests {
             axis_z: Color32::BLUE,
             lines: Vec::new(),
             fills: Vec::new(),
+            planes: Vec::new(),
+            grid_style: GridStyle::default(),
             voxels: None,
             translucent: Vec::new(),
             materials: Vec::new(),
@@ -1656,6 +1882,26 @@ mod tests {
         frame.voxel_grid = true;
         let u = frame.uniform([100, 100]);
         assert_eq!(u.options[..2], [0.0, 1.0]);
+        assert_eq!(u.grid_style, [1.0, 0.35, 1.0, 1.0], "plane grid follows");
+        assert_eq!(u.voxel_units[0], 0.0, "pixels by default");
+        assert_eq!(u.line_style[..2], [0.0, 0.0], "no Render lines by default");
+        let mut s = rizxel_math::RenderPreset::VoxelIcon.apply(&Default::default());
+        s.display.voxel_line_width = 0.05;
+        let (look, _) = RenderLook::from_settings(&s, Vec3::new(-4.0, 0.0, -2.0), [8, 6, 4]);
+        frame.look = look;
+        let u = frame.uniform([100, 100]);
+        assert_eq!(u.line_style[0], 0.05);
+        assert_eq!(u.line_style[1], s.display.floor_grid_width);
+        assert_eq!(
+            u.line_style[3],
+            s.display.floor_grid_fade * 8.0,
+            "fade in bounds sides"
+        );
+        assert_eq!(u.floor_center, [0.0, 0.0, -4.0, -2.0]);
+        s.display.ground = false;
+        s.display.shape = rizxel_math::VoxelShape::Sphere;
+        let (look, _) = RenderLook::from_settings(&s, Vec3::ZERO, [8, 6, 4]);
+        assert!(look.voxel_lines.is_none() && look.floor_grid.is_none());
         assert_eq!(u.forward[3], 1.0);
         assert_eq!(
             u.focus[..3],
@@ -1670,13 +1916,23 @@ mod tests {
             emission: [0.2, 0.8, 1.0],
             ..rizxel_math::Material::new("Neon")
         };
-        let table = material_table(std::slice::from_ref(&glow));
+        let metal = rizxel_math::Material {
+            metallic: 1.0,
+            roughness: 0.1,
+            ..glow.clone()
+        };
+        let table = material_table(std::slice::from_ref(&glow), false);
         assert_eq!(
             table[0],
             GpuMaterial::new(&rizxel_math::Material::default())
         );
         assert_eq!(table[1].emission, [0.2, 0.8, 1.0, 0.0]);
         assert_eq!(table[2], table[0], "unused slots hold the default");
+        // Matte: no metal, rough, emission kept.
+        let matte = material_table(std::slice::from_ref(&metal), true);
+        assert_eq!(matte[1].params[..2], [0.0, 0.85]);
+        assert_eq!(matte[1].emission, [0.2, 0.8, 1.0, 0.0]);
+        assert_eq!(matte[0].params[..2], [0.0, 0.85]);
         // Vertices carry the slot.
         let mut mesh = Mesh::unit_cube(rizxel_math::Rgba8::WHITE);
         mesh.materials = vec![1; 8];
