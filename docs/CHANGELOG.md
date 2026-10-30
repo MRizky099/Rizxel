@@ -5,6 +5,21 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.10.1] — Unreleased
+
+Phase 12b: a patch for 0.10.0.
+
+### Fixed
+- **Model missing after opening a project.** Opening a model that spans more than four
+  16³ tiles (for example a full 32³ model) could show an empty viewport until a layer's
+  visibility was toggled. The start-screen thumbnail rendered in the same frame meshed
+  the document through the viewport's cache and threw away the tiles that were still
+  meshing in the background. Output renders (thumbnail, *Image*, raster turntable) now
+  build their own meshes (`Document::output_meshes`), and the viewport also re-reads its
+  meshes whenever anything else changed them (`Document::view_generation`). The same
+  race could leave the viewport stale after rendering an *Image* right after a large
+  paste, import or undo.
+
 ## [0.10.0] — 2026-10-30
 
 Milestone M7, the second beta. Phase 12a: a user guide with in-app help, the `.rzxl`

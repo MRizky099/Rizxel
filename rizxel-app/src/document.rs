@@ -416,6 +416,9 @@ struct ViewCache {
     layers: HashMap<LayerId, TileMeshCache>,
     /// The last result, updated in place by [`Document::poll_view_meshes`].
     last: ViewMeshes,
+    /// Bumped whenever `last` changes, so the viewport notices a change it
+    /// did not make itself (see [`Document::view_generation`]).
+    generation: u64,
 }
 
 /// Geometry of the effectively visible layers for one revision, in layer
@@ -696,6 +699,20 @@ impl Document {
         self.view_meshes_with(ghosts, true)
     }
 
+    /// Meshes for an output (thumbnail, *Image*, turntable frame): the same
+    /// as [`Document::view_meshes`], built from scratch on this thread. They
+    /// never touch the viewport's cache, whose tiles may still be waiting
+    /// for the pool.
+    pub fn output_meshes(&self, ghosts: bool) -> ViewMeshes {
+        self.build_view_meshes(&mut ViewCache::default(), ghosts, false)
+    }
+
+    /// Changes whenever the viewport meshes ([`Document::view_meshes`] and
+    /// friends) change, including through a caller other than the viewport.
+    pub fn view_generation(&self) -> u64 {
+        self.view_cache.borrow().generation
+    }
+
     /// True while background meshing for the viewport is in progress.
     pub fn view_meshing(&self) -> bool {
         let cache = self.view_cache.borrow();
@@ -725,10 +742,27 @@ impl Document {
                 }
             }
         }
+        if changed {
+            cache.generation += 1;
+        }
         changed.then(|| cache.last.clone())
     }
 
     fn view_meshes_with(&self, ghosts: bool, background: bool) -> ViewMeshes {
+        let mut cache = self.view_cache.borrow_mut();
+        let out = self.build_view_meshes(&mut cache, ghosts, background);
+        cache.last = out.clone();
+        cache.generation += 1;
+        out
+    }
+
+    /// Meshes the visible layers into `cache`'s tiles.
+    fn build_view_meshes(
+        &self,
+        cache: &mut ViewCache,
+        ghosts: bool,
+        background: bool,
+    ) -> ViewMeshes {
         let clip = self.view_clip();
         let clipped = |v: &VoxelVolume| match clip {
             Some(c) => v.cropped(&c),
@@ -736,8 +770,6 @@ impl Document {
         };
         self.with_visible_layers(|layers| {
             let palette = &self.data.palette;
-            let mut cache = self.view_cache.borrow_mut();
-            let cache = &mut *cache;
             let mut opaque = Vec::new();
             let mut out = ViewMeshes::default();
             let mut kept = Vec::new();
@@ -811,7 +843,6 @@ impl Document {
                 // Nothing opaque: drop the cache so no late tile lands here.
                 None => cache.opaque = TileMeshCache::default(),
             }
-            cache.last = out.clone();
             out
         })
     }

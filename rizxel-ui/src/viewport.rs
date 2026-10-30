@@ -63,6 +63,8 @@ type BuildKey = (u64, Option<VoxelBox>, bool, Option<usize>);
 /// A document's last build, with the source mesh behind each GPU mesh.
 struct CacheEntry {
     key: BuildKey,
+    /// [`Document::view_generation`] the meshes were taken at.
+    generation: u64,
     meshes: DocMeshes,
     sources: Vec<(Arc<rizxel_app::Mesh>, Arc<GpuMesh>)>,
 }
@@ -101,14 +103,18 @@ impl MeshCache {
             ghosts,
             ghosts.then_some(doc.active_layer),
         );
-        // Same build: only background tiles that finished can change it.
+        // Same build: only background tiles that finished can change it,
+        // or another caller meshing the document (it may have redone tiles
+        // the pool was still working on).
         let view = match self.entries.get(&doc.id()) {
             Some(entry) if entry.key == key => match doc.poll_view_meshes() {
                 Some(view) => view,
-                None => return entry.meshes.clone(),
+                None if entry.generation == doc.view_generation() => return entry.meshes.clone(),
+                None => doc.view_meshes_background(ghosts),
             },
             _ => doc.view_meshes_background(ghosts),
         };
+        let generation = doc.view_generation();
         let old = self.entries.remove(&doc.id());
         let (bmin, _) = bounds_box(doc.data.bounds);
         let mut sources = Vec::new();
@@ -149,6 +155,7 @@ impl MeshCache {
             doc.id(),
             CacheEntry {
                 key,
+                generation,
                 meshes: meshes.clone(),
                 sources,
             },
@@ -770,7 +777,7 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
     let proj = output_projection(doc, camera, size);
     let target = rizxel_app::orbit_base(bounds) + camera.pan;
     let (look, background) = RenderLook::from_settings(&doc.data.render);
-    let view = doc.view_meshes(false);
+    let view = doc.output_meshes(false);
     let gpu = |mesh: &rizxel_app::Mesh| {
         let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Arc::new(GpuMesh::from_mesh((doc.id(), key), mesh, bmin))
@@ -1847,5 +1854,41 @@ mod tests {
         ];
         assert!(point_in_convex(Pos2::new(0.5, 0.5), &q));
         assert!(!point_in_convex(Pos2::new(1.5, 0.5), &q));
+    }
+
+    /// A 32³ model in all 8 tiles of 16³, more than meshes synchronously.
+    fn eight_tile_doc() -> Document {
+        let mut doc = Document::new("t");
+        doc.set_bounds(BoundSize::new(32, 32, 32), false);
+        let cubes = (0..8).flat_map(|t: i32| {
+            let o = IVec3::new(t & 1, (t >> 1) & 1, (t >> 2) & 1) * 16 + IVec3::splat(4);
+            (0..27).map(move |i| (o + IVec3::new(i % 3, i / 3 % 3, i / 9), 5))
+        });
+        doc.set_voxels(0, cubes, false);
+        doc
+    }
+
+    #[test]
+    fn output_frame_does_not_drop_background_viewport_tiles() {
+        // A freshly opened model meshes in the background; a thumbnail or
+        // Image output rendered meanwhile must not leave the viewport empty.
+        let doc = eight_tile_doc();
+        let mut cache = MeshCache::default();
+        assert!(cache.get(&doc, false).opaque.indices.is_empty());
+        assert!(doc.view_meshing(), "the first mesh goes to the pool");
+        let frame = output_frame(&doc, &OrbitCamera::default(), [64, 64], false);
+        assert!(!frame.voxels.unwrap().indices.is_empty());
+        let start = std::time::Instant::now();
+        while doc.view_meshing() && start.elapsed() < std::time::Duration::from_secs(10) {
+            cache.get(&doc, false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Late tiles from a drained request would have had time to land.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let meshes = cache.get(&doc, false);
+        assert!(
+            !meshes.opaque.indices.is_empty(),
+            "the viewport shows the model once meshing is done"
+        );
     }
 }

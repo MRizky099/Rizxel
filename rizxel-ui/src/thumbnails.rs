@@ -44,19 +44,32 @@ pub fn update(
     render_state: Option<&eframe::egui_wgpu::RenderState>,
     raster: &mut Option<OffscreenRaster>,
 ) {
+    update_with(
+        state,
+        render_state.map(|rs| (&rs.device, &rs.queue)),
+        raster,
+    );
+}
+
+/// [`update`] on any device and queue (tests use a headless one).
+pub fn update_with(
+    state: &mut AppState,
+    gpu: Option<(&wgpu::Device, &wgpu::Queue)>,
+    raster: &mut Option<OffscreenRaster>,
+) {
     if state.thumbnail_requests.is_empty() {
         return;
     }
     let requests = std::mem::take(&mut state.thumbnail_requests);
-    let (Some(rs), Some(paths)) = (render_state, state.paths()) else {
+    let (Some((device, queue)), Some(paths)) = (gpu, state.paths()) else {
         return;
     };
-    let raster = raster.get_or_insert_with(|| OffscreenRaster::new(&rs.device));
+    let raster = raster.get_or_insert_with(|| OffscreenRaster::new(device));
     for (id, path) in requests {
         let Some(doc) = state.documents.iter().find(|d| d.id() == id) else {
             continue;
         };
-        let image = render(raster, &rs.device, &rs.queue, doc);
+        let image = render(raster, device, queue, doc);
         let file = paths.thumbnail_file(&path);
         if let Err(e) = save(&file, &image) {
             log::warn!("thumbnail {}: {e}", file.display());
