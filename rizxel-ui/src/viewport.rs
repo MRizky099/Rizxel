@@ -672,7 +672,7 @@ pub fn show(
     if projection_button(ui, &state.camera, projection_rect) {
         state.camera.toggle_projection();
     }
-    view_toggles(ui, &mut state.view, toggles_rect);
+    view_toggles(ui, state, toggles_rect);
 
     if meshing {
         painter.text(
@@ -777,7 +777,8 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
     let (bmin, _) = bounds_box(bounds);
     let proj = output_projection(doc, camera, size);
     let target = rizxel_app::orbit_base(bounds) + camera.pan;
-    let (look, background) = RenderLook::from_settings(&doc.data.render);
+    let d = bounds.0;
+    let (look, background) = RenderLook::from_settings(&doc.data.render, bmin, [d.x, d.y, d.z]);
     let view = doc.output_meshes(false);
     let gpu = |mesh: &rizxel_app::Mesh| {
         let key = OUTPUT_BUILD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1018,7 +1019,8 @@ fn scene_frame(
     let view = state.view;
     let (look, background) = match (state.view_mode, state.doc()) {
         (ViewMode::Render, Some(doc)) => {
-            let (mut look, bg) = RenderLook::from_settings(&doc.data.render);
+            let d = doc.data.bounds.0;
+            let (mut look, bg) = RenderLook::from_settings(&doc.data.render, bmin, [d.x, d.y, d.z]);
             // The viewport never shows the transparency; output does.
             look.transparent = false;
             (look, bg)
@@ -1064,7 +1066,8 @@ fn scene_frame(
         look,
         screen_y: [1.0, 0.0],
         pt: None,
-        floor_grid: view.floor_grid,
+        // Render mode draws the document's floor grid (`RenderLook`) instead.
+        floor_grid: view.floor_grid && state.view_mode != ViewMode::Render,
         voxel_grid: view.voxel_grid,
         ao: view.ao(state.view_mode),
         background,
@@ -1443,11 +1446,15 @@ fn view_toggles_rect(rect: Rect) -> Rect {
     )
 }
 
-/// Floor grid, voxel grid and model bounds buttons (same as *View ▸ Show*).
-fn view_toggles(ui: &mut Ui, view: &mut rizxel_app::ViewOptions, rect: Rect) {
+/// Floor grid, voxel grid and model bounds buttons (same as *View ▸ Show*;
+/// in Render mode the floor grid button is the document's render grid).
+fn view_toggles(ui: &mut Ui, state: &mut AppState, rect: Rect) {
     use egui_phosphor::regular as icon;
+    let mut floor = state.floor_grid_shown();
+    let was_floor = floor;
+    let view = &mut state.view;
     let toggles: [(&mut bool, &str, &str); 3] = [
-        (&mut view.floor_grid, icon::GRID_FOUR, "Floor Grid (G)"),
+        (&mut floor, icon::GRID_FOUR, "Floor Grid (G)"),
         (&mut view.voxel_grid, icon::HASH, "Voxel Grid (Shift+G)"),
         (
             &mut view.model_bounds,
@@ -1484,6 +1491,9 @@ fn view_toggles(ui: &mut Ui, view: &mut rizxel_app::ViewOptions, rect: Rect) {
                 theme::TEXT_DIM
             },
         );
+    }
+    if floor != was_floor {
+        state.toggle_floor_grid();
     }
 }
 

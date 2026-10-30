@@ -241,7 +241,7 @@ impl Default for DisplaySettings {
             voxel_line_width: 0.04,
             voxel_line_opacity: 0.85,
             floor_grid: false,
-            floor_grid_color: [1.0, 0.86, 0.72],
+            floor_grid_color: [1.0, 0.92, 0.86],
             floor_grid_width: 0.03,
             floor_grid_spacing: 1,
             floor_grid_fade: 1.5,
@@ -545,7 +545,7 @@ impl RenderPreset {
             RenderPreset::StudioWhite => {
                 let l = &mut s.light;
                 l.sun_azimuth = 35.0;
-                l.sun_elevation = 60.0;
+                l.sun_elevation = 65.0;
                 l.sun_size = 18.0;
                 l.sun_intensity = 2.2;
                 l.sun_color = [1.0, 1.0, 1.0];
@@ -601,30 +601,32 @@ impl RenderPreset {
             }
             RenderPreset::VoxelIcon => {
                 let l = &mut s.light;
-                l.sun_azimuth = 35.0;
-                l.sun_elevation = 55.0;
-                l.sun_size = 12.0;
-                l.sun_intensity = 2.4;
+                l.sun_azimuth = 55.0;
+                l.sun_elevation = 66.0;
+                l.sun_size = 20.0;
+                l.sun_intensity = 6.0;
                 l.sun_color = [1.0, 0.96, 0.9];
                 l.sky = SkyMode::Uniform;
                 l.sky_color = [0.10, 0.12, 0.22];
-                l.sky_intensity = 0.35;
+                l.sky_intensity = 0.45;
                 let d = &mut s.display;
-                d.ground_color = [0.07, 0.08, 0.14];
+                d.ground_color = [0.17, 0.19, 0.36];
                 d.background = BackgroundMode::Color;
-                d.background_color = [0.06, 0.06, 0.08];
+                d.background_color = [0.145, 0.145, 0.155];
                 d.bevel = 0.0;
                 d.voxel_lines = true;
                 d.floor_grid = true;
+                d.floor_grid_fade = 1.1;
+                d.floor_grid_glow = 0.5;
                 d.matte = true;
                 let c = &mut s.camera;
                 c.fov = 24.0;
-                c.vignette = 0.45;
-                c.tone_map = ToneMap::Filmic;
+                c.vignette = 0.85;
+                c.tone_map = ToneMap::Aces;
                 c.exposure = 0.2;
                 c.bloom = true;
                 c.bloom_threshold = 0.9;
-                c.bloom_strength = 0.12;
+                c.bloom_strength = 0.08;
             }
         }
         s

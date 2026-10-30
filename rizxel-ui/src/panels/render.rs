@@ -12,7 +12,8 @@ use rizxel_app::{
     ShapedExport, MAX_SHAPED_TRIANGLES, SHAPED_EXTENSIONS, WARN_SHAPED_TRIANGLES,
 };
 use rizxel_math::render::{
-    BackgroundMode, Denoise, OutputKind, PixelFilter, SkyMode, ToneMap, MAX_BOUNCES,
+    BackgroundMode, Denoise, OutputKind, PixelFilter, SkyMode, ToneMap, FLOOR_GRID_FADE_RANGE,
+    FLOOR_GRID_GLOW_RANGE, FLOOR_GRID_SPACING_RANGE, LINE_WIDTH_RANGE, MAX_BOUNCES,
     MAX_OUTPUT_SIDE, MAX_SAMPLES, MAX_TURNTABLE_FRAMES,
 };
 use rizxel_math::{Material, MaterialPreset, RenderPreset, RenderSettings, VoxelShape};
@@ -399,6 +400,7 @@ fn sample_tab(ui: &mut Ui, s: &mut RenderSettings) {
 }
 
 fn display_tab(ui: &mut Ui, s: &mut RenderSettings, render: &mut RenderUi) {
+    let lines_supported = s.voxel_lines_supported();
     let d = &mut s.display;
     section(ui, "Shape", true, |ui| {
         combo(
@@ -409,6 +411,11 @@ fn display_tab(ui: &mut Ui, s: &mut RenderSettings, render: &mut RenderUi) {
             VoxelShape::label,
         );
         slider(ui, "Cell", &mut d.cell, 0.5..=1.0, "");
+        ui.label(label("Matte"));
+        ui.checkbox(&mut d.matte, "").on_hover_text(
+            "Show every material without shine (rough, no metal or clear coat).              View only: the materials are kept.",
+        );
+        ui.end_row();
         ui.label(label("Export"));
         let exportable = d.shape != VoxelShape::Cube;
         if ui
@@ -429,6 +436,67 @@ fn display_tab(ui: &mut Ui, s: &mut RenderSettings, render: &mut RenderUi) {
         check(ui, "Ground", &mut d.ground);
         color(ui, "Color", &mut d.ground_color);
         check(ui, "Shadow catcher", &mut d.shadow_catcher);
+    });
+    let grid_was_on = d.floor_grid;
+    section(ui, "Floor grid", true, |ui| {
+        check(ui, "Floor grid", &mut d.floor_grid);
+        color(ui, "Color", &mut d.floor_grid_color);
+        slider(
+            ui,
+            "Width",
+            &mut d.floor_grid_width,
+            LINE_WIDTH_RANGE,
+            " vx",
+        );
+        ui.label(label("Spacing"));
+        ui.add(
+            egui::DragValue::new(&mut d.floor_grid_spacing)
+                .range(FLOOR_GRID_SPACING_RANGE)
+                .speed(0.1)
+                .suffix(" vx"),
+        );
+        ui.end_row();
+        slider(
+            ui,
+            "Fade",
+            &mut d.floor_grid_fade,
+            FLOOR_GRID_FADE_RANGE,
+            "×",
+        );
+        slider(
+            ui,
+            "Glow",
+            &mut d.floor_grid_glow,
+            FLOOR_GRID_GLOW_RANGE,
+            "",
+        );
+    });
+    // The grid lies on the ground.
+    if d.floor_grid && !grid_was_on {
+        d.ground = true;
+    }
+    note(
+        ui,
+        "Fade: where the lines are gone, in lengths of the model's longest side (0 = no fade).",
+    );
+    section(ui, "Voxel lines", true, |ui| {
+        ui.label(label("Voxel lines"));
+        ui.add_enabled(
+            lines_supported,
+            egui::Checkbox::without_text(&mut d.voxel_lines),
+        )
+        .on_hover_text("A thin line around every voxel face")
+        .on_disabled_hover_text("Voxel lines need the Cube shape with Cell 1");
+        ui.end_row();
+        color(ui, "Color", &mut d.voxel_line_color);
+        slider(
+            ui,
+            "Width",
+            &mut d.voxel_line_width,
+            LINE_WIDTH_RANGE,
+            " vx",
+        );
+        slider(ui, "Opacity", &mut d.voxel_line_opacity, 0.0..=1.0, "");
     });
     section(ui, "Background", true, |ui| {
         combo(

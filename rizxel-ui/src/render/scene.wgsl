@@ -37,6 +37,15 @@ struct Camera {
     grid_style: vec4<f32>,
     // x = voxel grid width in voxel units (0: pixels, grid_style.x).
     voxel_units: vec4<f32>,
+    // Render mode voxel lines: rgb = color, w = opacity.
+    voxel_lines: vec4<f32>,
+    // Render mode floor grid: rgb = color, w = glow.
+    floor_lines: vec4<f32>,
+    // x = voxel line width in voxels (0 = off), y = floor grid width in voxels
+    // (0 = off), z = floor grid spacing, w = floor grid fade radius (0 = none).
+    line_style: vec4<f32>,
+    // xy = XZ center of the floor grid fade, zw = XZ of a floor line crossing.
+    floor_center: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -135,6 +144,8 @@ struct GridSample {
     hit: bool,
     // Distance and grazing-angle fade of the ground (1 = near).
     fade: f32,
+    // Render mode floor grid line coverage, faded (Phase 12e).
+    floor: f32,
 };
 
 fn grid_sample(ndc: vec2<f32>) -> GridSample {
@@ -155,6 +166,7 @@ fn grid_sample(ndc: vec2<f32>) -> GridSample {
     let major = grid_coverage(coord / 8.0, 1.2 * w) * (1.0 - smoothstep(0.12, 0.45, lod / 8.0));
     let axis_x = axis_coverage(p.z, 1.6 * w);
     let axis_z = axis_coverage(p.x, 1.6 * w);
+    let floor = floor_grid_coverage(p);
 
     // "Infinity" look: fade with distance and at grazing angles.
     let dist = length(p.xz - cam.focus.xz);
@@ -175,7 +187,30 @@ fn grid_sample(ndc: vec2<f32>) -> GridSample {
     s.depth = select(1.0, ground_depth, on_ground);
     s.hit = on_ground;
     s.fade = fade / select(1.0, 0.45, cam.viewport.z > 0.5);
+    s.floor = floor;
     return s;
+}
+
+/// Render mode floor grid at ground point `p`: lines `line_style.y` voxels
+/// wide every `line_style.z` voxels through `floor_center.zw`, faded out
+/// toward `line_style.w` from the model's center. Needs uniform control
+/// flow (derivatives).
+fn floor_grid_coverage(p: vec3<f32>) -> f32 {
+    let spacing = max(cam.line_style.z, 1.0);
+    let coord = (p.xz - cam.floor_center.zw) / spacing;
+    let d = max(fwidth(coord), vec2<f32>(1e-6));
+    let g = abs(fract(coord - 0.5) - 0.5) / d;
+    // Width in grid cells; one axis covers this share of a cell on average.
+    let units = cam.line_style.y / spacing;
+    let average = saturate(units);
+    let cx = unit_line_coverage(vec2<f32>(g.x, d.x), units, average);
+    let cz = unit_line_coverage(vec2<f32>(g.y, d.y), units, average);
+    var k = 1.0 - (1.0 - cx) * (1.0 - cz);
+    let radius = cam.line_style.w;
+    if radius > 0.0 {
+        k *= 1.0 - smoothstep(0.25 * radius, radius, length(p.xz - cam.floor_center.xy));
+    }
+    return k * f32(cam.line_style.y > 0.0);
 }
 
 /// The camera is under the ground plane: the ground lies between the eye
@@ -203,7 +238,9 @@ fn fs_grid(in: GridOut) -> GridFrag {
     var ground = 0.0;
     if render && cam.ground.w > 0.5 && above && s.hit {
         ground = s.fade;
-        let lit = cam.ground.rgb * mix(0.7, 1.0, clamp(cam.light.y, 0.0, 1.0));
+        var lit = cam.ground.rgb * mix(0.7, 1.0, clamp(cam.light.y, 0.0, 1.0));
+        // Floor grid lines (their glow only lights the path tracer).
+        lit = mix(lit, cam.floor_lines.rgb, s.floor);
         bg = mix(bg, lit, ground);
     }
 
@@ -449,6 +486,44 @@ const AO_MIN: f32 = 0.5;
 /// lines lose opacity instead, so they never break up.
 const MIN_VOXEL_LINE_PX: f32 = 0.75;
 
+/// Coverage of a line `units` cells wide at `c.x` px from its center, where
+/// a cell is `1 / c.y` px. Lines under `MIN_VOXEL_LINE_PX` keep that width
+/// and lose opacity instead, so they never break up; when cells get smaller
+/// than a few px the coverage blends to `average`, the line's share of a
+/// cell, so far lines fade toward their average tint instead of aliasing.
+fn unit_line_coverage(c: vec2<f32>, units: f32, average: f32) -> f32 {
+    let width_px = units / c.y;
+    let thin = saturate(width_px / MIN_VOXEL_LINE_PX);
+    let line = line_coverage(c.x, max(width_px, MIN_VOXEL_LINE_PX)) * thin;
+    return mix(line, average, smoothstep(0.15, 0.3, c.y));
+}
+
+/// Plane axis (0 = x, 1 = y, 2 = z) of a face with normal `n`.
+fn face_axis(n: vec3<f32>) -> u32 {
+    let a = abs(n);
+    if a.y > 0.5 {
+        return 1u;
+    } else if a.z > 0.5 {
+        return 2u;
+    }
+    return 0u;
+}
+
+/// Share of a voxel face both axes' lines of width `w` cover.
+fn face_line_average(w: f32) -> f32 {
+    let k = saturate(w);
+    return 1.0 - (1.0 - k) * (1.0 - k);
+}
+
+/// Render mode voxel lines (Phase 12e): coverage of the line around every
+/// voxel face at a fragment on a face with normal `n`, opacity included.
+/// The width is in voxels, so the preview and a large output match.
+fn voxel_line_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    let c = cell_distance(world, face_axis(n));
+    let units = cam.line_style.x;
+    return unit_line_coverage(c, units, face_line_average(units)) * cam.voxel_lines.w;
+}
+
 /// Darkening by the voxel edge lines at a fragment on a face with normal
 /// `n` (Voxel Grid), opacity included. In pixels (`grid_style.x`) the lines
 /// fade out when voxels get smaller than a few pixels; in voxel units
@@ -456,23 +531,10 @@ const MIN_VOXEL_LINE_PX: f32 = 0.75;
 /// large output keeps the look. Works on greedy-merged quads because it
 /// only uses the position.
 fn voxel_grid_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
-    let a = abs(n);
-    var axis = 0u;
-    if a.y > 0.5 {
-        axis = 1u;
-    } else if a.z > 0.5 {
-        axis = 2u;
-    }
-    let c = cell_distance(world, axis);
+    let c = cell_distance(world, face_axis(n));
     let units = cam.voxel_units.x;
     if units > 0.0 {
-        let width_px = units / c.y;
-        let thin = saturate(width_px / MIN_VOXEL_LINE_PX);
-        let line = line_coverage(c.x, max(width_px, MIN_VOXEL_LINE_PX)) * thin;
-        // Share of a voxel face the lines of both axes cover.
-        let w = saturate(units);
-        let average = 1.0 - (1.0 - w) * (1.0 - w);
-        return mix(line, average, smoothstep(0.15, 0.3, c.y)) * cam.grid_style.y;
+        return unit_line_coverage(c, units, face_line_average(units)) * cam.grid_style.y;
     }
     return line_coverage(c.x, cam.grid_style.x) * cell_lod_fade(c.y) * cam.grid_style.y;
 }
@@ -519,10 +581,12 @@ fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) 
 fn voxel_color(in: VoxelOut) -> vec3<f32> {
     let n = normalize(in.normal);
     let grid = voxel_grid_coverage(in.world, n) * cam.options.y;
+    let lines = voxel_line_coverage(in.world, n);
     var color: vec3<f32>;
     if cam.viewport.z > 0.5 {
         let m = materials[in.material];
-        color = render_shade(in.color.rgb * m.tint.rgb, n, in.world, m);
+        let albedo = mix(in.color.rgb * m.tint.rgb, cam.voxel_lines.rgb, lines);
+        color = render_shade(albedo, n, in.world, m);
     } else {
         // Model: palette colors kept almost flat, with a fixed per-axis tint
         // so adjacent faces of one color stay distinguishable.

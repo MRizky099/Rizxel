@@ -31,6 +31,8 @@ use std::sync::Arc;
 
 pub mod offscreen;
 pub mod pathtrace;
+#[cfg(test)]
+mod voxel_icon_tests;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, wgpu};
@@ -78,6 +80,17 @@ struct CameraUniform {
     grid_style: [f32; 4],
     /// x = voxel grid width in voxel units (`0`: pixels, `grid_style.x`).
     voxel_units: [f32; 4],
+    /// Render mode voxel lines: rgb = color, w = opacity.
+    voxel_lines: [f32; 4],
+    /// Render mode floor grid: rgb = color, w = glow.
+    floor_lines: [f32; 4],
+    /// x = voxel line width in voxels (0 = off), y = floor grid width in
+    /// voxels (0 = off), z = floor grid spacing, w = floor grid fade radius
+    /// (0 = no fade).
+    line_style: [f32; 4],
+    /// xy = XZ center of the floor grid fade, zw = XZ of a floor grid line
+    /// crossing (the bounds' corner).
+    floor_center: [f32; 4],
 }
 
 /// Line widths and opacity of the grids (Phase 12d).
@@ -279,11 +292,19 @@ pub type MaterialTable = [GpuMaterial; MATERIAL_SLOTS];
 
 /// Material table: the default material, then `materials` (extra ones
 /// beyond the last slot are dropped, matching [`rizxel_app::Document::material_slot`]).
-pub fn material_table(materials: &[rizxel_math::Material]) -> Box<MaterialTable> {
-    let default = GpuMaterial::new(&rizxel_math::Material::default());
+/// With `matte` every material is drawn without shine (Render ▸ *Matte*).
+pub fn material_table(materials: &[rizxel_math::Material], matte: bool) -> Box<MaterialTable> {
+    let gpu = |m: &rizxel_math::Material| {
+        if matte {
+            GpuMaterial::new(&m.matte())
+        } else {
+            GpuMaterial::new(m)
+        }
+    };
+    let default = gpu(&rizxel_math::Material::default());
     let mut table = Box::new([default; MATERIAL_SLOTS]);
     for (slot, m) in table[1..].iter_mut().zip(materials) {
-        *slot = GpuMaterial::new(m);
+        *slot = gpu(m);
     }
     table
 }
@@ -361,6 +382,34 @@ impl std::fmt::Debug for PtFrame {
     }
 }
 
+/// Lines around every voxel face (Render mode, Phase 12e).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoxelLines {
+    pub color: [f32; 3],
+    /// Width in voxels.
+    pub width: f32,
+    pub opacity: f32,
+}
+
+/// Grid lines on the Render mode ground (Phase 12e). Positions are world
+/// space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloorGrid {
+    pub color: [f32; 3],
+    /// Width in voxels.
+    pub width: f32,
+    /// Voxels between lines.
+    pub spacing: f32,
+    /// Distance from `center` where the lines are gone (0 = no fade).
+    pub fade_radius: f32,
+    /// Lines brighten by this (they give off light in the path tracer).
+    pub glow: f32,
+    /// XZ center of the fade.
+    pub center: Vec2,
+    /// XZ of a line crossing.
+    pub origin: Vec2,
+}
+
 /// Render mode's look from the document's render settings: key light,
 /// ground and background (colors in sRGB, like the rest of the scene).
 #[derive(Clone, Debug, PartialEq)]
@@ -377,6 +426,10 @@ pub struct RenderLook {
     pub background_top: Option<[f32; 3]>,
     /// Background pixels get alpha 0 (PNG output).
     pub transparent: bool,
+    pub voxel_lines: Option<VoxelLines>,
+    pub floor_grid: Option<FloorGrid>,
+    /// Every material drawn matte.
+    pub matte: bool,
 }
 
 impl Default for RenderLook {
@@ -389,13 +442,21 @@ impl Default for RenderLook {
             ground: None,
             background_top: None,
             transparent: false,
+            voxel_lines: None,
+            floor_grid: None,
+            matte: false,
         }
     }
 }
 
 impl RenderLook {
-    /// Look of `s`; returns it with the background's bottom color.
-    pub fn from_settings(s: &rizxel_math::RenderSettings) -> (Self, Color32) {
+    /// Look of `s` for a model whose bounds start at `bmin` (world) and
+    /// span `dims` voxels; returns it with the background's bottom color.
+    pub fn from_settings(
+        s: &rizxel_math::RenderSettings,
+        bmin: Vec3,
+        dims: [u32; 3],
+    ) -> (Self, Color32) {
         use rizxel_math::render::{sun_direction, BackgroundMode};
         let l = &s.light;
         let d = &s.display;
@@ -425,6 +486,21 @@ impl RenderLook {
             ground: d.ground.then_some(d.ground_color),
             background_top: top,
             transparent: d.background == BackgroundMode::Transparent || s.output.transparent,
+            voxel_lines: s.effective_voxel_lines().then_some(VoxelLines {
+                color: d.voxel_line_color,
+                width: d.voxel_line_width,
+                opacity: d.voxel_line_opacity,
+            }),
+            floor_grid: s.effective_floor_grid().then(|| FloorGrid {
+                color: d.floor_grid_color,
+                width: d.floor_grid_width,
+                spacing: d.floor_grid_spacing as f32,
+                fade_radius: pathtrace::floor_grid_fade_radius(s, dims),
+                glow: d.floor_grid_glow,
+                center: Vec2::new(bmin.x + dims[0] as f32 * 0.5, bmin.z + dims[2] as f32 * 0.5),
+                origin: Vec2::new(bmin.x, bmin.z),
+            }),
+            matte: d.matte,
         };
         (look, srgb(bottom))
     }
@@ -537,6 +613,24 @@ impl SceneFrame {
                 flag(self.voxel_grid),
             ],
             voxel_units: [self.grid_style.voxel_units.unwrap_or(0.0), 0.0, 0.0, 0.0],
+            voxel_lines: match self.look.voxel_lines {
+                Some(l) => [l.color[0], l.color[1], l.color[2], l.opacity],
+                None => [0.0; 4],
+            },
+            floor_lines: match self.look.floor_grid {
+                Some(g) => [g.color[0], g.color[1], g.color[2], g.glow],
+                None => [0.0; 4],
+            },
+            line_style: [
+                self.look.voxel_lines.map_or(0.0, |l| l.width),
+                self.look.floor_grid.map_or(0.0, |g| g.width),
+                self.look.floor_grid.map_or(1.0, |g| g.spacing),
+                self.look.floor_grid.map_or(0.0, |g| g.fade_radius),
+            ],
+            floor_center: match self.look.floor_grid {
+                Some(g) => [g.center.x, g.center.y, g.origin.x, g.origin.y],
+                None => [0.0; 4],
+            },
         }
     }
 }
@@ -1479,7 +1573,7 @@ impl ViewportRenderer {
         self.plane_count = frame.planes.len() as u32;
         self.upload_voxels(device, queue, frame);
         self.upload_references(device, queue, frame);
-        let table = material_table(&frame.materials);
+        let table = material_table(&frame.materials, frame.look.matte);
         if self.materials.as_ref() != Some(&table) {
             queue.write_buffer(&self.material_buffer, 0, bytemuck::cast_slice(&table[..]));
             self.materials = Some(table);
@@ -1628,8 +1722,8 @@ mod tests {
 
     #[test]
     fn gpu_struct_sizes_match_wgsl() {
-        // WGSL struct: 2 mat4 + 16 vec4 = 128 + 256 bytes, 16-byte aligned.
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 384);
+        // WGSL struct: 2 mat4 + 20 vec4 = 128 + 320 bytes, 16-byte aligned.
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 448);
         assert_eq!(std::mem::size_of::<CameraUniform>() % 16, 0);
         // vec3 + vec4 + vec4 + u32.
         assert_eq!(std::mem::size_of::<PlaneVertex>(), 48);
@@ -1790,6 +1884,24 @@ mod tests {
         assert_eq!(u.options[..2], [0.0, 1.0]);
         assert_eq!(u.grid_style, [1.0, 0.35, 1.0, 1.0], "plane grid follows");
         assert_eq!(u.voxel_units[0], 0.0, "pixels by default");
+        assert_eq!(u.line_style[..2], [0.0, 0.0], "no Render lines by default");
+        let mut s = rizxel_math::RenderPreset::VoxelIcon.apply(&Default::default());
+        s.display.voxel_line_width = 0.05;
+        let (look, _) = RenderLook::from_settings(&s, Vec3::new(-4.0, 0.0, -2.0), [8, 6, 4]);
+        frame.look = look;
+        let u = frame.uniform([100, 100]);
+        assert_eq!(u.line_style[0], 0.05);
+        assert_eq!(u.line_style[1], s.display.floor_grid_width);
+        assert_eq!(
+            u.line_style[3],
+            s.display.floor_grid_fade * 8.0,
+            "fade in bounds sides"
+        );
+        assert_eq!(u.floor_center, [0.0, 0.0, -4.0, -2.0]);
+        s.display.ground = false;
+        s.display.shape = rizxel_math::VoxelShape::Sphere;
+        let (look, _) = RenderLook::from_settings(&s, Vec3::ZERO, [8, 6, 4]);
+        assert!(look.voxel_lines.is_none() && look.floor_grid.is_none());
         assert_eq!(u.forward[3], 1.0);
         assert_eq!(
             u.focus[..3],
@@ -1804,13 +1916,23 @@ mod tests {
             emission: [0.2, 0.8, 1.0],
             ..rizxel_math::Material::new("Neon")
         };
-        let table = material_table(std::slice::from_ref(&glow));
+        let metal = rizxel_math::Material {
+            metallic: 1.0,
+            roughness: 0.1,
+            ..glow.clone()
+        };
+        let table = material_table(std::slice::from_ref(&glow), false);
         assert_eq!(
             table[0],
             GpuMaterial::new(&rizxel_math::Material::default())
         );
         assert_eq!(table[1].emission, [0.2, 0.8, 1.0, 0.0]);
         assert_eq!(table[2], table[0], "unused slots hold the default");
+        // Matte: no metal, rough, emission kept.
+        let matte = material_table(std::slice::from_ref(&metal), true);
+        assert_eq!(matte[1].params[..2], [0.0, 0.85]);
+        assert_eq!(matte[1].emission, [0.2, 0.8, 1.0, 0.0]);
+        assert_eq!(matte[0].params[..2], [0.0, 0.85]);
         // Vertices carry the slot.
         let mut mesh = Mesh::unit_cube(rizxel_math::Rgba8::WHITE);
         mesh.materials = vec![1; 8];

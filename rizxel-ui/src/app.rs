@@ -300,7 +300,7 @@ pub fn run_action(state: &mut AppState, ui: &mut panels::UiState, action: Action
         A::FrameSelection => state.frame_selection(),
         A::FrameWorkArea => state.frame_work_area(),
         A::HomeView => state.camera.reset(),
-        A::FloorGrid => state.view.floor_grid = !state.view.floor_grid,
+        A::FloorGrid => state.toggle_floor_grid(),
         A::VoxelGrid => state.view.voxel_grid = !state.view.voxel_grid,
         A::ModelBounds => state.view.model_bounds = !state.view.model_bounds,
         A::Ghosts => state.view.ghosts = !state.view.ghosts,

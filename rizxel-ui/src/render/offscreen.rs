@@ -4,6 +4,10 @@
 //! Large images are drawn in tiles of at most [`TILE`] pixels: each tile
 //! crops the projection to its part of the frame, so a 8192² render never
 //! needs more GPU memory than one tile's MSAA targets.
+//!
+//! With Render mode's voxel lines or floor grid on, the image is drawn at
+//! twice the size and each tile is box-filtered down as it is read back
+//! (Phase 12e), so thin lines print clean without a 2x full-size buffer.
 
 use eframe::egui_wgpu::wgpu;
 use glam::Mat4;
@@ -190,6 +194,34 @@ pub fn tile_screen_y(full: [f32; 2], size: [u32; 2], tile: [u32; 4]) -> [f32; 2]
     [full[0] * scale, full[0] * offset + full[1]]
 }
 
+/// Supersampling factor of the *Image* output: 2 with Render mode's voxel
+/// lines or floor grid (thin analytic lines print cleaner), else 1.
+pub fn supersampling(frame: &SceneFrame) -> u32 {
+    if frame.look.voxel_lines.is_some() || frame.look.floor_grid.is_some() {
+        2
+    } else {
+        1
+    }
+}
+
+/// Box-filters an RGBA8 image of even `size` to half its size.
+pub fn downsample_2x(pixels: &[u8], size: [u32; 2]) -> Vec<u8> {
+    let (w, h) = (size[0] as usize, size[1] as usize);
+    let mut out = vec![0u8; (w / 2) * (h / 2) * 4];
+    for y in 0..h / 2 {
+        for x in 0..w / 2 {
+            for c in 0..4 {
+                let at = |dx: usize, dy: usize| {
+                    u32::from(pixels[((2 * y + dy) * w + 2 * x + dx) * 4 + c])
+                };
+                let sum = at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1);
+                out[(y * (w / 2) + x) * 4 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Tiles covering a `size` image, row by row: `[x0, y0, x1, y1]`.
 pub fn tiles(size: [u32; 2], tile: u32) -> Vec<[u32; 4]> {
     let tile = tile.max(1);
@@ -214,8 +246,10 @@ impl OffscreenRaster {
         }
     }
 
-    /// Renders `frame` at `size` pixels. With `frame.look.transparent` the
-    /// background has alpha 0 and the image is straight (unpremultiplied).
+    /// Renders `frame` at `size` pixels, supersampled 2x when it has voxel
+    /// lines or a floor grid ([`supersampling`]). With
+    /// `frame.look.transparent` the background has alpha 0 and the image is
+    /// straight (unpremultiplied).
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -224,12 +258,16 @@ impl OffscreenRaster {
         size: [u32; 2],
     ) -> RgbaImage {
         let size = size.map(|v| v.max(1));
+        let ss = supersampling(frame);
+        let big = size.map(|v| v * ss);
         let mut pixels = vec![0u8; (size[0] * size[1] * 4) as usize];
-        for t in tiles(size, TILE) {
+        // TILE is even, so every tile of the large image maps onto whole
+        // output pixels.
+        for t in tiles(big, TILE) {
             let tile_size = [t[2] - t[0], t[3] - t[1]];
             let mut tile_frame = frame.clone();
-            tile_frame.view_proj = crop_view_proj(frame.view_proj, size, t);
-            tile_frame.screen_y = tile_screen_y(frame.screen_y, size, t);
+            tile_frame.view_proj = crop_view_proj(frame.view_proj, big, t);
+            tile_frame.screen_y = tile_screen_y(frame.screen_y, big, t);
             let mut encoder = device.create_command_encoder(&Default::default());
             self.renderer.render_scene(
                 device,
@@ -243,11 +281,19 @@ impl OffscreenRaster {
             let Some(targets) = &self.renderer.targets else {
                 continue;
             };
-            let tile_pixels =
+            let mut tile_pixels =
                 read_rgba8(device, queue, &targets.resolve_texture, [0, 0], tile_size);
+            let mut tile_size = tile_size;
+            if ss == 2 {
+                // Premultiplied (transparent output) or opaque: averaging is
+                // right either way.
+                tile_pixels = downsample_2x(&tile_pixels, tile_size);
+                tile_size = tile_size.map(|v| v / 2);
+            }
+            let (x0, y0) = ((t[0] / ss) as usize, (t[1] / ss) as usize);
             let row = (tile_size[0] * 4) as usize;
             for (y, src) in tile_pixels.chunks_exact(row).enumerate() {
-                let start = (((t[1] as usize + y) * size[0] as usize) + t[0] as usize) * 4;
+                let start = (((y0 + y) * size[0] as usize) + x0) * 4;
                 pixels[start..start + row].copy_from_slice(src);
             }
         }

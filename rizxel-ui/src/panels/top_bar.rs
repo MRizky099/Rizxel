@@ -464,14 +464,29 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
     ui.menu_button(icon_label(ui, icon::EYE, "Show", None), |ui| {
         ui.set_min_width(200.0);
         let keys = [A::FloorGrid, A::VoxelGrid, A::ModelBounds].map(|a| sc(state, a));
+        // Render mode: the document's render floor grid (an undoable edit).
+        let render = state.view_mode == rizxel_app::ViewMode::Render;
+        let label = if render {
+            "Floor Grid (render)"
+        } else {
+            "Floor Grid"
+        };
+        if menu_item(
+            ui,
+            check_glyph(state.floor_grid_shown()),
+            label,
+            &keys[0],
+            true,
+        ) {
+            state.toggle_floor_grid();
+        }
         let view = &mut state.view;
         for ((on, label), shortcut) in [
-            (&mut view.floor_grid, "Floor Grid"),
             (&mut view.voxel_grid, "Voxel Grid"),
             (&mut view.model_bounds, "Model Bounds"),
         ]
         .into_iter()
-        .zip(&keys)
+        .zip(&keys[1..])
         {
             if menu_item(ui, check_glyph(*on), label, shortcut, true) {
                 *on = !*on;
