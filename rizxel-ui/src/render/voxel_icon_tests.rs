@@ -63,19 +63,26 @@ fn gpu() -> Option<Headless> {
 }
 
 /// Path-traced image of `doc` (fixed seed: the job's sample sequence).
+/// `None` when the adapter can't run the path tracer (it needs Vulkan or
+/// Metal; CI's Windows runner has only a software Direct3D 12 adapter): the
+/// raster checks still run.
 fn path_traced(
     gpu: &Headless,
     doc: &Document,
     camera: &OrbitCamera,
     size: [u32; 2],
     spp: u32,
-) -> RgbaImage {
+) -> Option<RgbaImage> {
+    if !gpu.path_tracing {
+        eprintln!("{} can't run the path tracer: skipped", gpu.info.name);
+        return None;
+    }
     let inputs = PtInputs::from_document(doc, None);
     let mut pt = PathTracer::new(&gpu.device);
     inputs.upload(&mut pt, &gpu.device, &gpu.queue);
     let params = document_params(doc, camera, size, false, None);
     let mut job = PhotoJob::new(params, spp, None);
-    job.finish(&mut pt, &gpu.device, &gpu.queue).to_rgba8()
+    Some(job.finish(&mut pt, &gpu.device, &gpu.queue).to_rgba8())
 }
 
 /// The raster *Image* output of `doc` (supersampled: lines are on).
@@ -193,9 +200,10 @@ fn voxel_lines_outline_every_visible_face() {
     let size = [256, 256];
     // Lines a few px wide even on the left face, seen at a grazing angle.
     let doc = r_doc(|s| s.display.voxel_line_width = 0.08);
-    let img = path_traced(&gpu, &doc, &camera, size, 64);
-    dump(&img, "lines_pt");
-    assert_voxel_lines(&img, &doc, &camera, "path traced");
+    if let Some(img) = path_traced(&gpu, &doc, &camera, size, 64) {
+        dump(&img, "lines_pt");
+        assert_voxel_lines(&img, &doc, &camera, "path traced");
+    }
     let img = raster(&gpu, &doc, &camera, size);
     dump(&img, "lines_raster");
     assert_voxel_lines(&img, &doc, &camera, "raster");
@@ -254,10 +262,11 @@ fn floor_grid_glows_near_the_model_and_fades_out() {
             "{p} in frame"
         );
     }
-    for (what, img) in [
+    let images = [
         ("path traced", path_traced(&gpu, &doc, &camera, size, 64)),
-        ("raster", raster(&gpu, &doc, &camera, size)),
-    ] {
+        ("raster", Some(raster(&gpu, &doc, &camera, size))),
+    ];
+    for (what, img) in images.into_iter().filter_map(|(w, i)| Some((w, i?))) {
         dump(&img, &format!("floor_{}", what.replace(' ', "_")));
         let n = floor_contrast(&img, vp, near);
         let f = floor_contrast(&img, vp, far);
@@ -351,8 +360,9 @@ fn floor_grid_lines_are_smooth_at_shallow_angles() {
         assert!(!(0..192).contains(&px), "the x = {x} line is out of frame");
     }
     // 4x the samples of a quick preview.
-    let pt = path_traced(&gpu, &doc, &camera, size, 64);
-    assert_smooth(&line_profile(&pt), "path traced");
+    if let Some(pt) = path_traced(&gpu, &doc, &camera, size, 64) {
+        assert_smooth(&line_profile(&pt), "path traced");
+    }
     let ras = raster(&gpu, &doc, &camera, size);
     assert_smooth(&line_profile(&ras), "raster");
 }
