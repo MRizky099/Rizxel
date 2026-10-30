@@ -120,8 +120,13 @@ Packages are attached to every release on the
 | Linux (x86-64) | `Rizxel-<version>-x86_64.AppImage` | `chmod +x` and run. *Settings ▸ General* registers `.rzxl` files, or let AppImageLauncher integrate it. |
 | macOS 11+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel. Drag Rizxel to *Applications*. |
 
+Each release also has `Rizxel-<version>-samples.zip` with the
+[sample models](assets/samples/README.md) (CC0), made with Rizxel.
+
 The beta packages are not code-signed: Windows SmartScreen and macOS Gatekeeper warn on
-the first start (on macOS, right-click the app and choose *Open*). Every package contains
+the first start (on Windows, *More info ▸ Run anyway*; on macOS, right-click the app and
+choose *Open*). The [user guide](https://mrizky099.github.io/Rizxel/getting-started.html)
+has the details. Every package contains
 `LICENSE` and `THIRD_PARTY_LICENSES.html`, and every release links the source code it was
 built from.
 
@@ -148,10 +153,14 @@ Open a file at startup:
 cargo run -p rizxel-ui --release -- path/to/model.rzxl
 ```
 
-Write the demo project shown in the screenshots:
+Write the demo project shown in the screenshots, or every sample model:
 
 ```bash
 cargo run -p rizxel-app --example sample_model
+```
+
+```bash
+cargo run -p rizxel-app --example sample_model -- --all assets/samples
 ```
 
 Convert between formats without the UI:
@@ -185,7 +194,9 @@ folder, for example to try a build without touching your own settings.
 ### Packages
 
 The [release workflow](.github/workflows/release.yml) builds every package when a `v*` tag
-is pushed and attaches them to a draft release. To build one locally, first write the
+is pushed and publishes them with the sample models and notes from the changelog
+([`packaging/release_notes.sh`](packaging/release_notes.sh)): as a pre-release for
+`0.x` and `-rc` versions, as a draft for stable ones. To build one locally, first write the
 third-party notices with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about)
 (the command fails on a dependency license that isn't on the GPL-compatible allow-list in
 [`about.toml`](about.toml)):
