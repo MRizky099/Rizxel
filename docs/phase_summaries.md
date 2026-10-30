@@ -370,3 +370,36 @@ Plan: [`rizxel_phase11b_implementation_plan.md`](plan/rizxel_phase11b_implementa
   only (fix for PR #11's CI). The window itself
   doesn't refresh on GL, also before this phase (see gaps).
 - 589 tests (502 Rizxel, 87 craft-ui); GPU tests skip without an adapter.
+
+## Phase 12 — Beta: settings and packaging
+
+Plan: [`rizxel_phase12_implementation_plan.md`](plan/rizxel_phase12_implementation_plan.md)
+
+**Delivered** (branch `claude/phase12-beta`, not released yet)
+- `rizxel-app/src/settings.rs` and `keymap.rs`: `Settings` in `settings.json`
+  (versioned, unknown keys kept, per-key fallback) and a `Keymap` of `ActionId` →
+  `KeyChord`s with conflict detection and reserved clipboard / `Enter` / `Esc` chords.
+  The undo limit drives `History`, the autosave interval `Autosave`. The Settings
+  dialog (`panels/settings.rs`) with the keymap editor; shortcuts dispatch through the
+  keymap (`keys.rs`), and menus and the Keyboard Shortcuts window read it (`b2e6625`).
+- `layout.json` with both dock layouts and the window state, debounced saving, the
+  start screen (`panels/start.rs`) and thumbnails from the offscreen raster renderer
+  (`thumbnails.rs`); `RIZXEL_DATA_DIR` (`b22934c`).
+- `release.yml`: `cargo about` license check against `about.toml`, Windows MSI (WiX 5,
+  per user) and zip, Linux AppImage, macOS universal dmg, a draft release linking the
+  tagged source; macOS in CI; `.rzxl` document icon (`5e3db11`).
+- `single_instance.rs` (loopback TCP plus a token in `instance.lock`, std only) and
+  `file_assoc.rs` (HKCU keys through `reg.exe`, XDG desktop and MIME files), the
+  *Associate .rzxl Files* setting, the document icon as exe resource 2 (`73f1834`).
+- `tests/ui_smoke.rs` (`egui_kittest`), copy-on-write volume tiles and a single
+  allocation for the tile mesh cache's output, `mesh_bench --large` and
+  `viewport_bench` (`5b60236`). GTX 950M, release: brush frame 4.9 → 3.0 ms on 128³,
+  22.5 → 10.0 ms on 256³ (983k voxels); 256³ orbit 8.5 ms per 720p frame with readback.
+- Checked by hand (shell only; screen control wasn't available): a second launch with
+  a file exits in 162 ms and the running window opens it, adds it to recent files and
+  writes its thumbnail; a killed instance's lock is taken over; the window opens at the
+  saved size and position; a clean close removes the lock. The license check fails
+  when a used license is taken off the allow-list.
+- Not checked: the Settings dialog, keymap editor and start screen by eye, the packages
+  (built only by the release workflow), the file association on a real desktop, macOS.
+- 624 tests (537 Rizxel, 87 craft-ui); GPU tests skip without an adapter.

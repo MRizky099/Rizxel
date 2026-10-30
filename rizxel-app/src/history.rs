@@ -13,8 +13,8 @@ use crate::selection::Selection;
 pub use rizxel_engine::VoxelChange;
 use rizxel_engine::WorkPlane;
 
-/// Maximum number of undo steps kept per document.
-const MAX_UNDO: usize = 512;
+/// Undo steps kept per document unless the settings say otherwise.
+pub const DEFAULT_UNDO_LIMIT: usize = 512;
 
 /// A voxel removed from a layer when the bounds shrank, kept so the shrink
 /// can be undone.
@@ -442,6 +442,8 @@ pub struct History {
     pub tag: Option<WorkPlane>,
     /// Name of the next step recorded ([`History::label_next`]).
     next_label: Option<String>,
+    /// Undo steps kept, `None` for [`DEFAULT_UNDO_LIMIT`].
+    limit: Option<usize>,
 }
 
 impl History {
@@ -567,8 +569,24 @@ impl History {
             plane: self.tag,
             label: self.next_label.take(),
         });
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
+        self.trim();
+    }
+
+    /// Undo steps kept (*Settings ▸ General*).
+    pub fn limit(&self) -> usize {
+        self.limit.unwrap_or(DEFAULT_UNDO_LIMIT)
+    }
+
+    /// Changes the number of undo steps kept; the oldest beyond it go.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = Some(limit.max(1));
+        self.trim();
+    }
+
+    fn trim(&mut self) {
+        let excess = self.undo.len().saturating_sub(self.limit());
+        if excess > 0 {
+            self.undo.drain(..excess);
         }
     }
 

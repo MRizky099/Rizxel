@@ -11,16 +11,18 @@ pub mod document;
 pub mod favorites;
 pub mod history;
 pub mod interchange;
+pub mod keymap;
 pub mod layer_tree;
 pub mod paths;
 pub mod recent;
 pub mod render_job;
 pub mod render_presets;
 pub mod selection;
+pub mod settings;
 pub mod shaped;
 pub mod transform_session;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use glam::camera::rh::{
@@ -48,6 +50,7 @@ pub use interchange::{
     is_image_path, ExportOptions, FileFormat, PendingMesh, VoxelizerPreview, VoxelizerSettings,
     IMAGE_EXTENSIONS,
 };
+pub use keymap::{ActionGroup, ActionId, KeyChord, Keymap, KeymapError, KEY_NAMES};
 pub use layer_tree::LayerTree;
 pub use paths::AppPaths;
 pub use recent::RecentFiles;
@@ -64,6 +67,7 @@ pub use rizxel_io::shaped_export::{
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use rizxel_io::{GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
+pub use settings::{CameraControls, Settings};
 pub use shaped::{ShapedExport, SHAPED_EXTENSIONS};
 pub use transform_session::{pivot_point, TransformSession};
 
@@ -610,6 +614,12 @@ pub struct AppState {
     pub render_view: RenderView,
     /// Render setting presets saved by the user (app data folder).
     pub render_presets: UserPresets,
+    /// Preferences (*Settings*); change them through
+    /// [`AppState::apply_settings`].
+    pub settings: Settings,
+    /// Saved or opened projects whose start-screen thumbnail is due: the
+    /// UI renders them (it has the GPU) and drains the list.
+    pub thumbnail_requests: Vec<(u64, PathBuf)>,
     untitled_counter: u32,
 }
 
@@ -686,6 +696,8 @@ impl Default for AppState {
             favorites: Favorites::default(),
             render_view: RenderView::default(),
             render_presets: UserPresets::default(),
+            settings: Settings::default(),
+            thumbnail_requests: Vec::new(),
             untitled_counter: 0,
         };
         state.new_document();
@@ -701,9 +713,45 @@ impl AppState {
             state.recent = RecentFiles::load(&p.recent_file());
             state.favorites = Favorites::load(&p.favorites_file());
             state.render_presets = UserPresets::load(&p.render_presets_file());
+            let settings = Settings::load(&p.settings_file());
+            state.apply_settings(settings);
+            state.apply_view_defaults();
         }
         state.paths = paths;
         state
+    }
+
+    // ------------------------------------------------------------ settings
+
+    /// Makes `settings` current: the undo limit of every open document and
+    /// the autosave interval follow. Does not write the file
+    /// ([`AppState::save_settings`]).
+    pub fn apply_settings(&mut self, mut settings: Settings) {
+        settings.sanitize();
+        let limit = settings.general.undo_limit;
+        for d in &mut self.documents {
+            d.set_undo_limit(limit);
+        }
+        self.autosave.set_interval(settings.autosave_interval());
+        self.settings = settings;
+    }
+
+    /// The start-up view from the settings: grids and projection.
+    pub fn apply_view_defaults(&mut self) {
+        let v = &self.settings.viewport;
+        self.view.floor_grid = v.floor_grid;
+        self.view.voxel_grid = v.voxel_grid;
+        if self.camera.is_ortho() != v.orthographic {
+            self.camera.toggle_projection();
+        }
+    }
+
+    /// Writes the current settings to the app data folder.
+    pub fn save_settings(&self) -> std::io::Result<()> {
+        match &self.paths {
+            Some(p) => self.settings.save(&p.settings_file()),
+            None => Ok(()),
+        }
     }
 
     pub fn paths(&self) -> Option<&AppPaths> {
@@ -728,6 +776,14 @@ impl AppState {
     pub fn clear_recent(&mut self) {
         self.recent.clear();
         self.write_recent();
+    }
+
+    /// Asks the UI for a new start-screen thumbnail of `path`.
+    fn request_thumbnail(&mut self, doc: u64, path: &Path) {
+        if self.paths.is_some() {
+            self.thumbnail_requests.retain(|(_, p)| p != path);
+            self.thumbnail_requests.push((doc, path.to_path_buf()));
+        }
     }
 
     fn write_recent(&self) {
@@ -758,6 +814,7 @@ impl AppState {
     pub fn push_document(&mut self, mut doc: Document) {
         self.cancel_active_edit();
         doc.mask_selection = self.options.mask_selection;
+        doc.set_undo_limit(self.settings.general.undo_limit);
         self.documents.push(doc);
         self.active_doc = self.documents.len() - 1;
     }
@@ -897,15 +954,18 @@ impl AppState {
         let replace_pristine = self.documents.len() == 1
             && self.documents[0].path.is_none()
             && !self.documents[0].is_dirty();
+        let id = doc.id();
         if replace_pristine {
             let mut doc = doc;
             doc.mask_selection = self.options.mask_selection;
+            doc.set_undo_limit(self.settings.general.undo_limit);
             self.documents[0] = doc;
             self.active_doc = 0;
         } else {
             self.push_document(doc);
         }
         self.remember_recent(path);
+        self.request_thumbnail(id, path);
         Ok(())
     }
 
@@ -919,6 +979,7 @@ impl AppState {
             None => return Ok(()),
         };
         self.remember_recent(path);
+        self.request_thumbnail(id, path);
         // Saved by hand: the autosave copy is obsolete.
         if let (Some(key), Some(paths)) = (self.autosave.saved(id), &self.paths) {
             autosave::remove_recovery(paths, &key);
@@ -998,6 +1059,7 @@ impl AppState {
         let mut doc = Document::from_project(project, entry.meta.original.clone())?;
         doc.name.clone_from(&entry.meta.name);
         doc.mark_unsaved();
+        doc.set_undo_limit(self.settings.general.undo_limit);
         self.autosave.adopt_key(doc.id(), entry.key.clone());
         self.cancel_active_edit();
         let replace_pristine = self.documents.len() == 1
@@ -1871,6 +1933,59 @@ mod tests {
 
     fn file_len(path: &Path) -> u64 {
         std::fs::metadata(path).map_or(0, |m| m.len())
+    }
+
+    #[test]
+    fn settings_drive_undo_limit_autosave_and_start_view() {
+        let (dir, paths) = temp_paths("settings_apply");
+        let mut settings = Settings::default();
+        settings.general.undo_limit = 1; // clamped to the minimum
+        settings.general.autosave_minutes = 0;
+        settings.viewport.floor_grid = false;
+        settings.viewport.orthographic = true;
+        settings.save(&paths.settings_file()).unwrap();
+
+        let mut s = AppState::with_paths(Some(paths.clone()));
+        let min = *settings::UNDO_LIMIT_RANGE.start();
+        assert_eq!(s.settings.general.undo_limit, min);
+        assert!(!s.view.floor_grid);
+        assert!(s.camera.is_ortho());
+        for i in 0..(min as i32 + 5) {
+            let doc = s.doc_mut().unwrap();
+            doc.begin_edit();
+            doc.edit_voxels(
+                0,
+                &[VoxelChange {
+                    pos: IVec3::new(i, 0, 0),
+                    old: 0,
+                    new: 3,
+                }],
+            );
+            doc.commit_edit();
+        }
+        let mut undone = 0;
+        while s.can_undo() {
+            s.undo();
+            undone += 1;
+        }
+        assert_eq!(undone, min);
+        // Autosave off: nothing is written however long it waits.
+        dirty(&mut s);
+        let t0 = Instant::now();
+        s.autosave_tick(t0);
+        s.autosave_tick(t0 + AUTOSAVE_INTERVAL * 10);
+        s.flush_autosave();
+        assert!(s.recoverable().is_empty());
+        // New documents get the limit too.
+        let mut fresh = s.settings.clone();
+        fresh.general.undo_limit = 32;
+        s.apply_settings(fresh);
+        s.save_settings().unwrap();
+        assert_eq!(
+            Settings::load(&paths.settings_file()).general.undo_limit,
+            32
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

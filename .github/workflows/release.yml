@@ -1,0 +1,140 @@
+name: Release
+
+# A `v*` tag builds the packages for every platform and attaches them to a
+# draft GitHub Release. Publishing the draft is a manual step.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  licenses:
+    name: third-party licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: rustup toolchain install
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version 0.9.3
+      # Fails when a dependency's license isn't on the allow-list in about.toml
+      # (GPL-3.0-compatible licenses only).
+      - name: Check licenses and write THIRD_PARTY_LICENSES.html
+        run: cargo about generate --fail about.hbs -o THIRD_PARTY_LICENSES.html
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: third-party-licenses
+          path: THIRD_PARTY_LICENSES.html
+
+  windows:
+    name: Windows (zip + MSI)
+    needs: licenses
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: third-party-licenses
+      - run: cargo build --release --locked -p rizxel-ui
+      - name: Install WiX Toolset 5
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.UI.wixext/5.0.2
+      - name: Package
+        shell: pwsh
+        run: packaging/wix/build.ps1 -Version "$("${{ github.ref_name }}".TrimStart('v'))"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: windows
+          path: |
+            Rizxel-*.zip
+            Rizxel-*.msi
+
+  linux:
+    name: Linux (AppImage)
+    needs: licenses
+    # The oldest supported runner, so the AppImage runs on older glibc.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Install Linux packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev file
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.7.8
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: third-party-licenses
+      - run: cargo build --release --locked -p rizxel-ui
+      - name: Fetch appimagetool
+        run: |
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+      - name: Package
+        run: sh packaging/appimage/build.sh "${GITHUB_REF_NAME#v}" ./appimagetool
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: linux
+          path: Rizxel-*.AppImage
+
+  macos:
+    name: macOS (universal dmg)
+    needs: licenses
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: rustup toolchain install
+      - run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2.7.8
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: third-party-licenses
+      - run: cargo build --release --locked -p rizxel-ui --target x86_64-apple-darwin
+      - run: cargo build --release --locked -p rizxel-ui --target aarch64-apple-darwin
+      - name: Package
+        run: sh packaging/macos/build.sh "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: macos
+          path: Rizxel-*.dmg
+
+  release:
+    name: Draft release
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<NOTES
+          Rizxel ${TAG#v}: see [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${TAG}/docs/CHANGELOG.md).
+
+          **Downloads**: Windows installer (\`.msi\`, per user, no admin rights) or portable \`.zip\`;
+          Linux \`.AppImage\`; macOS universal \`.dmg\` (Apple silicon and Intel). The packages
+          are not code-signed yet: Windows SmartScreen and macOS Gatekeeper warn on first start
+          (macOS: right-click the app, *Open*).
+
+          **License**: GPL-3.0-or-later. Every package contains \`LICENSE\` and
+          \`THIRD_PARTY_LICENSES.html\`. The complete corresponding source code of these binaries
+          is the tagged source: https://github.com/${{ github.repository }}/tree/${TAG}
+          (also attached below as *Source code* zip and tar.gz).
+          NOTES
+          gh release create "$TAG" dist/* --draft --title "Rizxel ${TAG#v}" --notes-file notes.md

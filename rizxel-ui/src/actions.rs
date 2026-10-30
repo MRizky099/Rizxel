@@ -108,7 +108,7 @@ pub fn export_with(state: &mut AppState, format: FileFormat, options: &rizxel_ap
         .doc()
         .map(|d| format!("{}.{ext}", d.name))
         .unwrap_or_default();
-    let Some(mut path) = format_filter(rfd::FileDialog::new(), format)
+    let Some(mut path) = export_dialog(state, format)
         .set_title(format!("Export {}", format.label()))
         .set_file_name(file_name)
         .save_file()
@@ -124,6 +124,21 @@ pub fn export_with(state: &mut AppState, format: FileFormat, options: &rizxel_ap
             log::error!("export {}: {e}", path.display());
             state.status_message = Some(format!("Failed to export: {e}"));
         }
+    }
+}
+
+/// Save dialog for `format`, starting in the default export folder
+/// (*Settings ▸ Paths*) when one is set.
+pub fn export_dialog(state: &AppState, format: FileFormat) -> rfd::FileDialog {
+    format_filter(export_folder_dialog(state), format)
+}
+
+/// File dialog starting in the default export folder, if one is set.
+pub fn export_folder_dialog(state: &AppState) -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new();
+    match &state.settings.paths.export_folder {
+        Some(dir) if dir.is_dir() => dialog.set_directory(dir),
+        _ => dialog,
     }
 }
 

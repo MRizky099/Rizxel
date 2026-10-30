@@ -2870,6 +2870,7 @@ dependencies = [
  "rizxel-math",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "zstd",
 ]
 
@@ -2915,9 +2916,11 @@ version = "0.6.0"
 dependencies = [
  "bytemuck",
  "craft-ui",
+ "directories",
  "eframe",
  "egui",
  "egui-phosphor",
+ "egui_kittest",
  "env_logger",
  "glam",
  "image",
@@ -2928,6 +2931,8 @@ dependencies = [
  "rizxel-app",
  "rizxel-engine",
  "rizxel-math",
+ "serde",
+ "serde_json",
  "winresource",
 ]
 

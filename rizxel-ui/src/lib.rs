@@ -5,12 +5,16 @@
 pub mod actions;
 pub mod app;
 pub mod dock;
+pub mod file_assoc;
 pub mod icons;
+pub mod keys;
 pub mod output;
 pub mod panels;
 pub mod render;
 pub mod resize;
+pub mod single_instance;
 pub mod theme;
+pub mod thumbnails;
 pub mod tool_input;
 pub mod viewport;
 pub mod widgets;
