@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.10.0`: Phases 1–12a, 636 tests) and a
+Gaps between the current build (`v0.11.0`: Phases 1–12e, 659 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -17,6 +17,7 @@ The **Phase** column names the plan that closes the gap (see
 
 | Gap | Closed by |
 |---|---|
+| No multi-select of layer rows | Phase 12c: `Ctrl`/`Shift`+click, *Group Selected* and bulk layer actions |
 | No user documentation or tutorial | Phase 12a: the user guide (`docs/guide/`) and *Help ▸ User Guide* |
 | No `.rzxl` compatibility promise | Phase 12a: the v5 candidate promise in `rzxl_format.md`, fixtures and a fuzz test |
 | Phase 6 work is uncommitted | `363f73d` |
@@ -116,7 +117,6 @@ No open bugs are known. Fixed bugs move to the table above.
 | Only a dark theme | Low | 1.0 | *Settings ▸ General* shows the theme, but `theme.rs` colors are constants; a light theme needs them to become a palette. |
 | Pointer clicks don't reach the title bar in `egui_kittest` | Low | — | The smoke tests click through AccessKit actions instead; real mouse input works. |
 | Brush pyramids and cones always point up | Low | post | The Shape tool points them away from the pressed face; Brush stamps have no face direction. |
-| No multi-select of layer rows | Low | post | *Group Layer* wraps the active layer (with its contents) only. |
 | Group opacity doesn't fade its children in the Layers panel, and groups have no transform | Low | post | Opacity multiplies down the tree in the viewport; per-group transforms are Qubicle compounds. |
 | Reference images can't be moved with a handle in the viewport, and have no mipmaps | Low | post | Placement is typed or dragged in the References panel; large images minified a lot can shimmer. |
 | No onion skin | Low | post | Comes with animation. |

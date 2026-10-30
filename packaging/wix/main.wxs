@@ -5,7 +5,7 @@
   HKCU\Software\Classes; uninstall removes both. Built by .github/workflows/release.yml:
 
     wix build packaging/wix/main.wxs -ext WixToolset.UI.wixext
-      -d Version=0.10.0 -d Stage=<staged files> -d Assets=assets -o Rizxel.msi
+      -d Version=0.11.0 -d Stage=<staged files> -d Assets=assets -o Rizxel.msi
 
   <Stage> holds rizxel.exe, LICENSE, License.rtf, THIRD_PARTY_LICENSES.html,
   README.md and craft-ui\{LICENSE-MIT,LICENSE-APACHE,NOTICE}.

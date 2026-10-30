@@ -25,6 +25,10 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 11b | Render mode, path tracer and render output | ✅ Done | `v0.6.0` |
 | 12 | Beta: settings and packaging | ✅ Done | `v0.9.0` |
 | 12a | Beta 2: guide, format candidate, samples | ✅ Done | `v0.10.0` |
+| 12b | Fix: model missing after open | ✅ Done | `v0.11.0` |
+| 12c | Layers: multi-select, Group Selected, select on click | ✅ Done | `v0.11.0` |
+| 12d | Grid line width, plane grids | ✅ Done | `v0.11.0` |
+| 12e | Render: Voxel Icon look | ✅ Done | `v0.11.0` |
 
 ---
 
@@ -428,3 +432,28 @@ Plan: [`rizxel_phase12a_implementation_plan.md`](plan/rizxel_phase12a_implementa
   opens in the app without errors; the guide builds with mdBook 0.5.4 and its internal
   links resolve. The Help links are checked by the UI smoke test, not by eye.
 - 636 tests (549 Rizxel, 87 craft-ui).
+
+## Phases 12b–12e — Beta 3 (0.11.0)
+
+Plans: [`12b`](plan/rizxel_phase12b_implementation_plan.md),
+[`12c`](plan/rizxel_phase12c_implementation_plan.md),
+[`12d`](plan/rizxel_phase12d_implementation_plan.md),
+[`12e`](plan/rizxel_phase12e_implementation_plan.md)
+
+**Delivered** (tag `v0.11.0`)
+- 12b: output renders (thumbnail, *Image*, turntable) build their own meshes and the
+  viewport re-reads meshes another caller changed, so a model no longer opens invisible
+  (`9ce8987`).
+- 12c: Layers panel multi-select (`Ctrl`/`Shift`+click), *Group Selected* in one undo
+  step, dragging a selection, bulk eye/lock/delete/duplicate/merge, and clicking a layer
+  selects its voxels (`aea861d`).
+- 12d: voxel grid width and opacity and floor grid width, anti-aliased grid lines, and
+  voxel cells on the work plane and slice sheet (`65c964d`, `0fc2a72`).
+- 12e: voxel lines, a render floor grid and a matte override in the raster and
+  path-traced views and outputs, the *Voxel Icon* preset, the `rizxel_r.rzxl` sample,
+  and `.rzxl` version 6 (`17871b6`, `f939bb7`, `aafe07b`, `4caa09d`).
+- Also: only `.rzxl` is associated, the installer asks for the install folder, Extrude
+  has Add/Subtract with `Shift` to switch (`e57129b`), and new app, document and small
+  icons with a README banner (`96989cb`).
+- Not checked by hand on every platform: the installers and the new icons in Explorer,
+  Finder and Linux desktops.

@@ -5,6 +5,13 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-31
+
+Milestone M7b, the third beta: Phases 12b (fix for the model missing after opening),
+12c (layer multi-select and grouping), 12d (grid line width and plane grids) and 12e
+(the *Voxel Icon* render look), plus new icons, Extrude Add/Subtract and an install
+folder choice. Projects saved by 0.11.0 are `.rzxl` version 6, which 0.10 cannot open.
+
 ### Added
 - **Extrude: Add / Subtract.** The option bar's Add and Subtract buttons now work with
   Extrude (its own setting, separate from the drawing tools' operation). Holding `Shift`
@@ -53,10 +60,6 @@ All notable changes to Rizxel are documented here. Format follows
   Associate .rzxl Files*, the Linux desktop entry and the macOS bundle no longer add
   *Open with* entries for `.vox` and `.gox`. Installing or re-associating removes the
   entries 0.9 and 0.10 wrote; `.vox` and `.gox` still open through *File ▸ Open*.
-
-## [0.10.1] — Unreleased
-
-Phase 12b: a patch for 0.10.0.
 
 ### Fixed
 - **Model missing after opening a project.** Opening a model that spans more than four

@@ -2860,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "rizxel-app"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "directories",
  "glam",
@@ -2876,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "rizxel-engine"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "glam",
  "rizxel-math",
@@ -2885,7 +2885,7 @@ dependencies = [
 
 [[package]]
 name = "rizxel-io"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "flate2",
  "gif",
@@ -2902,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "rizxel-math"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bytemuck",
  "glam",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "rizxel-ui"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bytemuck",
  "craft-ui",

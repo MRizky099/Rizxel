@@ -24,7 +24,7 @@ save never truncates an existing project.
 
 ```jsonc
 {
-  "generator": "Rizxel 0.10.0",       // writer, diagnostics only
+  "generator": "Rizxel 0.11.0",       // writer, diagnostics only
   "name": "hero",
   "palette": { "colors": [{ "r": 0, "g": 0, "b": 0, "a": 255 }, ...] },
   "selected_color": 35,                // palette index, never 0
@@ -270,11 +270,11 @@ refuse projects that would fail the same check:
 ## Compatibility promise (candidate)
 
 Version 5, as written by Rizxel 0.10.0, is the candidate for the 1.0 format.
-The promise below is a **candidate** during the 0.10 beta and becomes
+The promise below is a **candidate** during the 0.x betas and becomes
 **binding with Rizxel 1.0**. Version 6 (0.11.0) follows it: it only adds
 fields, each with a default, and bumps the version.
 
-During the beta (0.10.x):
+During the betas (0.10.x, 0.11.x):
 
 - Rizxel keeps loading every file saved by 0.10.0 or later, and every file of
   versions 1–6.
