@@ -177,8 +177,18 @@ fn favorites_row(ui: &mut Ui, state: &mut AppState) {
 /// Layers dock panel.
 pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     let render = state.view_mode == rizxel_app::ViewMode::Render;
+    let select_voxels = state.settings.general.layer_click_selects_voxels;
     if let Some(doc) = state.doc_mut() {
-        layers_section(ui, doc, ui_state, render);
+        layers_section(ui, doc, ui_state, render, select_voxels);
+    }
+    // `Ctrl+A` and `Esc` act on the layers while the pointer is here.
+    if ui.ui_contains_pointer() {
+        ui_state.layers_hovered = true;
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && ui_state.renaming_layer.is_none() {
+            if let Some(doc) = state.doc_mut() {
+                doc.clear_layer_selection();
+            }
+        }
     }
 }
 
@@ -373,7 +383,13 @@ const LAYER_INDENT: f32 = 14.0;
 struct LayerDrag(usize);
 
 enum LayerAction {
-    Select(usize),
+    /// A click on the row: `ctrl` toggles it in the selection, `shift`
+    /// selects the range from the anchor (both: adds the range).
+    Click {
+        index: usize,
+        ctrl: bool,
+        shift: bool,
+    },
     ToggleVisible(usize),
     Solo(usize),
     ToggleLocked(usize),
@@ -399,6 +415,12 @@ enum LayerAction {
     MergeGroup(usize),
     DeleteGroup(usize),
     Delete(usize),
+    /// The whole selection dragged onto a row.
+    DropSelection(LayerDrop),
+    GroupSelected,
+    DuplicateSelected,
+    MergeSelected,
+    DeleteSelected,
 }
 
 /// What a row shows besides the layer itself.
@@ -413,7 +435,13 @@ struct RowInfo {
 /// Goxel-style layer panel: toolbar, reorderable tree (top layer first),
 /// then whole-document layer operations. In Render mode each row shows its
 /// material, and the material is edited in the Render panel.
-fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, render: bool) {
+fn layers_section(
+    ui: &mut Ui,
+    doc: &mut Document,
+    ui_state: &mut UiState,
+    render: bool,
+    select_voxels: bool,
+) {
     let mut action = None;
     egui::Frame::NONE.inner_margin(8).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
@@ -454,7 +482,7 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, rende
     // Structure changes shift indices: stop any rename in progress.
     if !matches!(
         action,
-        LayerAction::Select(_)
+        LayerAction::Click { .. }
             | LayerAction::ToggleVisible(_)
             | LayerAction::ToggleLocked(_)
             | LayerAction::Solo(_)
@@ -463,10 +491,38 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, rende
     ) {
         ui_state.renaming_layer = None;
     }
+    // The eye and lock of a selected row apply to the whole selection.
+    let bulk =
+        |doc: &Document, i: usize| doc.is_layer_selected(i) && doc.selected_layer_count() > 1;
     match action {
-        LayerAction::Select(i) => doc.active_layer = i,
+        LayerAction::Click { index, ctrl, shift } => {
+            let before = doc.selected_layer_ids();
+            match (ctrl, shift) {
+                (_, true) => doc.select_layer_range(index, ctrl),
+                (true, false) => doc.toggle_layer_selected(index),
+                (false, false) => doc.select_layer(index),
+            }
+            if select_voxels {
+                // Layers the click added get all their voxels selected.
+                let added: Vec<usize> = doc
+                    .selected_layer_indices()
+                    .into_iter()
+                    .filter(|&i| !before.contains(&doc.data.layers[i].id) || i == index)
+                    .filter(|&i| doc.is_layer_selected(i))
+                    .collect();
+                doc.select_layer_voxels(&added);
+            }
+        }
+        LayerAction::ToggleVisible(i) if bulk(doc, i) => {
+            let visible = !doc.data.layers[i].visible;
+            doc.set_selected_layers_visible(visible);
+        }
         LayerAction::ToggleVisible(i) => doc.toggle_layer_visible(i),
         LayerAction::Solo(i) => doc.solo_layer(i),
+        LayerAction::ToggleLocked(i) if bulk(doc, i) => {
+            let locked = !doc.data.layers[i].locked;
+            doc.set_selected_layers_locked(locked);
+        }
         LayerAction::ToggleLocked(i) => doc.toggle_layer_locked(i),
         LayerAction::ToggleCollapsed(i) => {
             let collapsed = matches!(
@@ -516,6 +572,21 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, rende
             doc.active_layer = i;
             doc.delete_active_layer();
         }
+        LayerAction::DropSelection(target) => {
+            doc.drop_selected_layers(target);
+        }
+        LayerAction::GroupSelected => {
+            doc.group_selected_layers();
+        }
+        LayerAction::DuplicateSelected => {
+            doc.duplicate_selected_layers();
+        }
+        LayerAction::MergeSelected => {
+            doc.merge_selected_layers();
+        }
+        LayerAction::DeleteSelected => {
+            doc.delete_selected_layers();
+        }
     }
 }
 
@@ -524,6 +595,7 @@ fn layers_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, rende
 fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let active = doc.active_layer;
     let is_group = doc.active_layer().is_some_and(|l| l.kind().is_group());
+    let many = doc.selected_layer_count();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let style = IconStyle::small();
@@ -541,7 +613,15 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         }
         let del = style.hover_color(theme::DANGER);
         // Disabled for the last layer and for layers linked clones point at.
-        if icon_button(ui, icon::TRASH, del, doc.can_delete_active_layer())
+        if many > 1 {
+            if icon_button(ui, icon::TRASH, del, doc.can_delete_selected_layers())
+                .on_hover_text(format!("Delete the {many} selected layers"))
+                .clicked()
+            {
+                doc.delete_selected_layers();
+                ui_state.renaming_layer = None;
+            }
+        } else if icon_button(ui, icon::TRASH, del, doc.can_delete_active_layer())
             .on_hover_text("Delete layer (a group's layers move up a level)")
             .clicked()
         {
@@ -569,11 +649,16 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             doc.move_active_layer(false);
             ui_state.renaming_layer = None;
         }
+        let tip = if many > 1 {
+            format!("Duplicate the {many} selected layers")
+        } else {
+            "Duplicate layer (a group with its contents)".to_owned()
+        };
         if icon_button(ui, icon::COPY, style, true)
-            .on_hover_text("Duplicate layer (a group with its contents)")
+            .on_hover_text(tip)
             .clicked()
         {
-            doc.duplicate_active_layer();
+            doc.duplicate_selected_layers();
             ui_state.renaming_layer = None;
         }
     });
@@ -779,11 +864,24 @@ fn layer_row(
     let selected_cells = layer.selection.len();
     let count = doc.data.layers.len();
     let selected = i == doc.active_layer;
+    // Other rows of a multi-selection: a lighter highlight than the active one.
+    let in_selection = !selected && doc.is_layer_selected(i);
+    let many = doc.selected_layer_count();
+    let multi = many > 1 && doc.is_layer_selected(i);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), LAYER_ROW_HEIGHT),
         Sense::click_and_drag(),
     );
     response.dnd_set_drag_payload(LayerDrag(i));
+    // Screen readers (and the UI tests) see the row as a selectable item.
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            doc.is_layer_selected(i),
+            name.clone(),
+        )
+    });
 
     let painter = ui.painter();
     if selected {
@@ -794,6 +892,8 @@ fn layer_row(
             Stroke::new(1.0, theme::ACCENT),
             StrokeKind::Inside,
         );
+    } else if in_selection {
+        painter.rect_filled(rect, theme::RADIUS, theme::BG_SELECTED);
     } else if response.hovered() {
         painter.rect_filled(rect, theme::RADIUS, theme::BG_HEADER);
     }
@@ -1011,8 +1111,16 @@ fn layer_row(
             drop_zone(rect, p.y, i, group.is_some(), open)
         })
     };
+    // Dragging a selected row drags the whole selection.
+    let allowed = |doc: &Document, from: usize, t: LayerDrop| {
+        if doc.drags_selection(from) {
+            doc.can_drop_selection(t)
+        } else {
+            doc.drop_destination(from, t).is_some()
+        }
+    };
     if let Some(from) = response.dnd_hover_payload::<LayerDrag>().map(|p| p.0) {
-        if let Some(target) = zone(ui).filter(|&t| doc.drop_destination(from, t).is_some()) {
+        if let Some(target) = zone(ui).filter(|&t| allowed(doc, from, t)) {
             let stroke = Stroke::new(2.0, theme::ACCENT);
             let indented = (name_left - 4.0)..=rect.right();
             match target {
@@ -1031,7 +1139,11 @@ fn layer_row(
     }
     if let Some(from) = response.dnd_release_payload::<LayerDrag>().map(|p| p.0) {
         if let Some(target) = zone(ui) {
-            action = Some(LayerAction::Drop { from, target });
+            action = Some(if doc.drags_selection(from) {
+                LayerAction::DropSelection(target)
+            } else {
+                LayerAction::Drop { from, target }
+            });
         }
     }
 
@@ -1039,14 +1151,23 @@ fn layer_row(
         if response.double_clicked() {
             action = Some(LayerAction::StartRename(i));
         } else if response.clicked() {
-            action = Some(LayerAction::Select(i));
+            let m = ui.input(|inp| inp.modifiers);
+            action = Some(LayerAction::Click {
+                index: i,
+                ctrl: m.command,
+                shift: m.shift,
+            });
         }
     }
 
     let can_delete_contents = doc.can_delete_group_with_contents(i);
+    let n_layers = format!(" ({many} layers)");
+    let can_delete_selected = multi && doc.can_delete_selected_layers();
+    let can_merge_selected = multi && doc.can_merge_selected_layers();
     response
         .on_hover_text(
-            "Double-click to rename, drag to reorder or into a group, right-click for more",
+            "Click to select, Ctrl+click to add or remove, Shift+click for a range; \
+             double-click to rename, drag to reorder or into a group, right-click for more",
         )
         .context_menu(|ui| {
             ui.set_min_width(200.0);
@@ -1059,6 +1180,42 @@ fn layer_row(
                 }
                 clicked
             };
+            if multi {
+                // The selection's commands, with its size in the labels.
+                if item(ui, icon::COPY, &format!("Duplicate{n_layers}"), "", true) {
+                    action = Some(LayerAction::DuplicateSelected);
+                }
+                if item(
+                    ui,
+                    icon::STACK,
+                    &format!("Merge Selected{n_layers}"),
+                    "",
+                    can_merge_selected,
+                ) {
+                    action = Some(LayerAction::MergeSelected);
+                }
+                ui.separator();
+                if item(
+                    ui,
+                    icon::FOLDER_PLUS,
+                    &format!("Group Selected{n_layers}"),
+                    "Ctrl+G",
+                    true,
+                ) {
+                    action = Some(LayerAction::GroupSelected);
+                }
+                ui.separator();
+                if item(
+                    ui,
+                    icon::TRASH,
+                    &format!("Delete{n_layers}"),
+                    "",
+                    can_delete_selected,
+                ) {
+                    action = Some(LayerAction::DeleteSelected);
+                }
+                return;
+            }
             if item(ui, icon::PENCIL_SIMPLE, "Rename", "", true) {
                 action = Some(LayerAction::StartRename(i));
             }

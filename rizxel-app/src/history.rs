@@ -572,6 +572,25 @@ impl History {
         self.trim();
     }
 
+    /// Records an already-applied `edit` as a step named `label`. When the
+    /// last step has the same name (and nothing waits for redo), `edit`
+    /// joins it instead, so undo goes back to before the first of them
+    /// (clicking through layers with *select on click* is one step).
+    pub fn push_folded(&mut self, edit: Edit, label: &str) {
+        self.commit_transaction();
+        if self.redo.is_empty() {
+            if let Some(last) = self.undo.last_mut() {
+                if last.label.as_deref() == Some(label) {
+                    let prev = std::mem::replace(&mut last.edit, Edit::Batch(Vec::new()));
+                    last.edit = Edit::Batch(vec![prev, edit]);
+                    return;
+                }
+            }
+        }
+        self.next_label = Some(label.to_owned());
+        self.push(edit, false);
+    }
+
     /// Undo steps kept (*Settings ▸ General*).
     pub fn limit(&self) -> usize {
         self.limit.unwrap_or(DEFAULT_UNDO_LIMIT)

@@ -257,6 +257,7 @@ pub fn dispatch_shortcuts(ctx: &egui::Context, state: &mut AppState, ui: &mut pa
     for action in actions {
         run_action(state, ui, action);
     }
+    ui.layers_hovered = false;
 }
 
 /// Runs a keyboard command (the clipboard and the viewport's own keys are
@@ -273,13 +274,16 @@ pub fn run_action(state: &mut AppState, ui: &mut panels::UiState, action: Action
         A::Redo => state.redo(),
         A::Cut | A::Copy | A::Paste | A::PasteInPlace | A::PasteToNewLayer => {}
         A::Delete => state.delete_selected(),
+        A::SelectAll if ui.layers_hovered => {
+            state.select_all_layers();
+        }
         A::SelectAll => state.select_all(),
         A::Deselect => state.deselect(),
         A::InvertSelection => state.invert_selection(),
         A::SelectionToLayer => state.selection_to_new_layer(false),
         A::SelectionToLayerCut => state.selection_to_new_layer(true),
         A::MaskMode => state.toggle_mask_selection(),
-        A::Group => state.group_active_layer(),
+        A::Group => state.group_selected_layers(),
         A::Ungroup => state.ungroup_active_layer(),
         // Rotation turns about the axis the camera faces.
         A::RotateCcw => state.rotate_facing(false),

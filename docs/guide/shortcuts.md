@@ -45,7 +45,7 @@ The tables below are generated from Rizxel's keymap.
 
 | Command | Shortcut |
 |---|---|
-| Group the active layer | `Ctrl+G` |
+| Group the selected layers | `Ctrl+G` |
 | Ungroup | `Ctrl+Shift+G` |
 
 ## Transform

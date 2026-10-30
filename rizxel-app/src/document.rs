@@ -466,6 +466,13 @@ pub struct Document {
     /// Mask Mode: tool writes skip the selected cells of their layer. Mirrors
     /// `ToolOptions::mask_selection` (set by the app). Not part of history.
     pub mask_selection: bool,
+    /// Layers selected in the Layers panel, in the order they were picked
+    /// (see [`Document::selected_layer_ids`]). View state: not in history
+    /// and not saved.
+    pub(crate) selected_layers: Vec<LayerId>,
+    /// Row a `Shift`+click range starts from (the last plain or `Ctrl`
+    /// click).
+    pub(crate) layer_anchor: Option<LayerId>,
     /// Derived layer geometry, rebuilt lazily when `revision` changes. Code
     /// that mutates `data` directly (bypassing [`Edit`]s) must not rely on it.
     geometry: RefCell<Option<GeometryCache>>,
@@ -523,6 +530,8 @@ impl Document {
             last_box: None,
             transform: None,
             mask_selection: false,
+            selected_layers: Vec::new(),
+            layer_anchor: None,
             geometry: RefCell::new(None),
             view_cache: RefCell::new(ViewCache::default()),
         }
@@ -906,6 +915,18 @@ impl Document {
         self.tag_history();
         edit.apply(&mut self.data);
         self.history.push(edit, merge);
+        self.edits += 1;
+        self.touch();
+        self.check_structure();
+    }
+
+    /// Applies `edit` and records it as a step named `label`, folded into
+    /// the previous step when that one has the same name (see
+    /// [`crate::history::History::push_folded`]).
+    pub(crate) fn apply_folded(&mut self, edit: Edit, label: &str) {
+        self.tag_history();
+        edit.apply(&mut self.data);
+        self.history.push_folded(edit, label);
         self.edits += 1;
         self.touch();
         self.check_structure();
@@ -2016,7 +2037,7 @@ impl Document {
     // ------------------------------------------------------ layer helpers
 
     /// Next free layer id.
-    fn next_layer_id(&self) -> LayerId {
+    pub(crate) fn next_layer_id(&self) -> LayerId {
         self.data
             .layers
             .iter()
@@ -2962,25 +2983,42 @@ impl Document {
         if index >= self.data.layers.len() {
             return false;
         }
-        let range = self.data.tree().subtree(index);
         let mut next = self.next_layer_id();
+        let edits = self.duplicate_edits(index, &mut next, &mut Vec::new());
+        let count = edits.len();
+        self.apply(Edit::Batch(edits), false);
+        self.active_layer = index + count;
+        true
+    }
+
+    /// Edits copying layer `index` with its subtree just above itself.
+    /// Copies get ids from `next` on; the copy of `index` gets a name not in
+    /// `names`, which it is added to.
+    pub(crate) fn duplicate_edits(
+        &self,
+        index: usize,
+        next: &mut LayerId,
+        names: &mut Vec<String>,
+    ) -> Vec<Edit> {
+        let range = self.data.tree().subtree(index);
         let ids: HashMap<LayerId, LayerId> = range
             .clone()
             .map(|i| {
-                let id = (self.data.layers[i].id, next);
-                next = next.saturating_add(1);
+                let id = (self.data.layers[i].id, *next);
+                *next = next.saturating_add(1);
                 id
             })
             .collect();
         let start = range.start;
-        let edits: Vec<Edit> = range
+        range
             .map(|i| {
                 let source = &self.data.layers[i];
                 let mut layer = source.clone();
                 layer.selection = Selection::default();
                 layer.id = ids[&source.id];
                 if i == index {
-                    layer.name = self.unique_name_from(&format!("{} copy", source.name));
+                    layer.name = self.unique_name_among(&format!("{} copy", source.name), names);
+                    names.push(layer.name.clone());
                 } else {
                     layer.props.parent = source.props.parent.map(|p| ids[&p]);
                 }
@@ -2994,11 +3032,7 @@ impl Document {
                     layer,
                 }
             })
-            .collect();
-        let count = edits.len();
-        self.apply(Edit::Batch(edits), false);
-        self.active_layer = index + count;
-        true
+            .collect()
     }
 
     /// Wraps layer `index` (a group with its subtree) in a new group at the
@@ -3187,7 +3221,7 @@ impl Document {
     /// True when layer `index` can be painted into and removed by a merge:
     /// the target must store voxels, sources must have geometry and must not
     /// be needed by layers that survive the merge.
-    fn mergeable(&self, target: usize, sources: &[usize]) -> bool {
+    pub(crate) fn mergeable(&self, target: usize, sources: &[usize]) -> bool {
         let target_ok = self
             .data
             .layers
@@ -3250,7 +3284,7 @@ impl Document {
 
     /// Builds one undo step that paints `sources` (ascending, all above
     /// `target`) onto `target` in draw order, then removes them.
-    fn merge_into(&self, target: usize, sources: &[usize]) -> Edit {
+    pub(crate) fn merge_into(&self, target: usize, sources: &[usize]) -> Edit {
         let mut working = self.data.layers[target].volume.clone();
         let mut changes = Vec::new();
         for &i in sources {
@@ -3407,8 +3441,16 @@ impl Document {
     }
 
     /// `base`, or `base 2`, `base 3`... when that name is taken.
-    fn unique_name_from(&self, base: &str) -> String {
-        let taken = |name: &str| self.data.layers.iter().any(|l| l.name == name);
+    pub(crate) fn unique_name_from(&self, base: &str) -> String {
+        self.unique_name_among(base, &[])
+    }
+
+    /// Like [`Document::unique_name_from`], also avoiding `extra` (names
+    /// of layers about to be added).
+    pub(crate) fn unique_name_among(&self, base: &str, extra: &[String]) -> String {
+        let taken = |name: &str| {
+            self.data.layers.iter().any(|l| l.name == name) || extra.iter().any(|n| n == name)
+        };
         if !taken(base) {
             return base.to_owned();
         }

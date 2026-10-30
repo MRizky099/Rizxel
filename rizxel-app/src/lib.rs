@@ -12,6 +12,7 @@ pub mod favorites;
 pub mod history;
 pub mod interchange;
 pub mod keymap;
+pub mod layer_select;
 pub mod layer_tree;
 pub mod paths;
 pub mod recent;
@@ -1388,16 +1389,28 @@ impl AppState {
         });
     }
 
-    /// *Layer ▸ Group Layer* (`Ctrl+G`): wraps the active layer (a group
-    /// with its contents) in a new group.
-    pub fn group_active_layer(&mut self) {
+    /// *Layer ▸ Group* (`Ctrl+G`): the layers selected in the Layers panel
+    /// into a new group; with only the active layer selected, wraps it (a
+    /// group with its contents) in a new group.
+    pub fn group_selected_layers(&mut self) {
         let Some(d) = self.doc_mut() else { return };
-        let index = d.active_layer;
-        if d.group_layer(index).is_none() {
+        let n = d.normalized_layer_selection().len();
+        if d.group_selected_layers().is_none() {
             self.status_message = Some(format!(
-                "Group Layer: groups nest at most {} levels deep",
+                "Group: groups nest at most {} levels deep",
                 rizxel_io::MAX_GROUP_DEPTH
             ));
+        } else if n > 1 {
+            self.status_message = Some(format!("Grouped {n} layers"));
+        }
+    }
+
+    /// `Ctrl+A` over the Layers panel: selects every layer.
+    pub fn select_all_layers(&mut self) {
+        if let Some(d) = self.doc_mut() {
+            d.select_all_layers();
+            let n = d.selected_layer_count();
+            self.status_message = Some(format!("Selected {n} layers"));
         }
     }
 

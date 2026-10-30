@@ -30,9 +30,10 @@ To New Layer (Cut or Copy), Mask Mode (`Shift+M`).
 
 ## Layer
 
-New Group, Group Layer (`Ctrl+G`), Ungroup (`Ctrl+Shift+G`), Separate Parts (split the
-layer into its connected parts; parts under a size stay), Split at Work Plane, and
-Boolean (combine the active layer with another one).
+New Group, Group Layer (`Ctrl+G`; *Group Selected* when several layers are selected in
+the Layers panel), Ungroup (`Ctrl+Shift+G`), Separate Parts (split the layer into its
+connected parts; parts under a size stay), Split at Work Plane, and Boolean (combine the
+active layer with another one).
 
 ## Model
 

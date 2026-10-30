@@ -726,6 +726,14 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
         d.active_layer()
             .is_some_and(|l| l.kind().is_group() || l.props.parent.is_some())
     });
+    let selected = state
+        .doc()
+        .map_or(0, |d| d.normalized_layer_selection().len());
+    let group_label = if selected > 1 {
+        format!("Group Selected ({selected} layers)")
+    } else {
+        "Group Layer".to_owned()
+    };
     if menu_item(ui, icon::FOLDER_PLUS, "New Group", "", has_doc) {
         if let Some(d) = state.doc_mut() {
             d.add_group();
@@ -734,11 +742,11 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     if menu_item(
         ui,
         icon::FOLDER_SIMPLE_PLUS,
-        "Group Layer",
+        &group_label,
         &sc(state, A::Group),
         has_doc,
     ) {
-        state.group_active_layer();
+        state.group_selected_layers();
     }
     if menu_item(
         ui,

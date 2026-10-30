@@ -13,6 +13,15 @@ All notable changes to Rizxel are documented here. Format follows
 - **Windows installer: choose the install folder.** The setup has a page to change the
   folder (default `%LocalAppData%\Programs\Rizxel`; still per user, no admin rights).
   An upgrade reuses the folder of the installed version.
+- **Layers: multi-select** (Phase 12c). `Ctrl`+click toggles a layer, `Shift`+click
+  selects a range of rows (a collapsed group is one row), `Ctrl+A` over the panel selects
+  every layer and `Esc` clears. `Ctrl+G` groups the selected layers into a new group in
+  one undo step; dragging a selected row moves the whole selection in its order; the
+  eye, lock, delete, duplicate and *Merge Selected* act on every selected layer.
+- **Layers: select on click** (Phase 12c). Clicking a voxel layer selects all its
+  voxels, so Move, Delete, Copy and Transform act on the whole layer. Clicking through
+  layers is one undo step. *Settings ▸ General ▸ Clicking a layer selects its voxels*
+  (on by default) turns it off.
 - **Grid line width and opacity** (Phase 12d). *Settings ▸ Viewport* sets the voxel grid's
   line width (0.5–4 px) and opacity and the floor grid's line width; *View ▸ Show* has a
   quick voxel grid width slider. Grid lines now have a smooth anti-aliased edge at any
