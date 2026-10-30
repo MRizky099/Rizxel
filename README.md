@@ -309,6 +309,7 @@ license, GPL-3.0-or-later.
 
 | Document | Contents |
 |---|---|
+| [User guide](https://mrizky099.github.io/Rizxel/) ([source](docs/guide/SUMMARY.md)) | Every tool, panel, menu and file format; *Help ▸ User Guide* (`F1`) in the app |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Change history |
 | [`docs/phase_summaries.md`](docs/phase_summaries.md) | A summary of each development phase |
 | [`docs/rzxl_format.md`](docs/rzxl_format.md) | `.rzxl` file format spec |

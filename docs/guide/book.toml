@@ -1,0 +1,16 @@
+[book]
+title = "Rizxel User Guide"
+authors = ["Muhammad Rizky Abdillah (MRizky099)"]
+description = "How to use Rizxel, a voxel art editor with a built-in path tracer."
+language = "en"
+# Pages sit next to SUMMARY.md (docs/guide/), not in a src/ folder.
+src = "."
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/MRizky099/Rizxel"
+edit-url-template = "https://github.com/MRizky099/Rizxel/edit/main/docs/guide/{path}"
+site-url = "/Rizxel/"
