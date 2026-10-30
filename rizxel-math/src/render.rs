@@ -197,6 +197,27 @@ pub struct DisplaySettings {
     pub shape: VoxelShape,
     /// Size of the shape inside its cell (`0.5..=1`): below 1 gaps show.
     pub cell: f32,
+    /// A thin line around every voxel face, outer edges included (cubes
+    /// with cell 1 only).
+    pub voxel_lines: bool,
+    pub voxel_line_color: [f32; 3],
+    /// Line width in voxels.
+    pub voxel_line_width: f32,
+    pub voxel_line_opacity: f32,
+    /// Grid lines on the ground (needs the ground).
+    pub floor_grid: bool,
+    pub floor_grid_color: [f32; 3],
+    /// Line width in voxels.
+    pub floor_grid_width: f32,
+    /// Voxels between two lines.
+    pub floor_grid_spacing: u32,
+    /// Distance from the model's center where the lines fade out, as a
+    /// multiple of the bounds' longest side (0 = no fade).
+    pub floor_grid_fade: f32,
+    /// Light the lines give off, so they read on a dark floor.
+    pub floor_grid_glow: f32,
+    /// Shows every material as matte (view only: the materials are kept).
+    pub matte: bool,
 }
 
 impl Default for DisplaySettings {
@@ -215,6 +236,17 @@ impl Default for DisplaySettings {
             edge_width: 1.0,
             shape: VoxelShape::Cube,
             cell: 1.0,
+            voxel_lines: false,
+            voxel_line_color: [0.02, 0.03, 0.12],
+            voxel_line_width: 0.04,
+            voxel_line_opacity: 0.85,
+            floor_grid: false,
+            floor_grid_color: [1.0, 0.86, 0.72],
+            floor_grid_width: 0.03,
+            floor_grid_spacing: 1,
+            floor_grid_fade: 1.5,
+            floor_grid_glow: 0.6,
+            matte: false,
         }
     }
 }
@@ -294,6 +326,15 @@ impl VoxelShape {
 pub const STUD_DIAMETER: f32 = 0.6;
 /// Stud height as a fraction of the voxel edge.
 pub const STUD_HEIGHT: f32 = 0.2;
+/// Voxel line and floor grid widths, in voxels.
+pub const LINE_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 0.005..=0.25;
+/// Floor grid spacing, in voxels.
+pub const FLOOR_GRID_SPACING_RANGE: std::ops::RangeInclusive<u32> = 1..=16;
+/// Floor grid fade radius, in bounds sides.
+pub const FLOOR_GRID_FADE_RANGE: std::ops::RangeInclusive<f32> = 0.0..=8.0;
+/// Floor grid glow strength.
+pub const FLOOR_GRID_GLOW_RANGE: std::ops::RangeInclusive<f32> = 0.0..=4.0;
+
 /// Bevel radius of the Rounded shape, in voxels.
 pub const ROUNDED_BEVEL: f32 = 0.3;
 /// Smallest bevel of the Brick shape: it always shows its seams.
@@ -467,14 +508,18 @@ pub enum RenderPreset {
     NightEmissive,
     /// Pixelated, no bounced light: crisp sprites.
     FlatPixel,
+    /// Matte voxels outlined cell by cell on a dark floor with a glowing
+    /// grid: Rizxel's icon.
+    VoxelIcon,
 }
 
 impl RenderPreset {
-    pub const ALL: [RenderPreset; 4] = [
+    pub const ALL: [RenderPreset; 5] = [
         RenderPreset::StudioWhite,
         RenderPreset::OutdoorSun,
         RenderPreset::NightEmissive,
         RenderPreset::FlatPixel,
+        RenderPreset::VoxelIcon,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -483,6 +528,7 @@ impl RenderPreset {
             RenderPreset::OutdoorSun => "Outdoor Sun",
             RenderPreset::NightEmissive => "Night Emissive",
             RenderPreset::FlatPixel => "Flat Pixel",
+            RenderPreset::VoxelIcon => "Voxel Icon",
         }
     }
 
@@ -553,6 +599,33 @@ impl RenderPreset {
                 s.display.background = BackgroundMode::Color;
                 s.camera.tone_map = ToneMap::Linear;
             }
+            RenderPreset::VoxelIcon => {
+                let l = &mut s.light;
+                l.sun_azimuth = 35.0;
+                l.sun_elevation = 55.0;
+                l.sun_size = 12.0;
+                l.sun_intensity = 2.4;
+                l.sun_color = [1.0, 0.96, 0.9];
+                l.sky = SkyMode::Uniform;
+                l.sky_color = [0.10, 0.12, 0.22];
+                l.sky_intensity = 0.35;
+                let d = &mut s.display;
+                d.ground_color = [0.07, 0.08, 0.14];
+                d.background = BackgroundMode::Color;
+                d.background_color = [0.06, 0.06, 0.08];
+                d.bevel = 0.0;
+                d.voxel_lines = true;
+                d.floor_grid = true;
+                d.matte = true;
+                let c = &mut s.camera;
+                c.fov = 24.0;
+                c.vignette = 0.45;
+                c.tone_map = ToneMap::Filmic;
+                c.exposure = 0.2;
+                c.bloom = true;
+                c.bloom_threshold = 0.9;
+                c.bloom_strength = 0.12;
+            }
         }
         s
     }
@@ -614,6 +687,37 @@ impl RenderSettings {
         clamp_color(&mut p.edge_color, d.display.edge_color);
         p.edge_width = clamp_or(p.edge_width, 0.5..=8.0, d.display.edge_width);
         p.cell = clamp_or(p.cell, 0.5..=1.0, 1.0);
+        clamp_color(&mut p.voxel_line_color, d.display.voxel_line_color);
+        p.voxel_line_width = clamp_or(
+            p.voxel_line_width,
+            LINE_WIDTH_RANGE,
+            d.display.voxel_line_width,
+        );
+        p.voxel_line_opacity = clamp_or(
+            p.voxel_line_opacity,
+            0.0..=1.0,
+            d.display.voxel_line_opacity,
+        );
+        clamp_color(&mut p.floor_grid_color, d.display.floor_grid_color);
+        p.floor_grid_width = clamp_or(
+            p.floor_grid_width,
+            LINE_WIDTH_RANGE,
+            d.display.floor_grid_width,
+        );
+        p.floor_grid_spacing = p.floor_grid_spacing.clamp(
+            *FLOOR_GRID_SPACING_RANGE.start(),
+            *FLOOR_GRID_SPACING_RANGE.end(),
+        );
+        p.floor_grid_fade = clamp_or(
+            p.floor_grid_fade,
+            FLOOR_GRID_FADE_RANGE,
+            d.display.floor_grid_fade,
+        );
+        p.floor_grid_glow = clamp_or(
+            p.floor_grid_glow,
+            FLOOR_GRID_GLOW_RANGE,
+            d.display.floor_grid_glow,
+        );
 
         let c = &mut self.camera;
         c.fov = clamp_or(c.fov, 5.0..=120.0, d.camera.fov);
@@ -658,6 +762,22 @@ impl RenderSettings {
     /// Seams are always on for bricks.
     pub fn effective_seams(&self) -> bool {
         self.display.seams || self.display.shape == VoxelShape::Brick
+    }
+
+    /// Voxel lines need whole cubes: other shapes and gapped cells have no
+    /// shared cell borders to draw.
+    pub fn voxel_lines_supported(&self) -> bool {
+        self.display.shape == VoxelShape::Cube && self.display.cell >= 0.999
+    }
+
+    /// Voxel lines are on and the shape allows them.
+    pub fn effective_voxel_lines(&self) -> bool {
+        self.display.voxel_lines && self.voxel_lines_supported()
+    }
+
+    /// The floor grid is drawn: it lies on the ground.
+    pub fn effective_floor_grid(&self) -> bool {
+        self.display.floor_grid && self.display.ground
     }
 }
 
@@ -740,6 +860,38 @@ mod tests {
         let studio = RenderPreset::StudioWhite.apply(&base);
         assert!(studio.display.shadow_catcher && studio.light.studio_lights);
         assert!(RenderPreset::FlatPixel.apply(&base).sample.pixelated);
+        let icon = RenderPreset::VoxelIcon.apply(&RenderSettings::default());
+        assert!(icon.effective_voxel_lines() && icon.effective_floor_grid());
+        assert!(icon.display.matte && !icon.display.shadow_catcher);
+    }
+
+    #[test]
+    fn line_settings_are_clamped_and_follow_the_shape() {
+        let mut s = RenderSettings::default();
+        s.display.voxel_line_width = 9.0;
+        s.display.voxel_line_opacity = f32::NAN;
+        s.display.floor_grid_spacing = 0;
+        s.display.floor_grid_fade = -1.0;
+        s.display.floor_grid_glow = 1e6;
+        s.display.floor_grid_width = 0.0;
+        s.sanitize();
+        assert_eq!(s.display.voxel_line_width, 0.25);
+        assert_eq!(s.display.voxel_line_opacity, 0.85);
+        assert_eq!(s.display.floor_grid_spacing, 1);
+        assert_eq!(s.display.floor_grid_fade, 0.0);
+        assert_eq!(s.display.floor_grid_glow, 4.0);
+        assert_eq!(s.display.floor_grid_width, 0.005);
+
+        s.display.voxel_lines = true;
+        assert!(s.effective_voxel_lines());
+        s.display.cell = 0.9;
+        assert!(!s.effective_voxel_lines(), "gapped cells");
+        s.display.cell = 1.0;
+        s.display.shape = VoxelShape::Sphere;
+        assert!(!s.effective_voxel_lines(), "other shapes");
+        s.display.floor_grid = true;
+        s.display.ground = false;
+        assert!(!s.effective_floor_grid(), "the grid lies on the ground");
     }
 
     #[test]

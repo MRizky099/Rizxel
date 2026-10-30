@@ -1,6 +1,7 @@
-//! `.rzxl` format candidate fixtures (`tests/fixtures/rzxl_0_10/`).
+//! `.rzxl` format candidate fixtures (`tests/fixtures/rzxl_0_10/`, and
+//! `tests/fixtures/rzxl_0_11/` for the fields added in version 6).
 //!
-//! The files were saved by Rizxel 0.10.0 and are never regenerated: every
+//! The files were saved by Rizxel 0.10.0 (0.11.0) and are never regenerated: every
 //! later build must load them and find the same contents. Together they use
 //! every body field (see the compatibility promise in `docs/rzxl_format.md`).
 //!
@@ -36,8 +37,17 @@ const GENERATOR: &str = "Rizxel 0.10.0";
 /// Format version of the 0.10.0 files.
 const FIXTURE_VERSION: u32 = 5;
 
+/// `generator` of the 0.11.0 fixtures.
+const GENERATOR_0_11: &str = "Rizxel 0.11.0";
+/// Format version of the 0.11.0 files.
+const FIXTURE_VERSION_0_11: u32 = 6;
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rzxl_0_10")
+}
+
+fn fixture_dir_0_11() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rzxl_0_11")
 }
 
 fn project(name: &str, bounds: BoundSize, layers: Vec<LayerData>) -> ProjectFile {
@@ -415,6 +425,36 @@ fn max_bounds() -> ProjectFile {
     )
 }
 
+/// Version 6: every display field added for the *Voxel Icon* look away
+/// from its default.
+fn voxel_icon() -> ProjectFile {
+    let bounds = BoundSize::new(12, 12, 12);
+    let mut p = project(
+        "voxel_icon",
+        bounds,
+        vec![voxel_layer(1, "Model", bounds, &pyramid(12, 4))],
+    );
+    p.generator = GENERATOR_0_11.into();
+    let d = &mut p.render.display;
+    d.voxel_lines = true;
+    d.voxel_line_color = [0.1, 0.2, 0.3];
+    d.voxel_line_width = 0.06;
+    d.voxel_line_opacity = 0.5;
+    d.floor_grid = true;
+    d.floor_grid_color = [0.9, 0.5, 0.2];
+    d.floor_grid_width = 0.08;
+    d.floor_grid_spacing = 4;
+    d.floor_grid_fade = 2.5;
+    d.floor_grid_glow = 1.25;
+    d.matte = true;
+    p
+}
+
+/// Every 0.11.0 fixture, by file name.
+fn fixtures_0_11() -> Vec<(&'static str, ProjectFile)> {
+    vec![("voxel_icon.rzxl", voxel_icon())]
+}
+
 /// Every fixture, by file name.
 fn fixtures() -> Vec<(&'static str, ProjectFile)> {
     vec![
@@ -427,16 +467,33 @@ fn fixtures() -> Vec<(&'static str, ProjectFile)> {
     ]
 }
 
+/// Every fixture with its folder, format version and generator.
+fn all_fixtures() -> Vec<(PathBuf, u32, &'static str, ProjectFile)> {
+    let mut all: Vec<_> = fixtures()
+        .into_iter()
+        .map(|(f, p)| (fixture_dir().join(f), FIXTURE_VERSION, GENERATOR, p))
+        .collect();
+    all.extend(fixtures_0_11().into_iter().map(|(f, p)| {
+        (
+            fixture_dir_0_11().join(f),
+            FIXTURE_VERSION_0_11,
+            GENERATOR_0_11,
+            p,
+        )
+    }));
+    all
+}
+
 #[test]
 fn fixtures_load_with_their_saved_contents() {
-    for (file, expected) in fixtures() {
-        let path = fixture_dir().join(file);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("{}: {e} (fixtures are committed)", path.display()));
+    for (path, version, generator, expected) in all_fixtures() {
+        let file = path.display();
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|e| panic!("{file}: {e} (fixtures are committed)"));
         assert_eq!(&bytes[0..4], b"RZXL", "{file}");
-        assert_eq!(&bytes[4..8], &FIXTURE_VERSION.to_le_bytes(), "{file}");
+        assert_eq!(&bytes[4..8], &version.to_le_bytes(), "{file}");
         let loaded = load_rzxl(&path).unwrap_or_else(|e| panic!("{file}: {e}"));
-        assert_eq!(loaded.generator, GENERATOR, "{file}");
+        assert_eq!(loaded.generator, generator, "{file}");
         assert_eq!(loaded, expected, "{file}");
         for l in &loaded.layers {
             volume_from_runs(loaded.bounds, &l.voxels)
@@ -494,6 +551,11 @@ fn fixture_contents_spot_checks() {
     assert_eq!(render.render.output.kind, OutputKind::Turntable);
     assert_eq!(render.render.light.sky_image, "skies/studio.hdr");
     assert_eq!(render.render.display.shape, VoxelShape::Rounded);
+    assert!(!render.render.display.voxel_lines, "version 5: no lines");
+
+    let icon = load_rzxl(&fixture_dir_0_11().join("voxel_icon.rzxl")).unwrap();
+    assert!(icon.render.display.voxel_lines && icon.render.display.matte);
+    assert_eq!(icon.render.display.floor_grid_spacing, 4);
 
     let max = load("max_bounds.rzxl");
     let v = volume_from_runs(max.bounds, &max.layers[0].voxels).unwrap();
@@ -505,7 +567,7 @@ fn fixture_contents_spot_checks() {
 /// by at least one fixture.
 #[test]
 fn fixtures_cover_every_feature() {
-    let all: Vec<ProjectFile> = fixtures().into_iter().map(|(_, p)| p).collect();
+    let all: Vec<ProjectFile> = all_fixtures().into_iter().map(|(.., p)| p).collect();
     let layers = || all.iter().flat_map(|p| &p.layers);
     assert!(layers().any(|l| matches!(l.kind, LayerKind::Voxels) && !l.voxels.is_empty()));
     assert!(layers().any(|l| matches!(l.kind, LayerKind::Group { collapsed: true })));
@@ -537,13 +599,18 @@ fn fixtures_cover_every_feature() {
     assert!(mats
         .iter()
         .any(|m| m.emission_strength != d.emission_strength));
-    // Every render group differs from the defaults in every field: compare
-    // the JSON objects field by field.
+    // Every render field differs from its default in the 0.10.0 render
+    // fixture or, for fields added in version 6, the 0.11.0 one: compare the
+    // JSON objects field by field.
     let default = serde_json::to_value(RenderSettings::default()).unwrap();
     let saved = serde_json::to_value(&render().render).unwrap();
+    let saved_0_11 = serde_json::to_value(&voxel_icon().render).unwrap();
     for (group, fields) in default.as_object().unwrap() {
         for (field, value) in fields.as_object().unwrap() {
-            assert_ne!(&saved[group][field], value, "render.{group}.{field}");
+            assert!(
+                &saved[group][field] != value || &saved_0_11[group][field] != value,
+                "render.{group}.{field}"
+            );
         }
     }
     // The builders are valid projects of the current version.
@@ -563,9 +630,8 @@ fn write_fixtures() {
     if std::env::var_os("RIZXEL_WRITE_FIXTURES").is_none() {
         return;
     }
-    std::fs::create_dir_all(fixture_dir()).unwrap();
-    for (file, p) in fixtures() {
-        let path = fixture_dir().join(file);
+    for (path, .., p) in all_fixtures() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         if path.exists() {
             eprintln!("keeping {}", path.display());
             continue;
