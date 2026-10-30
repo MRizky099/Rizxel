@@ -2051,8 +2051,7 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
         (color.gamma_multiply(0.12), color, PLANE_WIDTH)
     };
     // The sheet shows the voxel cells when the voxel grid is on (shader).
-    out.planes
-        .extend(PlaneVertex::quad(q, axis as usize, fill, line));
+    out.planes.extend(PlaneVertex::quad(q, axis, fill, line));
     let ppp = f.pixels_per_point;
     for i in 0..4 {
         out.lines
