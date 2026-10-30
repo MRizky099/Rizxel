@@ -43,6 +43,9 @@ All notable changes to Rizxel are documented here. Format follows
   boundaries and fading out when zoomed far out (no moiré on 256³ bounds).
 
 ### Changed
+- **New icons.** A new application icon (rendered "R"), `.rzxl` document icon and
+  README banner. The small logo in the title bar, the document tabs, the start screen
+  and *About* replaces the cube glyph.
 - **`.rzxl` version 6** (Phase 12e) stores the voxel line, floor grid and matte
   settings. Files of versions 1–5 load with them off; Rizxel 0.10 cannot open version 6
   files.

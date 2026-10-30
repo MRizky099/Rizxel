@@ -140,6 +140,39 @@ pub fn paint(ui: &Ui, rect: Rect, texture: &TextureHandle, size: f32, tint: Colo
     egui::Image::new(texture).tint(tint).paint_at(ui, target);
 }
 
+/// The small Rizxel logo (`assets/Rizxel_sm_icon_64x64.png`, trimmed from
+/// `Rizxel_sm_icon.png`) shown in the title bar, document tabs, start
+/// screen and About dialog. Loaded once per context.
+pub fn logo(ctx: &egui::Context) -> TextureHandle {
+    const BYTES: &[u8] = include_bytes!("../../assets/Rizxel_sm_icon_64x64.png");
+    let id = egui::Id::new("rizxel_logo_texture");
+    if let Some(t) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
+        return t;
+    }
+    let image = decode(BYTES).unwrap_or_else(|err| {
+        log::error!("failed to decode the logo: {err}");
+        ColorImage::filled([1, 1], Color32::TRANSPARENT)
+    });
+    let options = TextureOptions {
+        mipmap_mode: Some(TextureFilter::Linear),
+        ..TextureOptions::LINEAR
+    };
+    let texture = ctx.load_texture("rizxel_logo", image, options);
+    ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
+    texture
+}
+
+/// Paints the [`logo`] centered in `rect` at `size` px; dimmed when not
+/// `active`.
+pub fn paint_logo(ui: &Ui, rect: Rect, size: f32, active: bool) {
+    let tint = if active {
+        Color32::WHITE
+    } else {
+        Color32::from_white_alpha(150)
+    };
+    paint(ui, rect, &logo(ui.ctx()), size, tint);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +185,13 @@ mod tests {
             assert_eq!(img.size, [128, 128], "{name}");
         }
         assert_eq!(SOURCES.len(), Icon::Paint as usize + 1);
+    }
+
+    #[test]
+    fn logo_decodes_and_is_cached() {
+        let ctx = egui::Context::default();
+        let a = logo(&ctx);
+        assert_eq!(a.size(), [64, 64]);
+        assert_eq!(logo(&ctx).id(), a.id(), "loaded once");
     }
 }

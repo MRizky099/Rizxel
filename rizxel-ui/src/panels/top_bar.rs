@@ -79,7 +79,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
 
     // App icon.
     let icon_rect = span((0.0, ICON_WIDTH));
-    crate::widgets::paint_icon(ui, icon_rect, icon::CUBE, 15.0, theme::ACCENT);
+    crate::icons::paint_logo(ui, icon_rect, 18.0, true);
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -1305,10 +1305,9 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
             .anchor(Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(icon::CUBE)
-                            .font(theme::icon(28.0))
-                            .color(theme::ACCENT),
+                    ui.add(
+                        egui::Image::new(&crate::icons::logo(ui.ctx()))
+                            .fit_to_exact_size(egui::Vec2::splat(36.0)),
                     );
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new("Rizxel").font(theme::semibold(16.0)));

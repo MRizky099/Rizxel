@@ -28,7 +28,7 @@ icns() { # <png> <name>
   iconutil -c icns "$set" -o "$APP/Contents/Resources/$2.icns"
 }
 icns assets/Rizxel_icon.png Rizxel
-icns assets/rizxel_document.png RizxelDocument
+icns assets/Rizxel_fancy_document_icon.png RizxelDocument
 
 cp LICENSE THIRD_PARTY_LICENSES.html README.md "$APP/Contents/Resources/"
 cp vendor/craft-ui/LICENSE-MIT vendor/craft-ui/LICENSE-APACHE vendor/craft-ui/NOTICE \

@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="assets/Rizxel_icon_128x128.png" alt="Rizxel icon" width="96">
-
-# Rizxel
+<img src="assets/GitHub_README_banner.png" alt="Rizxel" width="100%">
 
 **A native voxel art editor written in pure Rust, with a built-in path tracer.**
 

@@ -73,10 +73,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
     let modal = egui::Modal::new(egui::Id::new("start_screen")).show(ctx, |ui| {
         ui.set_width(columns * (CARD.x + 12.0) + 180.0);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(icon::CUBE)
-                    .font(theme::icon(28.0))
-                    .color(theme::ACCENT),
+            ui.add(
+                egui::Image::new(&crate::icons::logo(ui.ctx()))
+                    .fit_to_exact_size(egui::Vec2::splat(40.0)),
             );
             ui.vertical(|ui| {
                 ui.label(RichText::new("Rizxel").font(theme::semibold(18.0)));
