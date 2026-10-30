@@ -39,7 +39,7 @@ use std::path::Path;
 
 use rizxel_math::{
     BoundSize, IVec3, LayerId, LayerKind, Material, Palette, ReferenceImage, RenderSettings, Voxel,
-    VoxelVolume, EMPTY_VOXEL,
+    VoxelVolume, EMPTY_VOXEL, MAX_PALETTE_COLORS,
 };
 
 use crate::image_io::{check_reference, MAX_REFERENCE_SIDE};
@@ -194,6 +194,23 @@ impl ProjectFile {
     /// checked separately by [`volume_from_runs`] when they are decoded.
     pub fn validate(&self) -> Result<(), RzxlError> {
         let fail = |msg: String| Err(RzxlError::Invalid(msg));
+        let b = self.bounds.0;
+        if b.min_element() < BoundSize::MIN || b.max_element() > BoundSize::MAX {
+            return fail(format!(
+                "bounds {}×{}×{} are outside {}..={} per axis",
+                b.x,
+                b.y,
+                b.z,
+                BoundSize::MIN,
+                BoundSize::MAX
+            ));
+        }
+        if self.palette.is_empty() || self.palette.len() > MAX_PALETTE_COLORS {
+            return fail(format!(
+                "{} palette colors (1..={MAX_PALETTE_COLORS})",
+                self.palette.len()
+            ));
+        }
         if self.layers.len() > MAX_LAYERS {
             return fail(format!("{} layers (limit {MAX_LAYERS})", self.layers.len()));
         }
@@ -891,6 +908,24 @@ mod tests {
         let mut p = sample();
         p.layers[0].name = "x".repeat(MAX_NAME_CHARS + 1);
         assert!(p.validate().unwrap_err().to_string().contains("too long"));
+    }
+
+    #[test]
+    fn bad_bounds_and_palettes_are_rejected() {
+        for bounds in [[0, 8, 8], [8, 257, 8], [u32::MAX, 1, 1]] {
+            let mut p = sample();
+            p.bounds = BoundSize(bounds.into());
+            p.layers[1].voxels.clear();
+            let err = p.validate().unwrap_err().to_string();
+            assert!(err.contains("bounds"), "{err}");
+        }
+        let json = serde_json::to_string(&sample()).unwrap().replacen(
+            &serde_json::to_string(&Palette::default()).unwrap(),
+            r#"{"colors":[]}"#,
+            1,
+        );
+        let err = read_rzxl(raw_file(5, &json).as_slice()).unwrap_err();
+        assert!(err.to_string().contains("palette"), "{err}");
     }
 
     #[test]

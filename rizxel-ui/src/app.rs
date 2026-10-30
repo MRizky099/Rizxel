@@ -301,6 +301,7 @@ pub fn run_action(state: &mut AppState, ui: &mut panels::UiState, action: Action
         A::ModelBounds => state.view.model_bounds = !state.view.model_bounds,
         A::Ghosts => state.view.ghosts = !state.view.ghosts,
         A::References => state.toggle_all_references(),
+        A::UserGuide => ui.open_guide = Some(String::new()),
         A::Tool(tool) => state.tool = tool,
         A::RecallFavorite(slot) => state.recall_favorite(slot.into()),
         A::StoreFavorite(slot) => state.store_favorite(slot.into()),

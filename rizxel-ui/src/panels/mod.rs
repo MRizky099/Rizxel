@@ -42,6 +42,9 @@ pub struct UiState {
     pub settings: Option<settings::SettingsDialog>,
     /// The start screen (shown at start without a command-line file).
     pub start: Option<start::StartScreen>,
+    /// Guide page a keyboard command asked to open (opened next frame,
+    /// where the context is at hand).
+    pub open_guide: Option<String>,
 }
 
 impl UiState {

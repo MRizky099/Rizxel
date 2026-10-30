@@ -24,7 +24,7 @@ save never truncates an existing project.
 
 ```jsonc
 {
-  "generator": "Rizxel 0.9.0",        // writer, diagnostics only
+  "generator": "Rizxel 0.10.0",       // writer, diagnostics only
   "name": "hero",
   "palette": { "colors": [{ "r": 0, "g": 0, "b": 0, "a": 255 }, ...] },
   "selected_color": 35,                // palette index, never 0
@@ -204,6 +204,7 @@ Every stored field changes what the editor shows:
 Every loaded project is checked before the document sees it, and writers
 refuse projects that would fail the same check:
 
+- `bounds` are `1..=256` per axis and the palette holds 1..=256 colors.
 - At most 1024 layers, 256 materials and 256-character names. Group nesting
   is at most 32 levels deep.
 - Layer ids are non-zero and unique.
@@ -222,6 +223,8 @@ refuse projects that would fail the same check:
   total. Their ids are non-zero and unique; each image is 1..=4096 pixels per
   side. `size` is positive, `offset` and `size` are finite and within ±1024
   voxels, `rotation` is 0..=3 and `opacity` is inside `0..=1`.
+- `active_layer` and `selected_color` are not rejected: the editor clamps
+  them to the top layer and to the palette (never slot 0).
 - Each embedded image must be valid base64 and decode completely as a PNG or
   JPEG of the stated `width` × `height`; truncated or mislabeled images are
   rejected.
@@ -247,3 +250,63 @@ refuse projects that would fail the same check:
   writer stored.
 - Unknown JSON fields are ignored when reading. Any new field still requires
   a version bump, for the reason above.
+
+## Compatibility promise (candidate)
+
+Version 5, as written by Rizxel 0.10.0, is the candidate for the 1.0 format.
+The promise below is a **candidate** during the 0.10 beta and becomes
+**binding with Rizxel 1.0**.
+
+During the beta (0.10.x):
+
+- Rizxel keeps loading every file saved by 0.10.0 or later, and every file of
+  versions 1–5.
+- A breaking change (a field dropped or read differently) is still allowed,
+  but only with a CHANGELOG entry that says how to migrate old files.
+
+From 1.0 on, for all of 1.x:
+
+1. Every 1.x reader loads every older version (1 to the current one) without
+   losing data.
+2. A new field needs a format version bump and a default, so older files
+   decode into the newer structures. Older readers reject the newer version
+   instead of dropping the field (see *Versions and compatibility*).
+3. A change that drops or reinterprets stored data needs a new major version
+   (Rizxel 2.0).
+4. Unknown fields stay ignored, never an error.
+
+The fixtures in `rizxel-io/tests/fixtures/rzxl_0_10/` were saved by 0.10.0
+and are never regenerated. Every CI build loads them and checks their
+contents (`rizxel-io/tests/rzxl_fixtures.rs`), and opens them as documents
+(`rizxel-app/tests/rzxl_fuzz.rs`). Together they use every field below.
+
+| Fixture | Covers |
+|---|---|
+| `minimal.rzxl` | One empty layer, all defaults |
+| `layers.rzxl` | Voxel runs, hidden and locked layers, opacity, nested groups (one collapsed), cube, sphere and cylinder shapes, linked clones of a voxel and a shape layer, crop boxes |
+| `materials.rzxl` | A 16-color palette, every material field, a layer without material |
+| `references.rzxl` | Reference images on all three planes, PNG and JPEG, every placement and display option |
+| `render.rzxl` | Every render setting away from its default |
+| `max_bounds.rzxl` | 256³ bounds, voxels in the corners |
+
+### Fields and the version that added them
+
+| Field | Version |
+|---|---|
+| `name`, `palette`, `selected_color`, `active_layer`, `bounds` | 1 |
+| `layers[].name`, `visible`, `locked` | 1 |
+| `layers[].voxels` | 2 |
+| `generator`, `materials[]` (`name`, `metallic`, `roughness`, `emission`, `tint`) | 3 |
+| `layers[].id`, `opacity`, `parent`, `material`, `crop`, `kind` (`voxels`, `group` with `collapsed`, `clone` with `source` and `offset`, `shape` with `shape`, `area` and `color`) | 3 |
+| `references[]` (`id`, `name`, `image`, `visible`, `locked`, `plane`, `offset`, `size`, `rotation`, `flip_u`, `flip_v`, `opacity`, `depth`, `slice`) | 4 |
+| `materials[].specular`, `ior`, `transmission`, `clearcoat`, `emission_strength` | 5 |
+| `render` (`light`, `sample`, `display`, `camera`, `output` and their fields) | 5 |
+
+### Robustness
+
+Besides the hostile-input unit tests, `rizxel-app/tests/rzxl_fuzz.rs` is a
+small mutation fuzzer: it mutates the fixtures (the JSON tree, the JSON text
+and the raw file), loads each result, uses the document like the editor does
+after opening it, and saves it again. CI runs 400 cases; set
+`RIZXEL_FUZZ_SECS` for a longer run. (`cargo fuzz` needs a nightly
+toolchain; the project builds on stable.)

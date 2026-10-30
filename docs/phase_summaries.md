@@ -24,6 +24,7 @@ implementation plan and [`CHANGELOG.md`](CHANGELOG.md).
 | 11 | Pipeline and export | ✅ Done | `v0.6.0` |
 | 11b | Render mode, path tracer and render output | ✅ Done | `v0.6.0` |
 | 12 | Beta: settings and packaging | ✅ Done | `v0.9.0` |
+| 12a | Beta 2: guide, format candidate, samples | ✅ Done | `v0.10.0` |
 
 ---
 
@@ -404,3 +405,26 @@ Plan: [`rizxel_phase12_implementation_plan.md`](plan/rizxel_phase12_implementati
 - Not checked: the Settings dialog, keymap editor and start screen by eye, the packages
   (built only by the release workflow), the file association on a real desktop, macOS.
 - 624 tests (537 Rizxel, 87 craft-ui); GPU tests skip without an adapter.
+
+## Phase 12a — Beta 2: guide, format candidate and samples
+
+Plan: [`rizxel_phase12a_implementation_plan.md`](plan/rizxel_phase12a_implementation_plan.md)
+
+**Delivered** (PR #14, tag `v0.10.0`)
+- `.rzxl` v5 format candidate: the compatibility promise and the field/version table in
+  `rzxl_format.md`; six fixtures in `rizxel-io/tests/fixtures/rzxl_0_10/` checked by
+  `rzxl_fixtures.rs`; the mutation fuzzer `rizxel-app/tests/rzxl_fuzz.rs` (94,580 cases
+  in 15 minutes locally, no panic); bounds and palette size checked on load
+  (`7da2b50`).
+- The mdBook user guide in `docs/guide/` with a generated shortcuts table
+  (`guide_shortcuts.rs`); `help.rs` with *Help ▸ User Guide* (`F1`, a new keymap
+  action), *Report an Issue* and the option bar's `?`; `docs.yml` publishing to GitHub
+  Pages (`4a6212a`).
+- Sample models in `assets/samples/` from `sample_model --all`, and `release.yml`
+  publishing pre-releases with `packaging/release_notes.sh` (`fc1ed0b`).
+- Not done: code signing (no certificates), the itch.io page (needs the author's
+  account), per-tool screenshots and GIFs in the guide.
+- Checked by hand (shell only; screen control was declined): every sample and fixture
+  opens in the app without errors; the guide builds with mdBook 0.5.4 and its internal
+  links resolve. The Help links are checked by the UI smoke test, not by eye.
+- 636 tests (549 Rizxel, 87 craft-ui).

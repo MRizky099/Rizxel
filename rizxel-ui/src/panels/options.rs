@@ -136,6 +136,24 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 
     vertical_divider(ui, DIVIDER_HEIGHT);
     super::render::projection_buttons(ui, state);
+    help_button(ui, crate::help::RENDER_PAGE, "Render mode");
+}
+
+/// `?` button opening a guide page.
+fn help_button(ui: &mut Ui, page: &str, topic: &str) {
+    let button = egui::Button::new(
+        egui::RichText::new(egui_phosphor::regular::QUESTION)
+            .font(theme::icon(14.0))
+            .color(theme::TEXT_DIM),
+    )
+    .frame(false);
+    if ui
+        .add(button)
+        .on_hover_text(format!("{topic} in the user guide"))
+        .clicked()
+    {
+        crate::help::open(ui.ctx(), page);
+    }
 }
 
 fn undo_redo(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
@@ -251,6 +269,12 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
             .size(12.0)
             .strong()
             .color(theme::TEXT_STRONG),
+    );
+    let tool = state.tool;
+    help_button(
+        ui,
+        &crate::help::tool_page(tool),
+        &format!("The {} tool", tool.label()),
     );
     ui.add_space(6.0);
     tool_rows(ui, state);

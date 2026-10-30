@@ -244,3 +244,49 @@ fn start_screen_lists_recent_files_and_closes() {
     assert!(h.state().ui.start.is_none());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// URLs the last frame asked the system to open.
+fn opened_urls(h: &Harness<'static, World>) -> Vec<String> {
+    h.output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn help_opens_the_user_guide() {
+    let mut h = harness(World::new(AppState::default()));
+    h.run();
+    // F1 (the keymap's default) opens the guide's front page.
+    // `step` runs a frame per queued event: press only, then check.
+    h.key_down(Key::F1);
+    h.step();
+    assert_eq!(opened_urls(&h), [rizxel_ui::help::GUIDE_URL]);
+    h.key_up(Key::F1);
+    h.run();
+    // Help > User Guide does the same.
+    h.get_all_by_label("Help").next().unwrap().click_accesskit();
+    h.run();
+    h.get_by_label_contains("User Guide").click_accesskit();
+    h.step();
+    assert_eq!(opened_urls(&h), [rizxel_ui::help::GUIDE_URL]);
+    h.run();
+    // The option bar's `?` opens the active tool's page.
+    h.state_mut().state.tool = Tool::FuzzySelect;
+    h.run();
+    h.get_by_label(egui_phosphor::regular::QUESTION)
+        .click_accesskit();
+    h.step();
+    assert_eq!(
+        opened_urls(&h),
+        [format!(
+            "{}tools/fuzzy-select.html",
+            rizxel_ui::help::GUIDE_URL
+        )]
+    );
+}
