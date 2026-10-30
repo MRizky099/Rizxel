@@ -460,6 +460,7 @@ fn camera_items(ui: &mut Ui, state: &mut AppState) {
 /// View > Show: what the viewport draws besides the model (also on the
 /// viewport's toggle buttons).
 fn show_menu(ui: &mut Ui, state: &mut AppState) {
+    let mut save_grid_width = false;
     ui.menu_button(icon_label(ui, icon::EYE, "Show", None), |ui| {
         ui.set_min_width(200.0);
         let keys = [A::FloorGrid, A::VoxelGrid, A::ModelBounds].map(|a| sc(state, a));
@@ -475,8 +476,31 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
             if menu_item(ui, check_glyph(*on), label, shortcut, true) {
                 *on = !*on;
             }
+            if label == "Voxel Grid" {
+                // Quick width, live and remembered (Settings ▸ Viewport).
+                let width = &mut state.settings.viewport.voxel_grid_width;
+                let r = ui
+                    .horizontal(|ui| {
+                        ui.add_space(22.0);
+                        ui.add(
+                            egui::Slider::new(width, rizxel_app::settings::GRID_WIDTH_RANGE)
+                                .step_by(0.25)
+                                .suffix(" px")
+                                .text("width"),
+                        )
+                    })
+                    .inner
+                    .on_hover_text("Voxel grid line width");
+                save_grid_width = r.drag_stopped() || (r.changed() && !r.dragged());
+            }
         }
     });
+    if save_grid_width {
+        if let Err(e) = state.save_settings() {
+            log::warn!("settings: {e}");
+            state.status_message = Some(format!("Failed to save the settings: {e}"));
+        }
+    }
     let ghosts = state.view.ghosts;
     if menu_item(
         ui,

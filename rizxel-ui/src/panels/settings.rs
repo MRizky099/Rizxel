@@ -2,7 +2,9 @@
 //! copy of [`Settings`]; OK applies and saves it, Cancel drops it.
 
 use egui::{Color32, RichText, Ui};
-use rizxel_app::settings::{MAX_AUTOSAVE_MINUTES, UI_SCALE_RANGE, UNDO_LIMIT_RANGE};
+use rizxel_app::settings::{
+    GRID_OPACITY_RANGE, GRID_WIDTH_RANGE, MAX_AUTOSAVE_MINUTES, UI_SCALE_RANGE, UNDO_LIMIT_RANGE,
+};
 use rizxel_app::{ActionGroup, ActionId, AppState, CameraControls, KeyChord, Settings};
 
 use crate::{keys, theme};
@@ -228,6 +230,17 @@ fn general(ui: &mut Ui, d: &mut SettingsDialog) {
             row(ui, "Start screen", |ui| {
                 ui.checkbox(&mut g.start_screen, "Show when no file was opened");
             });
+            row(ui, "Layers", |ui| {
+                ui.checkbox(
+                    &mut g.layer_click_selects_voxels,
+                    "Clicking a layer selects its voxels",
+                )
+                .on_hover_text(
+                    "Move, Delete, Copy and the Transform tool then act on the whole \
+                     layer. Painting new voxels still works unless the tool's Mask \
+                     selection option is on, which limits brushes to the selection.",
+                );
+            });
         });
     crate::file_assoc::settings_section(ui, &mut d.assoc_status);
 }
@@ -241,9 +254,18 @@ fn viewport(ui: &mut Ui, d: &mut SettingsDialog) {
         .show(ui, |ui| {
             row(ui, "Floor grid", |ui| {
                 ui.checkbox(&mut v.floor_grid, "Shown");
+                grid_width(ui, &mut v.floor_grid_width);
             });
             row(ui, "Voxel grid", |ui| {
                 ui.checkbox(&mut v.voxel_grid, "Shown on the model");
+            });
+            row(ui, "", |ui| {
+                grid_width(ui, &mut v.voxel_grid_width);
+                ui.add(
+                    egui::Slider::new(&mut v.voxel_grid_opacity, GRID_OPACITY_RANGE)
+                        .step_by(0.05)
+                        .text("opacity"),
+                );
             });
             row(ui, "Projection", |ui| {
                 ui.radio_value(&mut v.orthographic, false, "Perspective");
@@ -277,6 +299,16 @@ fn viewport(ui: &mut Ui, d: &mut SettingsDialog) {
              use the Color Picker tool (C).",
         );
     }
+}
+
+/// Line width slider of a grid, in pixels.
+fn grid_width(ui: &mut Ui, width: &mut f32) {
+    ui.add(
+        egui::Slider::new(width, GRID_WIDTH_RANGE)
+            .step_by(0.25)
+            .suffix(" px")
+            .text("width"),
+    );
 }
 
 fn paths(ui: &mut Ui, d: &mut SettingsDialog) {

@@ -32,6 +32,11 @@ struct Camera {
     ground: vec4<f32>,
     // rgb = top color of the background gradient, w = 1 for a gradient.
     background_top: vec4<f32>,
+    // x = voxel grid width (px), y = voxel grid opacity, z = floor grid width (px),
+    // w = 1 when the plane sheets show cell lines.
+    grid_style: vec4<f32>,
+    // x = voxel grid width in voxel units (0: pixels, grid_style.x).
+    voxel_units: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -92,16 +97,24 @@ fn unproject(ndc: vec2<f32>, z: f32) -> vec3<f32> {
     return p.xyz / p.w;
 }
 
+/// Coverage of a line `width_px` pixels wide at `px` pixels from its
+/// center: a smooth 1 px falloff on each side. Lines narrower than a pixel
+/// keep a 1 px footprint and lose opacity instead.
+fn line_coverage(px: f32, width_px: f32) -> f32 {
+    let w = max(width_px, 1.0);
+    return saturate(w * 0.5 + 0.5 - px) * saturate(width_px);
+}
+
 /// Anti-aliased line coverage for a unit grid in `coord` space, about
 /// `width_px` pixels wide.
 fn grid_coverage(coord: vec2<f32>, width_px: f32) -> f32 {
     let d = max(fwidth(coord), vec2<f32>(1e-6));
     let g = abs(fract(coord - 0.5) - 0.5) / d;
-    return 1.0 - min(min(g.x, g.y) / width_px, 1.0);
+    return line_coverage(min(g.x, g.y), width_px);
 }
 
 fn axis_coverage(v: f32, width_px: f32) -> f32 {
-    return 1.0 - min(abs(v) / max(fwidth(v), 1e-6) / width_px, 1.0);
+    return line_coverage(abs(v) / max(fwidth(v), 1e-6), width_px);
 }
 
 struct GridFrag {
@@ -137,10 +150,11 @@ fn grid_sample(ndc: vec2<f32>) -> GridSample {
     // Derivatives are evaluated unconditionally (uniform control flow).
     let coord = p.xz - cam.grid_origin.xy;
     let lod = max(fwidth(coord).x, fwidth(coord).y);
-    let minor = grid_coverage(coord, 1.0) * (1.0 - smoothstep(0.12, 0.45, lod));
-    let major = grid_coverage(coord / 8.0, 1.2) * (1.0 - smoothstep(0.12, 0.45, lod / 8.0));
-    let axis_x = axis_coverage(p.z, 1.6);
-    let axis_z = axis_coverage(p.x, 1.6);
+    let w = cam.grid_style.z;
+    let minor = grid_coverage(coord, w) * (1.0 - smoothstep(0.12, 0.45, lod));
+    let major = grid_coverage(coord / 8.0, 1.2 * w) * (1.0 - smoothstep(0.12, 0.45, lod / 8.0));
+    let axis_x = axis_coverage(p.z, 1.6 * w);
+    let axis_z = axis_coverage(p.x, 1.6 * w);
 
     // "Infinity" look: fade with distance and at grazing angles.
     let dist = length(p.xz - cam.focus.xz);
@@ -315,6 +329,71 @@ fn vs_fill(v: FillIn) -> ColorOut {
     return out;
 }
 
+// ---------------------------------------------------------------- plane sheets
+
+struct PlaneIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) fill: vec4<f32>,
+    @location(2) line: vec4<f32>,
+    // Normal axis of the sheet: 0 = X, 1 = Y, 2 = Z.
+    @location(3) axis: u32,
+};
+
+struct PlaneOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) fill: vec4<f32>,
+    @location(2) line: vec4<f32>,
+    @location(3) @interpolate(flat) axis: u32,
+};
+
+@vertex
+fn vs_plane(v: PlaneIn) -> PlaneOut {
+    var out: PlaneOut;
+    out.pos = cam.view_proj * vec4<f32>(pull_to_eye(v.pos), 1.0);
+    // The cell lines use the unpulled position, so they stay on the voxel
+    // boundaries.
+    out.world = v.pos;
+    out.fill = v.fill;
+    out.line = v.line;
+    out.axis = v.axis;
+    return out;
+}
+
+/// Distance in px to the nearest voxel boundary on the two axes of a plane
+/// with normal axis `axis` (x), and the voxel size in world units per px (y).
+fn cell_distance(world: vec3<f32>, axis: u32) -> vec2<f32> {
+    // Voxel corners sit on integers once the bounds' XZ offset is removed.
+    let coord = world - vec3<f32>(cam.grid_origin.x, 0.0, cam.grid_origin.y);
+    // Derivatives first, in uniform control flow, per axis so a face edge
+    // inside a 2x2 pixel quad does not blow them up.
+    let d = max(fwidth(coord), vec3<f32>(1e-6));
+    let g = abs(fract(coord - 0.5) - 0.5) / d;
+    if axis == 1u {
+        return vec2<f32>(min(g.x, g.z), max(d.x, d.z));
+    } else if axis == 2u {
+        return vec2<f32>(min(g.x, g.y), max(d.x, d.y));
+    }
+    return vec2<f32>(min(g.y, g.z), max(d.y, d.z));
+}
+
+/// Voxels under ~4 px: the lines fade out instead of a solid tint.
+fn cell_lod_fade(lod: f32) -> f32 {
+    return 1.0 - smoothstep(0.15, 0.3, lod);
+}
+
+/// The sheet's fill with the voxel cell lines composited over it (straight
+/// alpha). Without the voxel grid the sheet is the plain fill.
+@fragment
+fn fs_plane(in: PlaneOut) -> @location(0) vec4<f32> {
+    let c = cell_distance(in.world, in.axis);
+    let k = line_coverage(c.x, cam.grid_style.x) * cell_lod_fade(c.y) * cam.grid_style.y
+        * cam.grid_style.w * in.line.a;
+    let a = in.fill.a + (1.0 - in.fill.a) * k;
+    let rgb = (in.fill.rgb * in.fill.a * (1.0 - k) + in.line.rgb * k) / max(a, 1e-6);
+    return vec4<f32>(rgb, a);
+}
+
 // ---------------------------------------------------------------- voxels
 
 struct VoxelIn {
@@ -366,33 +445,36 @@ fn vs_voxel_translucent(v: VoxelIn, @location(7) alpha: f32) -> VoxelOut {
 /// Brightness of a fully occluded vertex.
 const AO_MIN: f32 = 0.5;
 
-/// Darkening of the voxel edge lines drawn on the model (Voxel Grid).
-const VOXEL_GRID_STRENGTH: f32 = 0.35;
+/// Thinnest voxel line in px when the width is in voxel units: thinner
+/// lines lose opacity instead, so they never break up.
+const MIN_VOXEL_LINE_PX: f32 = 0.75;
 
-/// Coverage of the voxel edge lines at a fragment on a face with normal
-/// `n`: about one pixel wide, fading out when voxels get smaller than a few
-/// pixels. Works on greedy-merged quads because it only uses the position.
+/// Darkening by the voxel edge lines at a fragment on a face with normal
+/// `n` (Voxel Grid), opacity included. In pixels (`grid_style.x`) the lines
+/// fade out when voxels get smaller than a few pixels; in voxel units
+/// (`voxel_units.x`) they fade toward their average tint instead, so a
+/// large output keeps the look. Works on greedy-merged quads because it
+/// only uses the position.
 fn voxel_grid_coverage(world: vec3<f32>, n: vec3<f32>) -> f32 {
-    // Voxel corners sit on integers once the bounds' XZ offset is removed.
-    let coord = world - vec3<f32>(cam.grid_origin.x, 0.0, cam.grid_origin.y);
-    // Derivatives first, in uniform control flow, per axis so a face edge
-    // inside a 2x2 pixel quad does not blow them up.
-    let d = max(fwidth(coord), vec3<f32>(1e-6));
-    let g = abs(fract(coord - 0.5) - 0.5) / d;
     let a = abs(n);
-    // Distance (in px) to the nearest line on the two in-plane axes.
-    var px = min(g.y, g.z);
-    var lod = max(d.y, d.z);
+    var axis = 0u;
     if a.y > 0.5 {
-        px = min(g.x, g.z);
-        lod = max(d.x, d.z);
+        axis = 1u;
     } else if a.z > 0.5 {
-        px = min(g.x, g.y);
-        lod = max(d.x, d.y);
+        axis = 2u;
     }
-    let line = 1.0 - min(px, 1.0);
-    // Voxels under ~4 px: fade the lines out instead of a solid tint.
-    return line * (1.0 - smoothstep(0.15, 0.3, lod));
+    let c = cell_distance(world, axis);
+    let units = cam.voxel_units.x;
+    if units > 0.0 {
+        let width_px = units / c.y;
+        let thin = saturate(width_px / MIN_VOXEL_LINE_PX);
+        let line = line_coverage(c.x, max(width_px, MIN_VOXEL_LINE_PX)) * thin;
+        // Share of a voxel face the lines of both axes cover.
+        let w = saturate(units);
+        let average = 1.0 - (1.0 - w) * (1.0 - w);
+        return mix(line, average, smoothstep(0.15, 0.3, c.y)) * cam.grid_style.y;
+    }
+    return line_coverage(c.x, cam.grid_style.x) * cell_lod_fade(c.y) * cam.grid_style.y;
 }
 
 /// Unit vector from a fragment toward the viewer.
@@ -436,7 +518,7 @@ fn render_shade(albedo: vec3<f32>, n: vec3<f32>, world: vec3<f32>, m: Material) 
 /// Lit color of a voxel fragment (shared by both passes).
 fn voxel_color(in: VoxelOut) -> vec3<f32> {
     let n = normalize(in.normal);
-    let grid = voxel_grid_coverage(in.world, n) * cam.options.y * VOXEL_GRID_STRENGTH;
+    let grid = voxel_grid_coverage(in.world, n) * cam.options.y;
     var color: vec3<f32>;
     if cam.viewport.z > 0.5 {
         let m = materials[in.material];

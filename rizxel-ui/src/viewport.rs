@@ -32,7 +32,7 @@ use rizxel_math::{BoundSize, ImageData, VoxelBox, VoxelShape};
 
 use crate::render::pathtrace::{document_params, PtInputs, PtScene, PtTables, SkyCache};
 use crate::render::{
-    GpuMesh, LineInstance, PtFrame, RefPixels, ReferenceDraw, RenderLook, SceneFrame,
+    GpuMesh, GridStyle, LineInstance, PtFrame, RefPixels, ReferenceDraw, RenderLook, SceneFrame,
     ViewportCallback,
 };
 use crate::theme;
@@ -581,6 +581,7 @@ pub fn show(
     // --- Scene (wgpu) -------------------------------------------------------
     let mut frame = scene_frame(state, &proj, target, bmin, bmax, ppp);
     frame.fills.extend(preview.fills);
+    frame.planes.extend(preview.planes);
     frame.lines.extend(preview.lines);
     if let Some((lo, hi)) = occupied.filter(|_| state.view.model_bounds) {
         let color = theme::BOUND.gamma_multiply(0.45);
@@ -809,6 +810,8 @@ pub fn output_frame(doc: &Document, camera: &OrbitCamera, size: [u32; 2], ao: bo
         axis_z: theme::AXIS_Z,
         lines: Vec::new(),
         fills: Vec::new(),
+        planes: Vec::new(),
+        grid_style: GridStyle::default(),
         voxels: Some(match shaped_output(doc, bmin) {
             Some(mesh) => mesh,
             None => gpu(&view.opaque),
@@ -1070,6 +1073,8 @@ fn scene_frame(
         axis_z: theme::AXIS_Z,
         lines,
         fills: Vec::new(),
+        planes: Vec::new(),
+        grid_style: GridStyle::from_settings(&state.settings.viewport),
         voxels: None,
         translucent: Vec::new(),
         materials: state

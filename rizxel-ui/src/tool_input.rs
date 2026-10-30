@@ -60,7 +60,7 @@ use rizxel_engine::{
 };
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
 
-use crate::render::{FillVertex, LineInstance};
+use crate::render::{FillVertex, LineInstance, PlaneVertex};
 use crate::theme;
 use crate::viewport::Projection;
 
@@ -76,6 +76,8 @@ const SURFACE_EPS: f32 = 0.01;
 pub struct Preview {
     pub fills: Vec<FillVertex>,
     pub lines: Vec<LineInstance>,
+    /// Work plane and slice sheets (cell lines with the voxel grid on).
+    pub planes: Vec<PlaneVertex>,
 }
 
 /// Persistent tool-input state (owned by the app across frames).
@@ -2039,15 +2041,18 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
     };
     let sheet = p.sheet_coord(bounds) as f32;
     let q = plane_corners(&p, bounds, sheet + lift).map(|c| c + f.bmin);
-    let (fill, width) = if p.slice {
+    let (fill, line, width) = if p.slice {
         (
             Color32::from_rgba_unmultiplied(170, 170, 170, 70),
+            SLICE_GRID_LINE,
             PLANE_SLICE_WIDTH,
         )
     } else {
-        (color.gamma_multiply(0.12), PLANE_WIDTH)
+        (color.gamma_multiply(0.12), color, PLANE_WIDTH)
     };
-    quad(out, q, fill);
+    // The sheet shows the voxel cells when the voxel grid is on (shader).
+    out.planes
+        .extend(PlaneVertex::quad(q, axis as usize, fill, line));
     let ppp = f.pixels_per_point;
     for i in 0..4 {
         out.lines
@@ -2080,6 +2085,8 @@ const EDGE_GRAB: f32 = 10.0;
 const PLANE_WIDTH: f32 = 1.5;
 /// Outline width of the slice plane, in logical points.
 const PLANE_SLICE_WIDTH: f32 = 3.0;
+/// Cell lines on the slice sheet: its neutral grey, brightened.
+const SLICE_GRID_LINE: Color32 = Color32::from_rgb(225, 225, 225);
 /// Arrow gizmo size, in logical points (constant on screen).
 const ARROW_LENGTH: f32 = 72.0;
 const ARROW_SHAFT_RADIUS: f32 = 3.0;

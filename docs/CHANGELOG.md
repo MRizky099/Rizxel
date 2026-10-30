@@ -13,6 +13,13 @@ All notable changes to Rizxel are documented here. Format follows
 - **Windows installer: choose the install folder.** The setup has a page to change the
   folder (default `%LocalAppData%\Programs\Rizxel`; still per user, no admin rights).
   An upgrade reuses the folder of the installed version.
+- **Grid line width and opacity** (Phase 12d). *Settings ▸ Viewport* sets the voxel grid's
+  line width (0.5–4 px) and opacity and the floor grid's line width; *View ▸ Show* has a
+  quick voxel grid width slider. Grid lines now have a smooth anti-aliased edge at any
+  width.
+- **Voxel cells on the work plane and slice sheet** (Phase 12d). With the voxel grid on,
+  the active work plane and the slice sheet show the voxel cell lines, aligned to voxel
+  boundaries and fading out when zoomed far out (no moiré on 256³ bounds).
 
 ### Changed
 - **Only `.rzxl` is associated with Rizxel.** The installer, *Settings ▸ General ▸

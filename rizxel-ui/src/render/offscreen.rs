@@ -397,4 +397,96 @@ mod tests {
         let same = crop_view_proj(vp, size, [0, 0, 400, 200]);
         assert!(same.abs_diff_eq(vp, 1e-5));
     }
+
+    /// A 4x4-voxel plane sheet at y = 1 seen straight from above in
+    /// orthographic, 20 px per voxel: pixel `20 * k` is centered on the cell
+    /// boundary `x = k`.
+    fn plane_frame(voxel_grid: bool, width_px: f32) -> SceneFrame {
+        use crate::render::{GridStyle, PlaneVertex, RenderLook};
+        use egui::Color32;
+        use glam::camera::rh::{proj::directx::orthographic, view::look_at_mat4};
+        let (lo, hi) = (-0.025, 3.975);
+        // View-space up is -Z, so z grows down the image.
+        let proj = orthographic(lo, hi, -hi, -lo, 0.1, 50.0);
+        let eye = Vec3::new(0.0, 10.0, 0.0);
+        let view = look_at_mat4(eye, Vec3::new(0.0, 1.0, 0.0), Vec3::NEG_Z);
+        let view_proj = proj * view;
+        let q = [
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(4.0, 1.0, 0.0),
+            Vec3::new(4.0, 1.0, 4.0),
+            Vec3::new(0.0, 1.0, 4.0),
+        ];
+        SceneFrame {
+            view_proj,
+            eye,
+            target: Vec3::new(0.0, 1.0, 0.0),
+            forward: Vec3::NEG_Y,
+            ortho: true,
+            distance: 9.0,
+            grid_origin: glam::Vec2::ZERO,
+            render_mode: false,
+            floor_grid: false,
+            voxel_grid,
+            ao: false,
+            background: Color32::BLACK,
+            grid_color: Color32::WHITE,
+            axis_x: Color32::RED,
+            axis_z: Color32::BLUE,
+            lines: Vec::new(),
+            fills: Vec::new(),
+            planes: PlaneVertex::quad(
+                q,
+                1,
+                Color32::from_rgba_unmultiplied(0, 0, 200, 128),
+                Color32::WHITE,
+            )
+            .to_vec(),
+            grid_style: GridStyle {
+                voxel_width: width_px,
+                voxel_opacity: 1.0,
+                ..GridStyle::default()
+            },
+            voxels: None,
+            translucent: Vec::new(),
+            materials: Vec::new(),
+            references: Vec::new(),
+            look: RenderLook::default(),
+            screen_y: [1.0, 0.0],
+            pt: None,
+        }
+    }
+
+    #[test]
+    fn plane_sheet_shows_voxel_cells_with_the_voxel_grid() {
+        let Some(Headless { device, queue, .. }) = headless_device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut raster = OffscreenRaster::new(&device);
+        let mut render =
+            |grid, width| raster.render(&device, &queue, &plane_frame(grid, width), [80, 80]);
+        let red = |img: &RgbaImage, x: u32| img.pixel(x, 30)[0];
+        // Cell center x = 1.5 (pixel 30), boundary x = 1 (pixel 20).
+        let thin = render(true, 1.0);
+        let center = red(&thin, 30);
+        assert!(
+            red(&thin, 20) > center + 100,
+            "a cell boundary shows a line: {} vs {center}",
+            red(&thin, 20)
+        );
+        assert!(red(&thin, 22).abs_diff(center) < 8, "1 px lines stay thin");
+        let wide = render(true, 4.0);
+        assert!(
+            red(&wide, 21) > red(&thin, 21) + 60,
+            "a wider line covers 1 px off the boundary: {} vs {}",
+            red(&wide, 21),
+            red(&thin, 21)
+        );
+        assert!(red(&wide, 22) > red(&thin, 22) + 30, "and fades past it");
+        // Voxel grid off: the plain fill.
+        let plain = render(false, 4.0);
+        assert_eq!(plain.pixel(20, 30), plain.pixel(30, 30));
+        assert_eq!(plain.pixel(30, 30), thin.pixel(30, 30));
+    }
 }

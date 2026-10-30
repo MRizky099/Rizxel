@@ -12,7 +12,10 @@ double-clicking a project opens Rizxel).
 ## Viewport
 
 Default projection (perspective or orthographic), camera controls (mouse buttons or
-`Alt` + mouse), the Model mode background, the floor grid and the voxel grid.
+`Alt` + mouse), the Model mode background, the floor grid and the voxel grid. Both grids
+have a line width (0.5–4 px, constant on screen at every zoom); the voxel grid also has
+an opacity (default 0.35). *View ▸ Show* has a quick width slider for the voxel grid
+that applies right away and is remembered.
 
 ## Keymap
 

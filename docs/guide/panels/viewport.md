@@ -27,7 +27,9 @@ same views are in *View ▸ Faces*, *Edges* and *Corners*.
 ## What it shows
 
 *View ▸ Show* toggles the floor grid (`G`), the voxel grid on the model (`Shift+G`) and
-the model bounds (`Shift+B`). *Ghosts* (`Shift+H`) draws the other layers
+the model bounds (`Shift+B`). With the voxel grid on, the active work plane and the
+slice sheet also show the voxel cells, in the plane's color. Line width and opacity are
+in [Settings ▸ Viewport](../settings.md#viewport). *Ghosts* (`Shift+H`) draws the other layers
 semi-transparent. Reference images draw on their planes; `Alt+R` hides or shows them
 all.
 
