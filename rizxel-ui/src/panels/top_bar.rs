@@ -389,8 +389,21 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
 
     ui.menu_button("Help", |ui| {
         ui.set_min_width(200.0);
+        if menu_item(
+            ui,
+            icon::BOOK_OPEN,
+            "User Guide",
+            &sc(state, A::UserGuide),
+            true,
+        ) {
+            crate::help::open(ui.ctx(), "");
+        }
         if menu_item(ui, icon::KEYBOARD, "Keyboard Shortcuts", "", true) {
             ui_state.show_shortcuts = true;
+        }
+        if menu_item(ui, icon::BUG, "Report an Issue", "", true) {
+            ui.ctx()
+                .open_url(egui::OpenUrl::new_tab(crate::help::ISSUES_URL));
         }
         if menu_item(ui, icon::INFO, "About Rizxel", "", true) {
             ui_state.show_about = true;
@@ -1234,6 +1247,9 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
 
 /// Help dialogs opened from the menu.
 pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut UiState) {
+    if let Some(page) = ui_state.open_guide.take() {
+        crate::help::open(ctx, &page);
+    }
     if ui_state.show_about {
         egui::Window::new("About Rizxel")
             .open(&mut ui_state.show_about)

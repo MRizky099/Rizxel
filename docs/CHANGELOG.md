@@ -5,6 +5,46 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-30
+
+Milestone M7, the second beta. Phase 12a: a user guide with in-app help, the `.rzxl`
+v5 format candidate with fixture and fuzz tests, sample models, and releases published
+as GitHub pre-releases.
+
+### Added
+- **User guide** (`docs/guide/`, mdBook, published to
+  <https://mrizky099.github.io/Rizxel/> by `.github/workflows/docs.yml`): a page for
+  every tool, panel and import/export format, the interface, menus, Render mode,
+  settings, troubleshooting, and a shortcuts table generated from the keymap (a test
+  keeps it in sync).
+- **In-app help**: *Help ▸ User Guide* (`F1`, remappable), *Help ▸ Report an Issue*,
+  and a `?` after the tool name in the option bar that opens the tool's guide page (in
+  Render mode, the Render mode page).
+- **`.rzxl` format candidate**: `docs/rzxl_format.md` states the compatibility promise
+  for v5 (binding at 1.0) and lists every field with the version that added it.
+  Fixtures saved by 0.10.0 (`rizxel-io/tests/fixtures/rzxl_0_10/`) cover every feature
+  and are loaded and checked by every CI build.
+- **Fuzz test** of the `.rzxl` reader and document load (`rizxel-app/tests/rzxl_fuzz.rs`):
+  mutated fixtures (JSON tree, JSON text, raw bytes) must never panic and must save
+  again. CI runs 400 cases; local runs of over 90,000 cases found nothing.
+- **Sample models** in `assets/samples/` (CC0), written by
+  `sample_model --all assets/samples`: demo, lantern (glass and emission for Render
+  mode), tree (a group of shape layers and a linked clone) and cottage. Releases attach
+  them as `Rizxel-<version>-samples.zip`.
+
+### Changed
+- The release workflow publishes `0.x` and `-rc` tags as a **GitHub pre-release** (stable
+  versions as a draft) with notes from this changelog, a direct link per package, the
+  install steps for unsigned builds, the license and the source link
+  (`packaging/release_notes.sh`).
+- The packages stay unsigned (no certificates yet); the README, guide and release notes
+  explain the SmartScreen and Gatekeeper steps.
+
+### Fixed
+- `.rzxl` files with bounds outside 1..=256 or an empty palette are rejected on load
+  instead of reaching a division by zero or an out-of-range slice in exports and
+  palette saving.
+
 ## [0.9.0] — 2026-10-30
 
 Milestone M6, the first beta. Phase 12: settings and a remappable keymap, saved

@@ -282,6 +282,7 @@ pub enum ActionId {
     ModelBounds,
     Ghosts,
     References,
+    UserGuide,
     Tool(Tool),
     RecallFavorite(u8),
     StoreFavorite(u8),
@@ -298,10 +299,11 @@ pub enum ActionGroup {
     View,
     Tools,
     Favorites,
+    Help,
 }
 
 impl ActionGroup {
-    pub const ALL: [ActionGroup; 8] = [
+    pub const ALL: [ActionGroup; 9] = [
         ActionGroup::File,
         ActionGroup::Edit,
         ActionGroup::Selection,
@@ -310,6 +312,7 @@ impl ActionGroup {
         ActionGroup::View,
         ActionGroup::Tools,
         ActionGroup::Favorites,
+        ActionGroup::Help,
     ];
 
     pub fn label(self) -> &'static str {
@@ -322,6 +325,7 @@ impl ActionGroup {
             ActionGroup::View => "View",
             ActionGroup::Tools => "Tools",
             ActionGroup::Favorites => "Favorite colors",
+            ActionGroup::Help => "Help",
         }
     }
 }
@@ -374,6 +378,7 @@ impl ActionId {
         all.extend(rizxel_engine::Tool::ALL.into_iter().map(Tool));
         all.extend((0..10).map(RecallFavorite));
         all.extend((0..10).map(StoreFavorite));
+        all.push(UserGuide);
         all
     }
 
@@ -420,6 +425,7 @@ impl ActionId {
             ModelBounds => "view.model_bounds",
             Ghosts => "view.ghosts",
             References => "view.references",
+            UserGuide => "help.user_guide",
             Tool(t) => return format!("tool.{}", t.label().to_ascii_lowercase().replace(' ', "_")),
             RecallFavorite(i) => return format!("favorite.recall.{i}"),
             StoreFavorite(i) => return format!("favorite.store.{i}"),
@@ -473,6 +479,7 @@ impl ActionId {
             ModelBounds => "Show or hide the model bounds",
             Ghosts => "Ghosts: other layers semi-transparent",
             References => "Show or hide all reference images",
+            UserGuide => "User guide (opens in the browser)",
             Tool(t) => return format!("{} tool", t.label()),
             RecallFavorite(i) => return format!("Select favorite color {i}"),
             StoreFavorite(i) => return format!("Store the selected color as favorite {i}"),
@@ -496,6 +503,7 @@ impl ActionId {
             | References => ActionGroup::View,
             Tool(_) => ActionGroup::Tools,
             RecallFavorite(_) | StoreFavorite(_) => ActionGroup::Favorites,
+            UserGuide => ActionGroup::Help,
         }
     }
 
@@ -561,6 +569,7 @@ impl ActionId {
             ModelBounds => vec![K::plain("B").with_shift()],
             Ghosts => vec![K::plain("H").with_shift()],
             References => vec![K::plain("R").with_alt()],
+            UserGuide => vec![K::plain("F1")],
             Tool(t) => {
                 let letter = t.shortcut().to_string();
                 vec![K::new(false, false, false, &letter).expect("tool keys are letters")]

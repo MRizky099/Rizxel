@@ -23,8 +23,10 @@ model in layers, and then render it with a progressive GPU path tracer, all in o
 lightweight app. Its voxel model and tools draw on Goxel, MagicaVoxel and Qubicle, and
 it reads and writes their file formats.
 
-> **Status: beta (`0.9.0`).** Rizxel is under active development, and the
-> `.rzxl` format may still change before 1.0 (older files keep loading). See the
+> **Status: beta (`0.10.0`).** Rizxel is under active development. The `.rzxl`
+> format has a [candidate compatibility promise](docs/rzxl_format.md#compatibility-promise-candidate)
+> that becomes binding at 1.0. The [user guide](https://mrizky099.github.io/Rizxel/)
+> covers every tool, panel and format. See the
 > [changelog](docs/CHANGELOG.md) and [roadmap](#roadmap).
 
 ## Contents
@@ -120,8 +122,13 @@ Packages are attached to every release on the
 | Linux (x86-64) | `Rizxel-<version>-x86_64.AppImage` | `chmod +x` and run. *Settings ▸ General* registers `.rzxl` files, or let AppImageLauncher integrate it. |
 | macOS 11+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel. Drag Rizxel to *Applications*. |
 
+Each release also has `Rizxel-<version>-samples.zip` with the
+[sample models](assets/samples/README.md) (CC0), made with Rizxel.
+
 The beta packages are not code-signed: Windows SmartScreen and macOS Gatekeeper warn on
-the first start (on macOS, right-click the app and choose *Open*). Every package contains
+the first start (on Windows, *More info ▸ Run anyway*; on macOS, right-click the app and
+choose *Open*). The [user guide](https://mrizky099.github.io/Rizxel/getting-started.html)
+has the details. Every package contains
 `LICENSE` and `THIRD_PARTY_LICENSES.html`, and every release links the source code it was
 built from.
 
@@ -148,10 +155,14 @@ Open a file at startup:
 cargo run -p rizxel-ui --release -- path/to/model.rzxl
 ```
 
-Write the demo project shown in the screenshots:
+Write the demo project shown in the screenshots, or every sample model:
 
 ```bash
 cargo run -p rizxel-app --example sample_model
+```
+
+```bash
+cargo run -p rizxel-app --example sample_model -- --all assets/samples
 ```
 
 Convert between formats without the UI:
@@ -185,7 +196,9 @@ folder, for example to try a build without touching your own settings.
 ### Packages
 
 The [release workflow](.github/workflows/release.yml) builds every package when a `v*` tag
-is pushed and attaches them to a draft release. To build one locally, first write the
+is pushed and publishes them with the sample models and notes from the changelog
+([`packaging/release_notes.sh`](packaging/release_notes.sh)): as a pre-release for
+`0.x` and `-rc` versions, as a draft for stable ones. To build one locally, first write the
 third-party notices with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about)
 (the command fails on a dependency license that isn't on the GPL-compatible allow-list in
 [`about.toml`](about.toml)):
@@ -206,9 +219,9 @@ Then run the platform's script from the repository root:
 
 | Platform | Script | Needs |
 |---|---|---|
-| Windows | `pwsh packaging/wix/build.ps1 -Version 0.9.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
-| Linux | `sh packaging/appimage/build.sh 0.9.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
-| macOS | `sh packaging/macos/build.sh 0.9.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
+| Windows | `pwsh packaging/wix/build.ps1 -Version 0.10.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
+| Linux | `sh packaging/appimage/build.sh 0.10.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
+| macOS | `sh packaging/macos/build.sh 0.10.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
 
 ## Controls
 
@@ -286,8 +299,8 @@ rizxel-math    L0  Rgba8, Palette, BoundSize, Aabb, VoxelVolume (16³ sparse til
 | 0.5 | Editing power: selection, structure and palette tools, layer tree, reference images, Transform tool, docking | ✅ Released |
 | 0.6 | Pipeline and rendering: glTF, Qubicle, PLY, Render mode, path tracer | ✅ Released |
 | 0.9 | Beta: settings and keymap, saved layout, start screen, installers, `.rzxl` file association | ✅ Released (beta) |
-| 0.10 | Beta 2: user guide, `.rzxl` format candidate, signed builds | ⏳ Next |
-| 1.0 | Stable release, planned after the beta feedback | 💡 Later |
+| 0.10 | Beta 2: user guide and in-app help, `.rzxl` format candidate with fixtures, sample models, pre-releases | ✅ Released (beta) |
+| 1.0 | Stable release: binding format promise, signed builds; scope planned after the 0.10 feedback | ⏳ Next |
 
 Known limitations are tracked in [`docs/gaps.md`](docs/gaps.md).
 
@@ -309,6 +322,7 @@ license, GPL-3.0-or-later.
 
 | Document | Contents |
 |---|---|
+| [User guide](https://mrizky099.github.io/Rizxel/) ([source](docs/guide/SUMMARY.md)) | Every tool, panel, menu and file format; *Help ▸ User Guide* (`F1`) in the app |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Change history |
 | [`docs/phase_summaries.md`](docs/phase_summaries.md) | A summary of each development phase |
 | [`docs/rzxl_format.md`](docs/rzxl_format.md) | `.rzxl` file format spec |

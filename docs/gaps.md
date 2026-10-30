@@ -1,6 +1,6 @@
 # Rizxel — Known Gaps
 
-Gaps between the current build (`v0.9.0`: Phases 1–12, 625 tests) and a
+Gaps between the current build (`v0.10.0`: Phases 1–12a, 636 tests) and a
 usable 1.0 editor. Sources: the "Out of Scope" sections in each phase plan, the limits
 in `interchange_formats.md` and `rzxl_format.md`,
 [`qubicle_feature_gap_analysis.md`](qubicle_feature_gap_analysis.md) and the current code.
@@ -17,6 +17,8 @@ The **Phase** column names the plan that closes the gap (see
 
 | Gap | Closed by |
 |---|---|
+| No user documentation or tutorial | Phase 12a: the user guide (`docs/guide/`) and *Help ▸ User Guide* |
+| No `.rzxl` compatibility promise | Phase 12a: the v5 candidate promise in `rzxl_format.md`, fixtures and a fuzz test |
 | Phase 6 work is uncommitted | `363f73d` |
 | `.tmp-craft/` is an untracked vendor checkout | Removed from the tree; ignored since Phase 7 |
 | No Qubicle-style Slice Mode (global toggle, slice-only editing, navigation) | `04bbdf7`, `d6f13b2` |
@@ -111,7 +113,7 @@ No open bugs are known. Fixed bugs move to the table above.
 | Undo with an open box selection or transform only closes it | Low | post | Same as a floating paste; the next Undo undoes the last step. |
 | No shear, smooth (filtered) resampling or multi-layer transforms | Low | post | The Transform tool resamples by nearest neighbour, on one layer. |
 | Gradient and Remap need `Shift+click` to mark a swatch | Low | 12 | There is no other way to pick the second color yet. |
-| Only a dark theme | Low | 12a | *Settings ▸ General* shows the theme, but `theme.rs` colors are constants; a light theme needs them to become a palette. |
+| Only a dark theme | Low | 1.0 | *Settings ▸ General* shows the theme, but `theme.rs` colors are constants; a light theme needs them to become a palette. |
 | Pointer clicks don't reach the title bar in `egui_kittest` | Low | — | The smoke tests click through AccessKit actions instead; real mouse input works. |
 | Brush pyramids and cones always point up | Low | post | The Shape tool points them away from the pressed face; Brush stamps have no face direction. |
 | No multi-select of layer rows | Low | post | *Group Layer* wraps the active layer (with its contents) only. |
@@ -148,11 +150,12 @@ No open bugs are known. Fixed bugs move to the table above.
 
 | Gap | Severity | Phase | Notes |
 |---|---|---|---|
-| macOS doesn't open a double-clicked `.rzxl` | Medium | 12a | `Info.plist` declares the type and icon, but winit 0.30 doesn't deliver the `open` Apple event, so Finder starts Rizxel without the file. Needs an `NSApplicationDelegate` hook (`unsafe` Objective-C, forbidden in the workspace today). Untested: no Mac. |
+| macOS doesn't open a double-clicked `.rzxl` | Medium | 1.0 | `Info.plist` declares the type and icon, but winit 0.30 doesn't deliver the `open` Apple event, so Finder starts Rizxel without the file. Needs an `NSApplicationDelegate` hook (`unsafe` Objective-C, forbidden in the workspace today). Untested: no Mac. |
 | Packages are built only in CI and not installed on clean machines yet | Medium | 12 | `release.yml` was written without a run (no tag pushed); WiX, appimagetool and the macOS tools aren't on the dev PC. Step 12 (install on a clean Windows, Linux and macOS and open a sample) waits for the first tagged build. |
-| The window may not come to the front on a second launch | Low | 12a | It sends Focus and asks for attention; Windows' focus-stealing rules may only flash the taskbar button. Untested by hand. |
+| The window may not come to the front on a second launch | Low | 1.0 | It sends Focus and asks for attention; Windows' focus-stealing rules may only flash the taskbar button. Untested by hand. |
 | Starting after a crash waits 1.5 s | Low | — | The stale `instance.lock` is detected by a connect timeout (Windows doesn't refuse a closed loopback port quickly). |
 | Font licenses in the third-party notices | Low | 12 | egui's bundled fonts are under the Ubuntu Font Licence and OFL-1.1; both are on the `about.toml` allow-list as separate font files. Confirm that this is acceptable for the GPL-3.0 packages. |
 | `craft-ui` is a vendored copy | Low | post | `vendor/craft-ui` is upstream `ae2f796` plus the Fill / Scroll tab-strip patch (Phase 10d). Send the patch upstream, then go back to a git rev; the steps are in `vendor/craft-ui/README.md`. |
-| No user documentation or tutorial | Medium | 12a | The docs are for developers only. |
-| No `.rzxl` compatibility promise | Medium | 12a | A candidate promise for v5 lands in 0.10.0 and becomes binding at 1.0. |
+| Binaries are not code-signed | Medium | 1.0 | No Authenticode certificate or Apple Developer ID yet; SmartScreen and Gatekeeper warn on the first start. The install notes explain the steps. |
+| The guide has no per-tool screenshots or GIFs | Low | 1.0 | It reuses the README's three screenshots; captures need the app on screen. |
+| The `.rzxl` fuzzer is a stable-Rust mutation test | Low | post | `cargo fuzz` (coverage-guided) needs nightly; `rzxl_fuzz.rs` mutates the fixtures instead. Other importers have hostile-input unit tests only. |
