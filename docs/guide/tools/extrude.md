@@ -2,8 +2,13 @@
 
 **Key:** `E` · [All tools](index.md)
 
-Click or drag a face (or the selection) to extrude the connected face region outward.
-`Shift` carves inward.
+Click or drag a face (or the selection) to extrude the connected face region.
+
+**Add** (`+`) in the option bar builds outward; **Subtract** (`-`) carves inward. Holding
+`Shift` switches to the other one until you let go: with Add selected, `Shift` carves; with
+Subtract selected, `Shift` builds. The option bar shows which one a click will use, and
+the face highlight turns red while it would carve. Dragging back past zero also reverses
+the direction.
 
 | Option | Effect |
 |---|---|

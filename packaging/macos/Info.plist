@@ -23,13 +23,6 @@
       <key>LSItemContentTypes</key>
       <array><string>io.github.mrizky099.rizxel.project</string></array>
     </dict>
-    <dict>
-      <key>CFBundleTypeName</key><string>Voxel Model</string>
-      <key>CFBundleTypeRole</key><string>Editor</string>
-      <key>LSHandlerRank</key><string>Alternate</string>
-      <key>CFBundleTypeExtensions</key>
-      <array><string>vox</string><string>gox</string></array>
-    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>

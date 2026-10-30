@@ -891,7 +891,11 @@ impl ToolInput {
                     });
                     return;
                 }
-                let sign = if mods.shift { -1 } else { 1 };
+                let sign = if options.extrude.carves(mods.shift) {
+                    -1
+                } else {
+                    1
+                };
                 DragKind::Extrude {
                     region,
                     normal: hit.normal,
@@ -1403,11 +1407,17 @@ impl ToolInput {
                         .unwrap_or_default();
                     self.region_cache = Some((key, region));
                 }
+                // Red while a click would carve, as Subtract's ghosts are.
+                let fill = if state.options.extrude.carves(mods.shift) {
+                    theme::DANGER.gamma_multiply(0.45)
+                } else {
+                    theme::ACCENT_LIGHT.gamma_multiply(0.4)
+                };
                 if let Some((_, region)) = &self.region_cache {
                     if region.len() <= MAX_GHOST_CELLS {
                         for &v in region {
                             let h = RayHit { voxel: v, ..*hit };
-                            face_fill(f.bmin, &h, theme::ACCENT_LIGHT.gamma_multiply(0.4), out);
+                            face_fill(f.bmin, &h, fill, out);
                         }
                     }
                 }

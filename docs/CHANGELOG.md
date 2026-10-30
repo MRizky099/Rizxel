@@ -5,6 +5,21 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Extrude: Add / Subtract.** The option bar's Add and Subtract buttons now work with
+  Extrude (its own setting, separate from the drawing tools' operation). Holding `Shift`
+  switches to the other one while held, and the buttons and the face highlight show
+  which one a click will use.
+- **Windows installer: choose the install folder.** The setup has a page to change the
+  folder (default `%LocalAppData%\Programs\Rizxel`; still per user, no admin rights).
+  An upgrade reuses the folder of the installed version.
+
+### Changed
+- **Only `.rzxl` is associated with Rizxel.** The installer, *Settings ▸ General ▸
+  Associate .rzxl Files*, the Linux desktop entry and the macOS bundle no longer add
+  *Open with* entries for `.vox` and `.gox`. Installing or re-associating removes the
+  entries 0.9 and 0.10 wrote; `.vox` and `.gox` still open through *File ▸ Open*.
+
 ## [0.10.1] — Unreleased
 
 Phase 12b: a patch for 0.10.0.
