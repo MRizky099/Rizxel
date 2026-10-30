@@ -26,11 +26,26 @@ All notable changes to Rizxel are documented here. Format follows
   line width (0.5–4 px) and opacity and the floor grid's line width; *View ▸ Show* has a
   quick voxel grid width slider. Grid lines now have a smooth anti-aliased edge at any
   width.
+- **Voxel Icon look** (Phase 12e). Render mode can draw a thin line around every voxel
+  face, outer edges included (*Display ▸ Voxel lines*: color, width in voxels,
+  opacity), and a grid on the ground (*Display ▸ Floor grid*: color, width, spacing,
+  fade, glow), in the raster and path-traced previews and outputs. Lines are
+  anti-aliased and fade to their average tint when thinner than a pixel; the *Image*
+  output renders at 2× and scales down when they are on. *View ▸ Floor Grid* (`G`)
+  toggles the render floor grid in Render mode.
+- **Matte** (Phase 12e): *Display ▸ Matte* shows every material without shine (view
+  only), and the Material tab has a *Matte* preset button.
+- **Voxel Icon render preset** (Phase 12e) and the `assets/samples/rizxel_r.rzxl` sample
+  that reproduces Rizxel's icon. The `render` example takes `--preset icon`, `--sun
+  AZ,EL` and `--zoom`.
 - **Voxel cells on the work plane and slice sheet** (Phase 12d). With the voxel grid on,
   the active work plane and the slice sheet show the voxel cell lines, aligned to voxel
   boundaries and fading out when zoomed far out (no moiré on 256³ bounds).
 
 ### Changed
+- **`.rzxl` version 6** (Phase 12e) stores the voxel line, floor grid and matte
+  settings. Files of versions 1–5 load with them off; Rizxel 0.10 cannot open version 6
+  files.
 - **Only `.rzxl` is associated with Rizxel.** The installer, *Settings ▸ General ▸
   Associate .rzxl Files*, the Linux desktop entry and the macOS bundle no longer add
   *Open with* entries for `.vox` and `.gox`. Installing or re-associating removes the

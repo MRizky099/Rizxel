@@ -23,6 +23,31 @@ are available.
 4. Set the camera: field of view, depth of field (aperture; click to focus), exposure.
 5. Choose an output in *Output* and press **Render**.
 
+## The Voxel Icon look
+
+![The rizxel_r.rzxl sample with the Voxel Icon preset, path traced at 1024×1024](https://raw.githubusercontent.com/MRizky099/Rizxel/main/docs/images/readme/voxel_icon.png)
+
+The **Voxel Icon** preset draws the model the way Rizxel's icon does: matte voxels
+with a thin dark line around every voxel face, on a dark floor with a fine glowing grid
+that fades out away from the model, with a vignette. Each part is a separate setting in
+the *Display* tab:
+
+- **Voxel lines** outline every face of every voxel, outer edges included (unlike
+  *Seams*, which only darken where two voxels touch). The width is in voxels, so the
+  preview and a 4K output keep the same proportions. Far away, lines thinner than a
+  pixel fade to their average tint instead of breaking up.
+- **Floor grid** draws lines on the ground along the voxel borders, fading out at the
+  *Fade* distance. Its *Glow* makes the lines give off light in the path tracer, so they
+  read on a dark floor and bloom when bloom is on. *View ▸ Floor Grid* (`G`) toggles it
+  in Render mode.
+- **Matte** shows every material rough, without metal or clear coat, keeping colors,
+  emission and glass. It only changes the view; the *Matte* button in the *Material*
+  tab writes those values into a material instead.
+
+Lines are anti-aliased in both renderers, and the *Image* output renders at twice the
+size and scales down when voxel lines or the floor grid are on. Open
+`assets/samples/rizxel_r.rzxl` to try it.
+
 ## Outputs
 
 | Output | Result |

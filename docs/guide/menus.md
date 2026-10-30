@@ -52,7 +52,8 @@ active layer with another one).
 
 Zen Mode, Orthographic (`5`), Auto Ortho on Face Snap, Frame Selection (`.`), Frame Work
 Area (`Home`), Home View (`Shift+Home`), Faces / Edges / Corners (camera views), Show
-(floor grid, voxel grid with a quick line width slider, model bounds), Ghosts, Ambient
+(floor grid, voxel grid with a quick line width slider, model bounds; in Render mode
+*Floor Grid (render)* toggles the document's render floor grid instead), Ghosts, Ambient
 Occlusion, Render Mode (`F5`), Reference Images (`Alt+R`), and Panels (show or hide each
 panel, Reset Layout).
 

@@ -53,6 +53,11 @@ it reads and writes their file formats.
 
 The demo model comes from `cargo run -p rizxel-app --example sample_model`.
 
+<img src="docs/images/readme/voxel_icon.png" alt="The rizxel_r sample rendered with the Voxel Icon preset: a blue voxel R outlined cell by cell on a dark floor with a glowing grid" width="480">
+
+The **Voxel Icon** preset on `assets/samples/rizxel_r.rzxl`: voxel lines, a glowing floor
+grid and matte materials, path traced at 1024×1024.
+
 ## Features
 
 **Modelling**
@@ -89,8 +94,9 @@ The demo model comes from `cargo run -p rizxel-app --example sample_model`.
 - **Render mode**: its own workspace with a progressive GPU path tracer (Vulkan or
   Metal): sun, sky, HDR
   and studio lights, presets, materials with glass, metal and emission, depth of field,
-  a denoiser, and view-only voxel shapes (cubes, rounded, bricks with studs, spheres,
-  cylinders).
+  a denoiser, view-only voxel shapes (cubes, rounded, bricks with studs, spheres,
+  cylinders), and the *Voxel Icon* look: lines around every voxel, a glowing floor grid
+  and a matte override.
 - **Render outputs**: *Image* (fast raster), *Photo-realistic* (path traced, up to
   8192 px) and *Turntable* (a PNG sequence, a sprite sheet or a GIF), plus export of the shaped
   mesh to OBJ, STL or GLB.
