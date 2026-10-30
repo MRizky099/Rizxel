@@ -22,16 +22,21 @@ const DIVIDER_HEIGHT: f32 = 20.0;
 
 pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let height = ui.max_rect().height();
-    hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if state.view_mode == ViewMode::Render {
-            render_bar(ui, state, icons);
-        } else {
-            common_controls(ui, state, icons);
-            vertical_divider(ui, DIVIDER_HEIGHT);
-            tool_parameters(ui, state);
-        }
-        ui.add_space(8.0);
+    // The strip's arrows sit beside it only in a horizontal layout: in the
+    // panel's vertical one an overflowing bar pushed its content below the
+    // left arrow, out of view.
+    ui.horizontal(|ui| {
+        hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if state.view_mode == ViewMode::Render {
+                render_bar(ui, state, icons);
+            } else {
+                common_controls(ui, state, icons);
+                vertical_divider(ui, DIVIDER_HEIGHT);
+                tool_parameters(ui, state);
+            }
+            ui.add_space(8.0);
+        });
     });
 }
 

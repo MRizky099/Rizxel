@@ -22,7 +22,10 @@ rizxel-app.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
-craft-ui.workspace = true
+craft-ui = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+directories.workspace = true
 glam.workspace = true
 rfd.workspace = true
 log.workspace = true
@@ -33,6 +36,8 @@ pollster.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
+# Headless UI smoke tests (tests/ui_smoke.rs); no GPU.
+egui_kittest = "0.36"
 
 [build-dependencies]
 winresource.workspace = true

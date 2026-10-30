@@ -3,7 +3,11 @@
 //! ```text
 //! cargo run -p rizxel-app --example mesh_bench
 //! cargo run -p rizxel-app --example mesh_bench --release
+//! cargo run -p rizxel-app --example mesh_bench --release -- --large
 //! ```
+//!
+//! `--large` (Phase 12 performance pass) uses 256³ bounds and a 15-voxel
+//! shell, about one million voxels.
 //!
 //! Builds a 128³ document holding about 50k voxels (a noisy terrain shell
 //! plus a few solid blocks), then times what one drag frame costs: one
@@ -26,14 +30,17 @@ fn height(x: i32, z: i32) -> i32 {
 }
 
 fn main() {
+    let large = std::env::args().any(|a| a == "--large");
+    let (n, shell) = if large { (256, 15) } else { (128, 3) };
     let mut doc = Document::new("bench");
-    doc.set_bounds(BoundSize::new(128, 128, 128), false);
+    doc.set_bounds(BoundSize::new(n as u32, n as u32, n as u32), false);
     let mut writes: Vec<(IVec3, Voxel)> = Vec::new();
-    for z in 0..128 {
-        for x in 0..128 {
-            let h = height(x, z);
-            // Three-voxel-thick surface shell, colored by height band.
-            for y in (h - 2)..=h {
+    let base = if large { 16 } else { 0 };
+    for z in 0..n {
+        for x in 0..n {
+            let h = height(x, z) + base;
+            // A surface shell `shell` voxels thick, colored by height band.
+            for y in (h - shell + 1)..=h {
                 writes.push((IVec3::new(x, y, z), (8 + (y / 4) * 8) as Voxel));
             }
         }
@@ -47,10 +54,12 @@ fn main() {
             }
         }
     }
+    let start = Instant::now();
     doc.set_voxels(0, writes, false);
     println!(
-        "model: {} voxels in 128³",
-        doc.data.layers[0].volume.voxel_count()
+        "model: {} voxels in {n}³ (written in {:.0} ms)",
+        doc.data.layers[0].volume.voxel_count(),
+        start.elapsed().as_secs_f64() * 1e3
     );
 
     let start = Instant::now();
@@ -70,8 +79,23 @@ fn main() {
         mesh.triangle_count()
     );
 
+    // Copying the whole mesh once: what re-assembling the tiles costs at
+    // least on every changed frame.
+    let start = Instant::now();
+    let copy = mesh.clone();
+    println!(
+        "whole-mesh copy: {:.2} ms ({} triangles)",
+        start.elapsed().as_secs_f64() * 1e3,
+        copy.triangle_count()
+    );
+
     // The viewport has meshed the model before the drag starts.
+    let start = Instant::now();
     doc.view_meshes(false);
+    println!(
+        "first viewport mesh: {:.2} ms",
+        start.elapsed().as_secs_f64() * 1e3
+    );
 
     // A drag: 30 frames, one 3³ stamp per frame along a line, each followed
     // by the re-mesh the viewport performs for the new revision.
@@ -80,7 +104,7 @@ fn main() {
     let mut total = 0.0;
     let mut worst: f64 = 0.0;
     for i in 0..frames {
-        let center = IVec3::new(30 + i * 2, 40, 64);
+        let center = IVec3::new(30 + i * 2, 40 + base, 64);
         let stamp: Vec<VoxelChange> = (-1..=1)
             .flat_map(|dz| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dx| (dx, dy, dz))))
             .map(|(dx, dy, dz)| VoxelChange {

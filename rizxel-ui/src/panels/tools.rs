@@ -1,10 +1,11 @@
 //! Left vertical toolbar.
 
 use egui::{Align2, Color32, Rect, Response, RichText, Sense, Stroke, TextureHandle, Ui, Vec2};
-use rizxel_app::AppState;
+use rizxel_app::{ActionId, AppState, Keymap};
 use rizxel_engine::Tool;
 
 use crate::icons::{self, Icon, Icons};
+use crate::panels::UiState;
 use crate::widgets::{horizontal_divider, IconStyle};
 use crate::{theme, tool_input};
 
@@ -13,7 +14,15 @@ const ICON_SIZE: f32 = 26.0;
 /// Inactive icons are slightly dimmed so the active/hovered one stands out.
 const INACTIVE_TINT: Color32 = Color32::from_gray(185);
 
-pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
+/// `Name (Key)`, or just the name when the action has no shortcut.
+fn shortcut_tip(name: &str, keymap: &Keymap, action: ActionId) -> String {
+    match keymap.label(action) {
+        k if k.is_empty() => name.to_owned(),
+        k => format!("{name} ({k})"),
+    }
+}
+
+pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, icons: &Icons) {
     // Subtle right border + shadow line toward the viewport.
     let panel = ui.max_rect();
     ui.painter().vline(
@@ -42,15 +51,25 @@ pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         if remaining > 0.0 {
             ui.add_space(remaining);
         }
-        // Settings dialog arrives with preferences in a later phase.
-        textured_button(ui, icons.get(Icon::Settings), false).on_hover_text("Settings");
+        let settings = ui_state.settings.is_some();
+        let tip = shortcut_tip("Settings", &state.settings.keymap, ActionId::Settings);
+        if textured_button(ui, icons.get(Icon::Settings), settings)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            ui_state.open_settings(state);
+        }
     });
 }
 
 fn tool_button(ui: &mut Ui, state: &mut AppState, icons: &Icons, tool: Tool) {
     let active = state.tool == tool;
     if textured_button(ui, icons.get(tool), active)
-        .on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()))
+        .on_hover_text(shortcut_tip(
+            tool.label(),
+            &state.settings.keymap,
+            ActionId::Tool(tool),
+        ))
         .clicked()
     {
         state.tool = tool;

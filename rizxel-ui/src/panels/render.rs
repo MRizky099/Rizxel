@@ -957,7 +957,7 @@ pub fn shaped_dialog(ctx: &egui::Context, state: &mut AppState, render: &mut Ren
             doc.data.render.display.shape.label().to_lowercase()
         );
         let export = dialog.export;
-        if let Some(path) = rfd::FileDialog::new()
+        if let Some(path) = crate::actions::export_folder_dialog(state)
             .add_filter(ext.to_uppercase(), &[ext])
             .set_file_name(format!("{name}.{ext}"))
             .save_file()
