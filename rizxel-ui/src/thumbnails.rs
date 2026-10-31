@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn thumbnail_renders_and_round_trips() {
-        let Some(gpu) = crate::render::offscreen::headless_device() else {
+        let Some(gpu) = crate::render::offscreen::test_device() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
