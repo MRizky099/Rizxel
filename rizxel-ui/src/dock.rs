@@ -8,8 +8,8 @@
 //! double-click on a tab collapses its group to the strip.
 
 use craft_ui::docking::{
-    Action, DockArea, DockStyle, Layout, Location, Node, PanelLimits, Permissions, Placement,
-    TabOverflow, TabSizing, Zone,
+    Action, DockArea, DockStyle, GripSide, Layout, Location, Node, PanelLimits, Permissions,
+    Placement, TabOverflow, TabSizing, Zone,
 };
 use craft_ui::layout::{SplitAxis, SplitSize};
 use egui::{Id, Stroke, Ui};
@@ -85,6 +85,17 @@ impl Panel {
         match self {
             Panel::Viewport => Permissions::PROTECTED,
             _ => Permissions::default(),
+        }
+    }
+
+    /// Bars that, alone in a docked group, carry a slim grip instead of a
+    /// captioned tab strip: their content already says what they are. The
+    /// label stays as the grip's tooltip and accessible name.
+    fn grip(self) -> Option<GripSide> {
+        match self {
+            Panel::Options => Some(GripSide::Left),
+            Panel::Tools => Some(GripSide::Top),
+            _ => None,
         }
     }
 
@@ -513,7 +524,11 @@ impl Workspace {
             .filter(|p| self.is_collapsed(*p))
             .collect();
         let area = self.area_id();
-        let output = DockArea::new(area).show_with_limits(
+        let dock = Panel::ALL
+            .into_iter()
+            .filter_map(|p| p.grip().map(|side| (p, side)))
+            .fold(DockArea::new(area), |dock, (p, side)| dock.compact(p, side));
+        let output = dock.show_with_limits(
             ui,
             &self.layout,
             &style,
@@ -539,16 +554,29 @@ impl Workspace {
             }
         }
         // A double-click on a tab collapses its group to the strip, or
-        // expands it again.
+        // expands it again. A grip has no strip to collapse to.
         let tab_id = |panel: &Panel| area.with(("tab", panel));
         if let Some(panel) = Panel::ALL.into_iter().find(|p| {
-            ui.ctx()
-                .read_response(tab_id(p))
-                .is_some_and(|r| r.double_clicked())
+            !self.has_grip(*p)
+                && ui
+                    .ctx()
+                    .read_response(tab_id(p))
+                    .is_some_and(|r| r.double_clicked())
         }) {
             self.toggle_collapsed(panel);
         }
         error
+    }
+
+    /// Whether `panel` is drawn with a grip: a grip panel docked alone.
+    fn has_grip(&self, panel: Panel) -> bool {
+        panel.grip().is_some()
+            && self
+                .layout
+                .floating
+                .iter()
+                .all(|g| !g.panels.contains(&panel))
+            && group_of(&self.layout, panel).is_some_and(|g| g == [panel])
     }
 
     /// Whether `panel`'s group is collapsed to its tab strip.

@@ -1,4 +1,5 @@
-//! Document tabs.
+//! Document tabs, drawn in the title bar between the menus and the mode
+//! switch.
 
 use egui::{Align, Align2, Id, Rect, Sense, Stroke, Ui};
 use egui_phosphor::regular as icon;
@@ -16,17 +17,30 @@ enum TabAction {
     Close(usize),
 }
 
+/// Width the tabs and the `+` button take without scrolling, so the title
+/// bar can leave the rest of its free space to window dragging.
+pub fn wanted_width(ui: &Ui, state: &AppState) -> f32 {
+    let tabs: f32 = state
+        .documents
+        .iter()
+        .map(|doc| tab_width(ui, &doc.title()))
+        .sum();
+    tabs + NEW_BUTTON_WIDTH
+}
+
+fn tab_width(ui: &Ui, title: &str) -> f32 {
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(title.to_owned(), theme::regular(13.0), theme::TEXT)
+        .size()
+        .x;
+    // Padding (16) + icon (18) + text + gap (12) + close (14) + padding (16).
+    (text_width + 76.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+}
+
 pub fn show(ui: &mut Ui, state: &mut AppState) {
     let height = ui.max_rect().height();
     let mut action = None;
-
-    // Bottom border of the whole bar.
-    let bar = ui.max_rect();
-    ui.painter().hline(
-        bar.x_range(),
-        bar.bottom() - 0.5,
-        Stroke::new(1.0, theme::BG_PANEL),
-    );
 
     // `(active_doc, doc_count)` last frame; a change scrolls the active tab into view.
     let seen_id = Id::new("doc_tabs_seen");
@@ -95,13 +109,7 @@ fn tab(
     height: f32,
 ) -> Option<TabAction> {
     let font = theme::regular(13.0);
-    let text_width = ui
-        .painter()
-        .layout_no_wrap(title.to_owned(), font.clone(), theme::TEXT)
-        .size()
-        .x;
-    // Padding (16) + icon (18) + text + gap (12) + close (14) + padding (16).
-    let width = (text_width + 76.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
+    let width = tab_width(ui, title);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
     if reveal {
         response.scroll_to_me(Some(Align::Center));

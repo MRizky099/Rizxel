@@ -1,5 +1,5 @@
-//! Title bar: app icon, menus, centered title, the Model/Render switch and
-//! window controls.
+//! Title bar: app icon, menus, the document tabs, the Model/Render switch
+//! and window controls.
 //! Doubles as the drag handle for the frameless window.
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
@@ -36,45 +36,27 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
         toggle_maximize(ui.ctx());
     }
 
-    // Unsaved changes are marked on the document tab, not here.
-    let title = match state.doc() {
-        Some(d) => format!("{} - Rizxel - Voxel Editor", d.title()),
-        None => "Rizxel - Voxel Editor".to_owned(),
-    };
-    let font = theme::regular(12.0);
-    let title_width = ui
-        .painter()
-        .layout_no_wrap(title.clone(), font.clone(), theme::TEXT_MUTED)
-        .size()
-        .x;
     let menus_id = Id::new("title_bar_menus_width");
     let menus_width = ui.data(|d| d.get_temp(menus_id)).unwrap_or(MENUS_ESTIMATE);
     let layout = bar_layout(
         bar.width(),
         menus_width,
-        title_width,
+        super::tabs::wanted_width(ui, state),
         options::segmented_width(ui, &VIEW_MODES),
     );
     let span = |(left, right): (f32, f32)| {
         egui::Rect::from_x_y_ranges(bar.left() + left..=bar.left() + right, bar.y_range())
     };
 
-    // Title (painted, not interactive), centered on the bar while it fits,
-    // otherwise in the free space between the menus and the mode switch.
-    if let Some(range) = layout.title {
-        let rect = span(range);
-        let mut job = egui::text::LayoutJob::single_section(
-            title,
-            egui::TextFormat::simple(font, theme::TEXT_MUTED),
+    // Document tabs, only as wide as they need: the rest of the free space
+    // stays a drag handle for the window.
+    if let Some(range) = layout.tabs {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(span(range))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width());
-        let galley = ui.fonts_mut(|f| f.layout_job(job));
-        let pos = Align2::CENTER_CENTER
-            .align_size_within_rect(galley.size(), rect)
-            .min;
-        ui.painter()
-            .with_clip_rect(rect)
-            .galley(pos, galley, theme::TEXT_MUTED);
+        super::tabs::show(&mut child, state);
     }
 
     // App icon.
@@ -94,11 +76,15 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
             |ui| menu_entries(ui, state, ui_state, dock),
         );
     } else {
+        // The bar fills the span it is given; measure the menus it holds, so
+        // the tabs start right after them.
         let width = egui::MenuBar::new()
-            .ui(&mut child, |ui| menu_entries(ui, state, ui_state, dock))
-            .response
-            .rect
-            .width();
+            .ui(&mut child, |ui| {
+                let left = ui.cursor().left();
+                menu_entries(ui, state, ui_state, dock);
+                ui.cursor().left() - left
+            })
+            .inner;
         ui.data_mut(|d| d.insert_temp(menus_id, width));
     }
 
@@ -131,8 +117,11 @@ const CONTROLS_WIDTH: f32 = CONTROL_WIDTH * 3.0;
 const SWITCH_GAP: f32 = 8.0;
 /// Width of the ☰ button that replaces the menus in narrow windows.
 const COLLAPSED_MENUS_WIDTH: f32 = 36.0;
-/// Narrower than this, the title is hidden rather than squeezed.
-const MIN_TITLE_WIDTH: f32 = 48.0;
+/// The tabs get at least this much room (one tab and `+`) before the menus
+/// fold into ☰; narrower still, they are hidden rather than squeezed.
+const MIN_TABS_WIDTH: f32 = 160.0;
+/// Space between the menus and the first tab.
+const TABS_GAP: f32 = 8.0;
 /// Menu bar width before it has been measured once.
 const MENUS_ESTIMATE: f32 = 420.0;
 
@@ -143,21 +132,22 @@ struct BarLayout {
     menus: (f32, f32),
     /// Menus folded into one ☰ button.
     collapsed: bool,
-    title: Option<(f32, f32)>,
+    tabs: Option<(f32, f32)>,
     switch: (f32, f32),
     controls: (f32, f32),
 }
 
 /// Lays the title bar out right to left: window controls at the far edge,
-/// the mode switch beside them, then the menus and title share the rest. In
-/// narrow bars the title shrinks first, then the menus fold into ☰.
-fn bar_layout(width: f32, menus: f32, title: f32, switch: f32) -> BarLayout {
+/// the mode switch beside them, then the menus and the document tabs share
+/// the rest. The tabs take what they want, up to the free space; in narrow
+/// bars the menus fold into ☰ to keep the tabs at least [`MIN_TABS_WIDTH`].
+fn bar_layout(width: f32, menus: f32, tabs: f32, switch: f32) -> BarLayout {
     let width = width.max(0.0);
     let controls = ((width - CONTROLS_WIDTH).max(0.0), width);
     let switch_right = (controls.0 - SWITCH_GAP).max(0.0);
     let switch = ((switch_right - switch).max(0.0), switch_right);
     let free_right = (switch.0 - SWITCH_GAP).max(ICON_WIDTH);
-    let collapsed = ICON_WIDTH + menus > free_right;
+    let collapsed = ICON_WIDTH + menus + TABS_GAP + MIN_TABS_WIDTH > free_right;
     let menus_right = (ICON_WIDTH
         + if collapsed {
             COLLAPSED_MENUS_WIDTH
@@ -165,26 +155,13 @@ fn bar_layout(width: f32, menus: f32, title: f32, switch: f32) -> BarLayout {
             menus
         })
     .min(free_right);
-    let room = free_right - menus_right;
-    let title = if room < MIN_TITLE_WIDTH {
-        None
-    } else {
-        let centered = (width - title) / 2.0;
-        Some(
-            if centered >= menus_right && centered + title <= free_right {
-                (centered, centered + title)
-            } else if title <= room {
-                let left = menus_right + (room - title) / 2.0;
-                (left, left + title)
-            } else {
-                (menus_right, free_right)
-            },
-        )
-    };
+    let tabs_left = menus_right + TABS_GAP;
+    let room = free_right - tabs_left;
+    let tabs = (room >= MIN_TABS_WIDTH.min(tabs)).then(|| (tabs_left, tabs_left + tabs.min(room)));
     BarLayout {
         menus: (ICON_WIDTH, menus_right),
         collapsed,
-        title,
+        tabs,
         switch,
         controls,
     }
@@ -1400,46 +1377,50 @@ mod tests {
 
     #[test]
     fn mode_switch_never_overlaps_window_controls() {
-        for width in (640..=3840).step_by(16) {
+        for width in (480..=3840).step_by(16) {
             let width = width as f32;
             for menus in [300.0, 420.0, 600.0] {
-                let l = bar_layout(width, menus, 260.0, SWITCH);
+                let l = bar_layout(width, menus, 900.0, SWITCH);
                 assert_eq!(l.controls, (width - CONTROLS_WIDTH, width));
                 assert!(l.switch.1 + SWITCH_GAP <= l.controls.0, "{width}");
                 assert!((l.switch.1 - l.switch.0 - SWITCH).abs() < 1e-3, "{width}");
                 assert!(l.menus.1 <= l.switch.0, "{width}");
-                if let Some((left, right)) = l.title {
-                    assert!(left >= l.menus.1 && right <= l.switch.0, "{width}");
+                if let Some((left, right)) = l.tabs {
+                    assert!(
+                        left >= l.menus.1 && right + SWITCH_GAP <= l.switch.0,
+                        "{width}"
+                    );
                 }
             }
         }
     }
 
     #[test]
-    fn title_shrinks_before_menus_collapse() {
-        let wide = bar_layout(1920.0, 420.0, 260.0, SWITCH);
+    fn tabs_take_what_they_need_and_menus_fold_before_tabs_go() {
+        // Wide: the tabs take their own width and leave the rest to dragging.
+        let wide = bar_layout(1920.0, 420.0, 300.0, SWITCH);
         assert!(!wide.collapsed);
-        let (left, right) = wide.title.unwrap();
-        assert!(
-            ((left + right) / 2.0 - 960.0).abs() < 1e-3,
-            "centered on the bar"
-        );
+        let (left, right) = wide.tabs.unwrap();
+        assert_eq!(left, ICON_WIDTH + 420.0 + TABS_GAP);
+        assert!((right - left - 300.0).abs() < 1e-3);
 
-        // Not enough room to center it: it moves into the free space, then
-        // gets narrower than its text.
-        let moved = bar_layout(1000.0, 420.0, 260.0, SWITCH);
-        let (left, right) = moved.title.unwrap();
-        assert!(left >= moved.menus.1 && (right - left - 260.0).abs() < 1e-3);
-        let snug = bar_layout(960.0, 420.0, 260.0, SWITCH);
-        assert!(!snug.collapsed);
-        let (left, right) = snug.title.unwrap();
-        assert!(right - left < 260.0);
+        // Many tabs: capped at the free space (the strip scrolls).
+        let full = bar_layout(1280.0, 420.0, 5000.0, SWITCH);
+        let (_, right) = full.tabs.unwrap();
+        assert!((right + SWITCH_GAP - full.switch.0).abs() < 1e-3);
 
-        let narrow = bar_layout(640.0, 420.0, 260.0, SWITCH);
-        assert!(narrow.collapsed);
+        // Too narrow for menus and tabs: the menus fold, the tabs stay.
+        let folded = bar_layout(760.0, 420.0, 300.0, SWITCH);
+        assert!(folded.collapsed);
         assert_eq!(
-            narrow.menus,
+            folded.menus,
             (ICON_WIDTH, ICON_WIDTH + COLLAPSED_MENUS_WIDTH)
         );
+        let (left, right) = folded.tabs.unwrap();
+        assert!(right - left >= MIN_TABS_WIDTH);
+
+        // Narrower still: the tabs are hidden rather than squeezed.
+        let tiny = bar_layout(400.0, 420.0, 300.0, SWITCH);
+        assert!(tiny.tabs.is_none());
     }
 }

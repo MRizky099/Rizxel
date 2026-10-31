@@ -1,8 +1,10 @@
 # Render
 
-The Render panel holds Render mode's settings, saved with the project. Its tabs:
+The Render panel holds Render mode's settings, saved with the project, in six groups.
+One is open at a time: click a group's header to open it. The **Render** button stays
+at the foot of the panel.
 
-| Tab | Settings |
+| Group | Settings |
 |---|---|
 | **Light** | Sun (azimuth, elevation, size, intensity, color), sky (*Uniform*, *Gradient* or an *Image* `.hdr` with rotation), fog, studio lights. |
 | **Material** | The selected layer's material: tint, metallic, roughness, specular, transmission (glass) and IOR, clear coat, emission and its strength. Preset buttons (*Diffuse*, *Plastic*, *Metal*, *Glass*, *Emit*, *Matte*) set them in one click. *Make unique* gives the layer its own copy. `Alt` + click the model picks a layer. |

@@ -387,7 +387,8 @@ impl eframe::App for RizxelApp {
             .resizable(false)
             .show(ui, |ui| panels::status::show(ui, state));
 
-        // Zen mode: only the viewport (with its document tabs) and status bar.
+        // Zen mode: only the title bar (with the document tabs), the viewport
+        // and the status bar.
         egui::CentralPanel::no_frame().show(ui, |ui| {
             if ui_state.zen_mode {
                 viewport_panel(ui, state, target_format, meshes, tools);
@@ -496,7 +497,7 @@ fn scroll_panel(ui: &mut egui::Ui, panel: &dock::Panel, add: impl FnOnce(&mut eg
         .show(ui, add);
 }
 
-/// Viewport panel: document tabs above the 3D view, so they move with it.
+/// Viewport panel: the 3D view. The document tabs are in the title bar.
 fn viewport_panel(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -504,13 +505,5 @@ fn viewport_panel(
     meshes: &mut viewport::MeshCache,
     tools: &mut ToolInput,
 ) {
-    let rect = ui.max_rect();
-    let (tabs_rect, view_rect) = rect.split_top_bottom_at_y(rect.top() + theme::TAB_BAR_HEIGHT);
-    ui.painter().rect_filled(tabs_rect, 0.0, theme::BG_APP);
-    ui.scope_builder(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
-        panels::tabs::show(ui, state);
-    });
-    ui.scope_builder(egui::UiBuilder::new().max_rect(view_rect), |ui| {
-        viewport::show(ui, state, target_format, meshes, tools);
-    });
+    viewport::show(ui, state, target_format, meshes, tools);
 }

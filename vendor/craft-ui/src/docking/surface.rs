@@ -227,11 +227,24 @@ pub struct DockArea<P = ()> {
     id: Id,
     activation: Option<P>,
     blockers: Vec<Rect>,
+    compact: Vec<(P, GripSide)>,
 }
+
+/// Edge of a compact group that carries its grip, see [`DockArea::compact`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GripSide {
+    /// A vertical grip on the left edge, for wide, short groups such as a toolbar.
+    Left,
+    /// A horizontal grip on the top edge, for narrow, tall groups such as a tool rail.
+    Top,
+}
+
+/// Thickness of a compact group's grip.
+const GRIP: f32 = 10.0;
 
 impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<P> {
     pub fn new(id: Id) -> Self {
-        Self { id, activation: None, blockers: Vec::new() }
+        Self { id, activation: None, blockers: Vec::new(), compact: Vec::new() }
     }
 
     /// Whether keyboard focus belongs to a rendered docking control in this layout.
@@ -287,6 +300,15 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<P> {
     /// the application's command path as well to select its tab.
     pub fn raise_panel(mut self, panel: P) -> Self {
         self.activation = Some(panel);
+        self
+    }
+
+    /// Draw `panel`, while it is alone in a docked group, with a slim grip on `side` instead
+    /// of a captioned tab strip. The grip is its tab: it drags, takes drops, opens the panel
+    /// menu and carries the label for accessibility and as a hover tooltip. Floating, or
+    /// sharing a group with other panels, the panel gets an ordinary strip again.
+    pub fn compact(mut self, panel: P, side: GripSide) -> Self {
+        self.compact.push((panel, side));
         self
     }
 
@@ -357,6 +379,7 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> DockArea<P> {
             content,
             activation: self.activation,
             blockers: self.blockers,
+            compact: self.compact,
             layout,
             targets: Vec::new(),
             owned_interactions: Vec::new(),
@@ -383,6 +406,7 @@ struct Renderer<'a, P> {
     content: &'a mut dyn DockContent<P>,
     activation: Option<P>,
     blockers: Vec<Rect>,
+    compact: Vec<(P, GripSide)>,
     layout: &'a Layout<P>,
     targets: Vec<DropTarget<P>>,
     owned_interactions: Vec<Id>,
@@ -538,7 +562,18 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                     limits.max = limits.max.min(policy.max);
                 }
                 limits.max = limits.max.max(limits.min);
-                if panels.len() != 1 || panels.first().is_some_and(|p| (self.permissions)(p) != Permissions::PROTECTED) {
+                if let Some(side) = self.compact_side(panels) {
+                    match side {
+                        GripSide::Left => {
+                            limits.min.x = (limits.min.x + GRIP).min(1_000_000.0);
+                            limits.max.x = (limits.max.x + GRIP).min(1_000_000.0);
+                        }
+                        GripSide::Top => {
+                            limits.min.y = (limits.min.y + GRIP).min(1_000_000.0);
+                            limits.max.y = (limits.max.y + GRIP).min(1_000_000.0);
+                        }
+                    }
+                } else if panels.len() != 1 || panels.first().is_some_and(|p| (self.permissions)(p) != Permissions::PROTECTED) {
                     limits.min.y = (limits.min.y + self.style.tab_height).min(1_000_000.0);
                     limits.max.y = (limits.max.y + self.style.tab_height).min(1_000_000.0);
                 }
@@ -602,6 +637,10 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
                 allow_splits: !floating,
                 accepts_tabs: false,
             });
+            return;
+        }
+        if !floating && let Some(side) = self.compact_side(panels) {
+            self.compact_group(ui, selected, side, rect, policy.accepts_tabs);
             return;
         }
         let mut strip = Rect::from_min_max(rect.min, pos2(rect.right(), (rect.top() + self.style.tab_height).min(rect.bottom())));
@@ -692,6 +731,38 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             accepts_tabs: policy.accepts_tabs,
         });
         self.contents(ui, selected, Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max));
+        ui.painter().rect_stroke(rect, 0.0, self.style.border, StrokeKind::Inside);
+    }
+
+    /// The grip side of a group drawn compact: a single docked panel registered with
+    /// [`DockArea::compact`].
+    fn compact_side(&self, panels: &[P]) -> Option<GripSide> {
+        let [panel] = panels else { return None };
+        self.compact.iter().find(|(p, _)| p == panel).map(|(_, side)| *side)
+    }
+
+    /// A single panel with a grip on one edge in place of its tab strip.
+    fn compact_group(&mut self, ui: &mut Ui, panel: &P, side: GripSide, rect: Rect, accepts_tabs: bool) {
+        let (grip, body) = match side {
+            GripSide::Left => {
+                let split = (rect.left() + GRIP).min(rect.right());
+                (Rect::from_min_max(rect.min, pos2(split, rect.bottom())), Rect::from_min_max(pos2(split, rect.top()), rect.max))
+            }
+            GripSide::Top => {
+                let split = (rect.top() + GRIP).min(rect.bottom());
+                (Rect::from_min_max(rect.min, pos2(rect.right(), split)), Rect::from_min_max(pos2(rect.left(), split), rect.max))
+            }
+        };
+        self.tab_with(ui, panel, grip, grip, true, rect, true);
+        self.targets.push(DropTarget {
+            anchor: panel.clone(),
+            rect,
+            tab_strip: Some(grip),
+            tabs: vec![(panel.clone(), grip)],
+            allow_splits: true,
+            accepts_tabs,
+        });
+        self.contents(ui, panel, body);
         ui.painter().rect_stroke(rect, 0.0, self.style.border, StrokeKind::Inside);
     }
 
@@ -822,6 +893,13 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
 
     /// A tab laid out at `rect`, of which only `shown` is visible and interactive.
     fn tab(&mut self, ui: &mut Ui, panel: &P, rect: Rect, shown: Rect, active: bool, group: Rect) {
+        self.tab_with(ui, panel, rect, shown, active, group, false);
+    }
+
+    /// [`Self::tab`], drawn as a grip (dots along its long side, the label as a tooltip)
+    /// when `grip` is set.
+    #[allow(clippy::too_many_arguments)]
+    fn tab_with(&mut self, ui: &mut Ui, panel: &P, rect: Rect, shown: Rect, active: bool, group: Rect, grip: bool) {
         let policy = (self.permissions)(panel);
         let label = (self.label)(panel);
         let color = if active { self.style.text } else { self.style.inactive_text };
@@ -836,9 +914,23 @@ impl<P: Clone + Eq + Hash + Debug + Send + Sync + 'static> Renderer<'_, P> {
             .focus_stroke(Stroke::new(1.0, self.style.accent))
             .show_at(ui, shown, |ui, response| {
                 let painter = ui.painter().with_clip_rect(shown.intersect(ui.clip_rect()));
-                painter.rect_filled(rect, 0.0, if active || response.hovered() { self.style.active_background } else { self.style.tab_background });
-                painter.galley(rect.center() - galley.size() * 0.5, galley.clone(), color);
+                if grip {
+                    let fill = if response.hovered() || response.dragged() { self.style.active_background } else { self.style.tab_background };
+                    painter.rect_filled(rect, 0.0, fill);
+                    let along = if rect.width() >= rect.height() { vec2(4.0, 0.0) } else { vec2(0.0, 4.0) };
+                    for step in [-1.0, 0.0, 1.0] {
+                        painter.circle_filled(rect.center() + along * step, 1.0, self.style.inactive_text);
+                    }
+                } else {
+                    painter.rect_filled(
+                        rect,
+                        0.0,
+                        if active || response.hovered() { self.style.active_background } else { self.style.tab_background },
+                    );
+                    painter.galley(rect.center() - galley.size() * 0.5, galley.clone(), color);
+                }
             });
+        let response = if grip { response.on_hover_text(&label).on_hover_cursor(egui::CursorIcon::Grab) } else { response };
         self.register_interaction(ui.ctx(), response.id);
         if response.clicked() {
             self.output.actions.push(Action::Activate { panel: panel.clone() });

@@ -52,9 +52,9 @@ pub const AXIS_Y: Color32 = Color32::from_rgb(0x2e, 0xd5, 0x73);
 pub const AXIS_Z: Color32 = Color32::from_rgb(0x1e, 0x90, 0xff);
 
 // Layout metrics (px).
-pub const TITLE_BAR_HEIGHT: f32 = 32.0;
+/// Tall enough for the document tabs it holds.
+pub const TITLE_BAR_HEIGHT: f32 = 36.0;
 pub const OPTION_BAR_HEIGHT: f32 = 48.0;
-pub const TAB_BAR_HEIGHT: f32 = 36.0;
 pub const STATUS_BAR_HEIGHT: f32 = 24.0;
 pub const RADIUS: CornerRadius = CornerRadius::same(4);
 

@@ -19,6 +19,21 @@ All notable changes to Rizxel are documented here. Format follows
 - **Unsaved changes are marked once**: a filled dot on the document tab, which turns
   into the close button on hover. The `*` in the tab name and the bullet in the title
   bar are gone; screen readers hear "unsaved changes" on the tab.
+- **More room for the viewport** (redesign phase 3). The document tabs moved into the
+  title bar (now 36 px), in place of the document name; in a narrow window the menus
+  fold into ☰ before the tabs go. The option bar and the tools rail lost their
+  captions ("Tool Options", "Tools"): docked alone, each has a slim dotted grip that
+  drags, floats and closes it like a tab. The viewport gains about 58 px of height.
+- **Layers toolbar**: a labelled *+ Layer* button, larger icon targets, and a **⋮** menu
+  holding *Duplicate*, *Merge down*, *Merge visible*, *Lock / Unlock all layers* and a red
+  *Delete N hidden layers* (all undoable). The three full-width buttons and the
+  "Active: …" line under the list are gone.
+- **Render panel**: the six tabs in a 3 by 2 grid became a column of group headers (Light,
+  Sample, Display, Material, Camera, Output), one open at a time, its settings under
+  its header.
+- **Tools rail**: the *2D* text button, its dash and the shield are now two labelled
+  toggles, *Slice* (showing `Y 3/12` while slicing) and *Mask*.
+- craft-ui (vendored): `DockArea::compact` for grip-only groups, patch 0002.
 
 ## [0.11.0] — 2026-10-31
 

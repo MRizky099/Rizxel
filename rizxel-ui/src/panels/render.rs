@@ -34,9 +34,13 @@ pub enum RenderTab {
 }
 
 impl RenderTab {
-    const ROWS: [[RenderTab; 3]; 2] = [
-        [RenderTab::Light, RenderTab::Sample, RenderTab::Display],
-        [RenderTab::Material, RenderTab::Camera, RenderTab::Output],
+    const ALL: [RenderTab; 6] = [
+        RenderTab::Light,
+        RenderTab::Sample,
+        RenderTab::Display,
+        RenderTab::Material,
+        RenderTab::Camera,
+        RenderTab::Output,
     ];
 
     fn label(self) -> &'static str {
@@ -105,9 +109,17 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     presets(ui, state, &mut ui_state.render);
                     ui.add_space(4.0);
-                    tabs(ui, &mut ui_state.render.tab);
-                    ui.add_space(4.0);
-                    body(ui, state, &mut ui_state.render);
+                    // One group open at a time, its settings under its header.
+                    for tab in RenderTab::ALL {
+                        let open = ui_state.render.tab == tab;
+                        if group_header(ui, tab, open).clicked() {
+                            ui_state.render.tab = tab;
+                        }
+                        if open {
+                            body(ui, state, &mut ui_state.render);
+                            ui.add_space(6.0);
+                        }
+                    }
                 });
             });
     });
@@ -182,15 +194,46 @@ fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
     });
 }
 
-fn tabs(ui: &mut Ui, tab: &mut RenderTab) {
-    for (i, row) in RenderTab::ROWS.iter().enumerate() {
-        let items: Vec<(RenderTab, &str)> = row.iter().map(|t| (*t, t.label())).collect();
-        ui.horizontal(|ui| {
-            ui.push_id(i, |ui| {
-                super::options::segmented_fill(ui, "render_tabs", tab, &items)
-            });
-        });
+/// Full-width header of a settings group: a caret, the name, and a hairline
+/// above it. Clicking opens the group (and closes the open one).
+fn group_header(ui: &mut Ui, tab: RenderTab, open: bool) -> egui::Response {
+    let height = 30.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, open, tab.label())
+    });
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
     }
+    painter.hline(rect.x_range(), rect.top(), (1.0, theme::BORDER));
+    let caret = if open {
+        icon::CARET_DOWN
+    } else {
+        icon::CARET_RIGHT
+    };
+    painter.text(
+        rect.left_center() + egui::vec2(8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        caret,
+        theme::icon(12.0),
+        theme::TEXT_DIM,
+    );
+    painter.text(
+        rect.left_center() + egui::vec2(26.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        tab.label(),
+        theme::semibold(13.0),
+        if open {
+            theme::TEXT_STRONG
+        } else {
+            theme::TEXT
+        },
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 // ------------------------------------------------------------ body

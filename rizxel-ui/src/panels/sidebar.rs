@@ -474,8 +474,6 @@ fn layers_section(
 
         ui.add_space(6.0);
         layer_properties(ui, doc, render);
-        ui.add_space(6.0);
-        layer_operations(ui, doc, ui_state);
     });
 
     let Some(action) = action else { return };
@@ -598,8 +596,13 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let many = doc.selected_layer_count();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let style = IconStyle::small();
-        if icon_button(ui, icon::PLUS, style, true)
+        let mut style = IconStyle::small().size(egui::vec2(26.0, 26.0));
+        style.icon_size = 14.0;
+        if ui
+            .add(
+                egui::Button::new(icon_label(ui, icon::PLUS, "Layer", Some(13.0)))
+                    .min_size(egui::vec2(0.0, 26.0)),
+            )
             .on_hover_text("New layer")
             .clicked()
         {
@@ -615,24 +618,17 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         // Disabled for the last layer and for layers linked clones point at.
         if many > 1 {
             if icon_button(ui, icon::TRASH, del, doc.can_delete_selected_layers())
-                .on_hover_text(format!("Delete the {many} selected layers"))
+                .on_hover_text(format!("Delete the {many} selected layers (Ctrl+Z undoes)"))
                 .clicked()
             {
                 doc.delete_selected_layers();
                 ui_state.renaming_layer = None;
             }
         } else if icon_button(ui, icon::TRASH, del, doc.can_delete_active_layer())
-            .on_hover_text("Delete layer (a group's layers move up a level)")
+            .on_hover_text("Delete layer: a group's layers move up a level (Ctrl+Z undoes)")
             .clicked()
         {
             doc.delete_active_layer();
-            ui_state.renaming_layer = None;
-        }
-        if icon_button(ui, icon::ARROW_LINE_DOWN, style, active > 0 && !is_group)
-            .on_hover_text("Merge down")
-            .clicked()
-        {
-            doc.merge_active_layer_down();
             ui_state.renaming_layer = None;
         }
         if icon_button(ui, icon::ARROW_UP, style, true)
@@ -649,19 +645,92 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             doc.move_active_layer(false);
             ui_state.renaming_layer = None;
         }
-        let tip = if many > 1 {
-            format!("Duplicate the {many} selected layers")
-        } else {
-            "Duplicate layer (a group with its contents)".to_owned()
-        };
-        if icon_button(ui, icon::COPY, style, true)
-            .on_hover_text(tip)
-            .clicked()
-        {
-            doc.duplicate_selected_layers();
-            ui_state.renaming_layer = None;
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let more = egui::RichText::new(icon::DOTS_THREE_VERTICAL).font(theme::icon(16.0));
+            ui.menu_button(more, |ui| {
+                ui.set_min_width(220.0);
+                layer_menu(ui, doc, ui_state, active, is_group, many);
+            })
+            .response
+            .on_hover_text("More layer actions");
+        });
     });
+}
+
+/// The More menu of the Layers panel: the active layer's less frequent
+/// actions, then whole-document ones, the deleting ones last and in red.
+fn layer_menu(
+    ui: &mut Ui,
+    doc: &mut Document,
+    ui_state: &mut UiState,
+    active: usize,
+    is_group: bool,
+    many: usize,
+) {
+    let item = |ui: &mut Ui, glyph: &str, label: &str, enabled: bool, color: Option<Color32>| {
+        let mut text = icon_label(ui, glyph, label, None);
+        if let Some(color) = color {
+            for section in &mut text.sections {
+                section.format.color = color;
+            }
+        }
+        let clicked = ui.add_enabled(enabled, egui::Button::new(text)).clicked();
+        if clicked {
+            ui.close();
+        }
+        clicked
+    };
+    let duplicate = if many > 1 {
+        format!("Duplicate {many} layers")
+    } else {
+        "Duplicate".to_owned()
+    };
+    if item(ui, icon::COPY, &duplicate, true, None) {
+        doc.duplicate_selected_layers();
+        ui_state.renaming_layer = None;
+    }
+    if item(
+        ui,
+        icon::ARROW_LINE_DOWN,
+        "Merge down",
+        active > 0 && !is_group,
+        None,
+    ) {
+        doc.merge_active_layer_down();
+        ui_state.renaming_layer = None;
+    }
+    ui.separator();
+    let visible = doc.data.layers.iter().filter(|l| l.visible).count();
+    let hidden = doc.data.layers.len() - visible;
+    let all_locked = doc.data.layers.iter().all(|l| l.locked);
+    if item(ui, icon::STACK, "Merge visible", visible > 1, None) {
+        doc.merge_visible_layers();
+        ui_state.renaming_layer = None;
+    }
+    let (glyph, label) = if all_locked {
+        (icon::LOCK_OPEN, "Unlock all layers")
+    } else {
+        (icon::LOCK, "Lock all layers")
+    };
+    if item(ui, glyph, label, true, None) {
+        doc.set_all_locked(!all_locked);
+    }
+    ui.separator();
+    let label = match hidden {
+        1 => "Delete 1 hidden layer".to_owned(),
+        n => format!("Delete {n} hidden layers"),
+    };
+    let danger = (hidden > 0 && visible > 0).then_some(theme::DANGER);
+    if item(
+        ui,
+        icon::EYE_SLASH,
+        &label,
+        hidden > 0 && visible > 0,
+        danger,
+    ) {
+        doc.delete_hidden_layers();
+        ui_state.renaming_layer = None;
+    }
 }
 
 /// Opacity of the active layer. One undo step per drag; the viewport
@@ -769,71 +838,6 @@ fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
     }
 }
 
-/// Full-width button for an operation spanning several layers.
-fn wide_button(ui: &mut Ui, glyph: &str, label: &str, enabled: bool, tip: &str) -> bool {
-    let text = icon_label(ui, glyph, label, Some(12.0));
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(text).min_size(egui::vec2(ui.available_width(), 26.0)),
-    )
-    .on_hover_text(tip)
-    .on_disabled_hover_text(tip)
-    .clicked()
-}
-
-fn layer_operations(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    let visible = doc.data.layers.iter().filter(|l| l.visible).count();
-    let hidden = doc.data.layers.len() - visible;
-    let all_locked = doc.data.layers.iter().all(|l| l.locked);
-
-    if wide_button(
-        ui,
-        icon::STACK,
-        "Merge visible",
-        visible > 1,
-        "Merge every visible layer into the lowest visible one",
-    ) {
-        doc.merge_visible_layers();
-        ui_state.renaming_layer = None;
-    }
-    if wide_button(
-        ui,
-        icon::EYE_SLASH,
-        "Delete hidden layers",
-        hidden > 0 && visible > 0,
-        "Delete every hidden layer",
-    ) {
-        doc.delete_hidden_layers();
-        ui_state.renaming_layer = None;
-    }
-    let (glyph, label) = if all_locked {
-        (icon::LOCK_OPEN, "Unlock all layers")
-    } else {
-        (icon::LOCK, "Lock all layers")
-    };
-    if wide_button(ui, glyph, label, true, "Lock or unlock every layer") {
-        doc.set_all_locked(!all_locked);
-    }
-
-    if let Some(layer) = doc.active_layer() {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(format!(
-                "Active: {} ({} voxels)",
-                layer.name,
-                layer.volume.voxel_count()
-            ))
-            .size(11.0)
-            .color(theme::TEXT_MUTED),
-        );
-    }
-}
-
-/// Drop zone of the pointer at height `y` over a row: the upper third
-/// drops above and the lower third below; the middle of a group row drops
-/// into it (other rows split at the middle). The lower third of an
-/// expanded group with children also drops into it, as its top child,
-/// since that is where the row below it is.
 fn drop_zone(row: Rect, y: f32, i: usize, group: bool, open_children: bool) -> LayerDrop {
     let t = (y - row.top()) / row.height().max(1.0);
     match (group, t) {

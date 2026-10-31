@@ -1,6 +1,7 @@
 //! Left vertical toolbar.
 
-use egui::{Align2, Color32, Rect, Response, RichText, Sense, Stroke, TextureHandle, Ui, Vec2};
+use egui::{Align2, Color32, Rect, Response, Sense, Stroke, TextureHandle, Ui, Vec2};
+use egui_phosphor::regular as icon;
 use rizxel_app::{ActionId, AppState, Keymap};
 use rizxel_engine::Tool;
 
@@ -76,86 +77,86 @@ fn tool_button(ui: &mut Ui, state: &mut AppState, icons: &Icons, tool: Tool) {
     }
 }
 
-/// Qubicle's `2D` button and slice counter: Slice Mode from any tool,
-/// without switching tools. The counter shows the axis and the 1-based
-/// `n/N` slice number while slicing.
+/// Slice Mode (Qubicle's `2D` button): one slice of the model from any
+/// tool, without switching tools. While slicing, the label is the axis and
+/// the 1-based `n/N` slice number in the axis colour.
 fn slice_toggle(ui: &mut Ui, state: &mut AppState) {
-    let counter = state.slice_counter();
     let enabled = state.doc().is_some();
-    let size = Vec2::new(IconStyle::tool().size.x, 26.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let painter = ui.painter();
-    let active = counter.is_some();
-    if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
-        let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
-    } else if response.hovered() && enabled {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
-    }
-    let text = if active || (response.hovered() && enabled) {
-        theme::TEXT_STRONG
-    } else if enabled {
-        INACTIVE_TINT
-    } else {
-        theme::TEXT_MUTED
+    let (label, label_color) = match state.slice_counter() {
+        Some((axis, n, count)) => (
+            format!("{} {n}/{count}", ["X", "Y", "Z"][axis]),
+            Some(tool_input::axis_color(axis)),
+        ),
+        None => ("Slice".to_owned(), None),
     };
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        "2D",
-        theme::semibold(13.0),
-        text,
-    );
-    let response = response.on_hover_text(
-        "Slice Mode (Space): edit one slice of the model with any tool.          Space over a voxel slices at that voxel.",
-    );
+    let active = state.slice_counter().is_some();
+    let response = mode_toggle(ui, icon::STACK_SIMPLE, &label, label_color, active, enabled)
+        .on_hover_text(
+            "Slice Mode (Space): edit one slice of the model with any tool. Space over a voxel slices at that voxel.",
+        );
     if response.clicked() && enabled {
         response.surrender_focus();
         state.toggle_slice(None);
     }
-    let (label, color) = match state.slice_counter() {
-        Some((axis, n, count)) => (
-            format!("{} {n}/{count}", ["X", "Y", "Z"][axis]),
-            tool_input::axis_color(axis),
-        ),
-        None => ("–".to_owned(), theme::TEXT_MUTED),
-    };
-    ui.label(RichText::new(label).size(11.0).color(color));
 }
 
 /// Mask Mode button (`Shift+M`): protects the selection from every tool.
 fn mask_toggle(ui: &mut Ui, state: &mut AppState) {
     let active = state.options.mask_selection;
-    let size = Vec2::new(IconStyle::tool().size.x, 26.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let painter = ui.painter();
-    if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
-        let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
-    } else if response.hovered() {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
-    }
-    let color = if active || response.hovered() {
-        theme::TEXT_STRONG
-    } else {
-        INACTIVE_TINT
-    };
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        egui_phosphor::regular::SHIELD_CHECK,
-        theme::icon(16.0),
-        color,
-    );
-    let response = response.on_hover_text(
+    let response = mode_toggle(ui, icon::SHIELD_CHECK, "Mask", None, active, true).on_hover_text(
         "Mask Mode (Shift+M): protect the selected voxels. Every tool then edits only the rest of the layer.",
     );
     if response.clicked() {
         response.surrender_focus();
         state.toggle_mask_selection();
     }
+}
+
+/// A rail toggle for a mode: an icon over a short label, in a tool-sized
+/// button with the active accent of the tool buttons.
+fn mode_toggle(
+    ui: &mut Ui,
+    glyph: &str,
+    label: &str,
+    label_color: Option<Color32>,
+    active: bool,
+    enabled: bool,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(IconStyle::tool().size, Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, active, label)
+    });
+    let painter = ui.painter();
+    let hovered = response.hovered() && enabled;
+    if active {
+        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
+        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
+    } else if hovered {
+        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+    }
+    let color = if !enabled {
+        theme::TEXT_MUTED
+    } else if active || hovered {
+        theme::TEXT_STRONG
+    } else {
+        INACTIVE_TINT
+    };
+    painter.text(
+        rect.center() - Vec2::new(0.0, 7.0),
+        Align2::CENTER_CENTER,
+        glyph,
+        theme::icon(16.0),
+        color,
+    );
+    painter.text(
+        rect.center() + Vec2::new(0.0, 11.0),
+        Align2::CENTER_CENTER,
+        label,
+        theme::regular(11.0),
+        label_color.unwrap_or(color),
+    );
+    response
 }
 
 /// 40x40 toolbar button showing a pixel-art texture. Active buttons get a
