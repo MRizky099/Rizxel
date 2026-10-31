@@ -44,7 +44,7 @@ fn history_row(ui: &mut Ui, row: usize, label: &str, position: usize) -> Option<
         ui.painter().rect_filled(rect, theme::RADIUS, theme::HOVER);
         let accent =
             egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        ui.painter().rect_filled(accent, 0.0, theme::ACCENT);
+        ui.painter().rect_filled(accent, 0.0, theme::ACCENT_LINE);
     } else if response.hovered() {
         ui.painter().rect_filled(rect, theme::RADIUS, theme::HOVER);
     }

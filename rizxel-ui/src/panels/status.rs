@@ -52,12 +52,12 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 RichText::new(icon::SHIELD_CHECK)
                     .font(theme::icon(12.0))
-                    .color(theme::ACCENT_LIGHT),
+                    .color(theme::ACCENT_LINE),
             );
             ui.label(
                 RichText::new("Mask Mode")
                     .size(11.0)
-                    .color(theme::ACCENT_LIGHT),
+                    .color(theme::ACCENT_LINE),
             );
         }
         if let Some(option) = option {
@@ -65,7 +65,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 RichText::new(format!("Mask: {}", mode.label()))
                     .size(11.0)
-                    .color(theme::ACCENT_LIGHT),
+                    .color(theme::ACCENT_LINE),
             );
         }
 
@@ -93,7 +93,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             // Transient messages first, then live tool feedback, then the hint.
             let (text, color) = match (&state.status_message, &state.tool_feedback) {
                 (Some(msg), _) => (msg.clone(), theme::TEXT),
-                (None, Some(fb)) => (fb.clone(), theme::ACCENT_LIGHT),
+                (None, Some(fb)) => (fb.clone(), theme::ACCENT_LINE),
                 (None, None) => (state.hint(), theme::BOUND),
             };
             ui.label(RichText::new(text).size(11.0).color(color));

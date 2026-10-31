@@ -263,7 +263,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
         ui.painter().rect_stroke(
             rect,
             theme::RADIUS,
-            Stroke::new(1.0, theme::ACCENT),
+            Stroke::new(1.0, theme::ACCENT_LINE),
             StrokeKind::Inside,
         );
     } else if response.hovered() {
@@ -426,7 +426,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
                 rect.bottom() + 2.0
             };
             ui.painter()
-                .hline(rect.x_range(), y, Stroke::new(2.0, theme::ACCENT));
+                .hline(rect.x_range(), y, Stroke::new(2.0, theme::ACCENT_LINE));
         }
     }
     if let Some(from) = response.dnd_release_payload::<RefDrag>().map(|p| p.0) {

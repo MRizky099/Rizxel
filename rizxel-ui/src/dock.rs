@@ -710,7 +710,7 @@ fn style(ui: &Ui) -> DockStyle {
     style.text = theme::TEXT;
     style.inactive_text = theme::TEXT_DIM;
     style.border = Stroke::new(1.0, theme::BORDER);
-    style.accent = theme::ACCENT;
+    style.accent = theme::ACCENT_LINE;
     style.font = theme::regular(12.0);
     // Tabs share their strip's width; strips with too many tabs scroll.
     style.tab_sizing = TabSizing::Fill;

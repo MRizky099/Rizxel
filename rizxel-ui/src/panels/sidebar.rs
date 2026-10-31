@@ -339,7 +339,7 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             ui.painter().rect_stroke(
                 rect.expand(1.0),
                 2.0,
-                Stroke::new(1.0, theme::ACCENT),
+                Stroke::new(1.0, theme::ACCENT_LINE),
                 StrokeKind::Outside,
             );
         }
@@ -889,7 +889,7 @@ fn layer_row(
         painter.rect_stroke(
             rect,
             theme::RADIUS,
-            Stroke::new(1.0, theme::ACCENT),
+            Stroke::new(1.0, theme::ACCENT_LINE),
             StrokeKind::Inside,
         );
     } else if in_selection {
@@ -1121,7 +1121,7 @@ fn layer_row(
     };
     if let Some(from) = response.dnd_hover_payload::<LayerDrag>().map(|p| p.0) {
         if let Some(target) = zone(ui).filter(|&t| allowed(doc, from, t)) {
-            let stroke = Stroke::new(2.0, theme::ACCENT);
+            let stroke = Stroke::new(2.0, theme::ACCENT_LINE);
             let indented = (name_left - 4.0)..=rect.right();
             match target {
                 LayerDrop::Above(_) => {

@@ -124,7 +124,7 @@ fn tab(
         painter.hline(
             rect.x_range(),
             rect.top() + 1.0,
-            Stroke::new(2.0, theme::ACCENT),
+            Stroke::new(2.0, theme::ACCENT_LINE),
         );
     } else {
         if hovered {

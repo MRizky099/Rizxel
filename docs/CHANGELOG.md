@@ -5,6 +5,14 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **New interface colours and type** (redesign phase 1, see `docs/rizxel_ui_redesign.html`).
+  The greys are tinted slightly toward the slate of the Rizxel icon, the accent is the
+  icon's ultramarine (a fill for active controls, a lighter line for outlines and the
+  active tool), and muted text now meets 4.5:1 contrast on every panel. The interface
+  font is Geist, with Geist Mono for monospaced values (SIL Open Font License, embedded
+  in place of Inter).
+
 ## [0.11.0] — 2026-10-31
 
 Milestone M7b, the third beta: Phases 12b (fix for the model missing after opening),

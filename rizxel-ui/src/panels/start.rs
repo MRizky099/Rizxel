@@ -235,7 +235,7 @@ fn card(ui: &mut Ui, path: &Path, thumb: Option<&TextureHandle>) -> egui::Respon
         painter.rect_stroke(
             rect,
             theme::RADIUS,
-            egui::Stroke::new(1.0, theme::ACCENT),
+            egui::Stroke::new(1.0, theme::ACCENT_LINE),
             egui::StrokeKind::Inside,
         );
     }

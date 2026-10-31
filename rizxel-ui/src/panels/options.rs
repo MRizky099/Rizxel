@@ -186,7 +186,7 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     // Operations only affect the drawing tools; others show them dimmed.
     let ops_enabled = state.tool.uses_voxel_op();
     for op in [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Join] {
-        op_button(ui, state, icons, op, ops_enabled, theme::ACCENT);
+        op_button(ui, state, icons, op, ops_enabled, theme::ACCENT_LINE);
     }
 
     vertical_divider(ui, DIVIDER_HEIGHT);
@@ -205,7 +205,7 @@ fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
             icons.get(op),
             carves == carve,
             true,
-            Some(theme::ACCENT),
+            Some(theme::ACCENT_LINE),
         );
         let tip = if carve {
             "Subtract: carve the face region inward (hold Shift to switch)"
@@ -222,7 +222,7 @@ fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         icons.get(VoxelOp::Join),
         false,
         false,
-        Some(theme::ACCENT),
+        Some(theme::ACCENT_LINE),
     )
     .on_hover_text(unused(VoxelOp::Join));
 
@@ -285,7 +285,7 @@ fn icon_texture_button(
 
     if active {
         painter.rect_filled(rect, theme::RADIUS, theme::BG_BUTTON);
-        let stroke = accent.unwrap_or(theme::ACCENT);
+        let stroke = accent.unwrap_or(theme::ACCENT_LINE);
         let stroke = if enabled {
             stroke
         } else {

@@ -89,7 +89,7 @@ fn slice_toggle(ui: &mut Ui, state: &mut AppState) {
     if active {
         painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
         let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT);
+        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
     } else if response.hovered() && enabled {
         painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
     }
@@ -133,7 +133,7 @@ fn mask_toggle(ui: &mut Ui, state: &mut AppState) {
     if active {
         painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
         let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT);
+        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
     } else if response.hovered() {
         painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
     }
@@ -167,7 +167,7 @@ fn textured_button(ui: &mut Ui, texture: &TextureHandle, active: bool) -> Respon
     if active {
         painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
         let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT);
+        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
     } else if response.hovered() {
         painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
     }
