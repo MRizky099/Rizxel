@@ -1,8 +1,10 @@
 # Render
 
 The Render panel holds Render mode's settings, saved with the project, in six groups.
-One is open at a time: click a group's header to open it. The **Render** button stays
-at the foot of the panel.
+One is open at a time: click a group's header to open it. Each header shows the
+group's current value (*Sun, Gradient sky*, *256 samples*, *1920 × 1080 Image*...). The
+**Render** button stays at the foot of the panel, next to the size and samples it
+will use.
 
 | Group | Settings |
 |---|---|
@@ -13,9 +15,9 @@ at the foot of the panel.
 | **Sample** | Samples, diffuse / specular / transmission bounces, Russian roulette, clamp, pixel filter, pixelated, denoise. |
 | **Output** | *Image*, *Photo-realistic* or *Turntable*; size, transparency, folder and name, time limit, 16-bit PNG; turntable frames and angle, PNG sequence, GIF, sprite sheet. |
 
-The preset menu has the built-in presets (*Studio White*, *Outdoor Sun*, *Night
-Emissive*, *Flat Pixel*, *Voxel Icon*); **Presets** also store the settings (without
-the output) under a name. **Export shape…**
+The **Preset** picker has the built-in presets (*Studio White*, *Outdoor Sun*, *Night
+Emissive*, *Flat Pixel*, *Voxel Icon*) and your own; at its foot, type a name and
+**Save preset** to store the settings (without the output). **Export shape…**
 exports the model with the chosen voxel shape as OBJ, STL or GLB.
 
 See [Render mode](../render-mode.md) for the workflow.

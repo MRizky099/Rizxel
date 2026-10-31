@@ -32,9 +32,31 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, icons: &I
         Stroke::new(1.0, theme::p().border),
     );
 
+    // On a short window (768 px) the rail is taller than its panel: it
+    // scrolls with the wheel, and its buttons pack closer first.
+    let rail_height = ui.available_height();
+    let spacing = if rail_height < 700.0 { 4.0 } else { 8.0 };
+    egui::ScrollArea::vertical()
+        .id_salt("tools_rail")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            rail(ui, state, ui_state, icons, rail_height, spacing)
+        });
+}
+
+fn rail(
+    ui: &mut Ui,
+    state: &mut AppState,
+    ui_state: &mut UiState,
+    icons: &Icons,
+    rail_height: f32,
+    spacing: f32,
+) {
+    let top = ui.cursor().top();
     ui.vertical_centered(|ui| {
-        ui.spacing_mut().item_spacing.y = 8.0;
-        ui.add_space(8.0);
+        ui.spacing_mut().item_spacing.y = spacing;
+        ui.add_space(spacing);
 
         for tool in Tool::PRIMARY {
             tool_button(ui, state, icons, tool);
@@ -48,7 +70,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, icons: &I
         mask_toggle(ui, state);
 
         // Settings pinned to the bottom.
-        let remaining = ui.available_height() - 48.0;
+        let remaining = rail_height - (ui.cursor().top() - top) - 48.0;
         if remaining > 0.0 {
             ui.add_space(remaining);
         }

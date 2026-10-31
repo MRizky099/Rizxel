@@ -48,6 +48,15 @@ All notable changes to Rizxel are documented here. Format follows
 - **Palette**: the swatches sit in a recessed well under their count ("64 colors", or
   "12 of 64 colors used" with *Used only*).
 - **Empty layers** say so under the layer list, with a *Use Brush* button.
+- **Render panel, finished** (final check against the mock): each group header shows
+  its current value, the preset row is one picker with *Save preset* at the foot of its
+  menu, and the Render button has the output size and samples beside it.
+- *Delete N hidden layers…* asks first; the layer toolbar's targets are 30 px.
+
+### Fixed
+- The tools rail no longer cuts off *Slice*, *Mask* and Settings in a 768 px window: it
+  packs closer and scrolls with the wheel.
+- Light theme: slider rails (layer opacity, render settings) were nearly invisible.
 
 ## [0.11.0] — 2026-10-31
 

@@ -283,7 +283,8 @@ fn style_with(style: &mut egui::Style, c: &Palette, theme: egui::Theme) {
     w.noninteractive.bg_stroke = Stroke::new(1.0, c.border);
     w.noninteractive.fg_stroke = Stroke::new(1.0, c.text);
 
-    w.inactive.bg_fill = c.bg_app;
+    // Also the slider rail: the ground is too close to a white panel.
+    w.inactive.bg_fill = if light { c.hover } else { c.bg_app };
     w.inactive.weak_bg_fill = Color32::TRANSPARENT;
     w.inactive.bg_stroke = Stroke::new(1.0, edge);
     w.inactive.fg_stroke = Stroke::new(1.0, c.text);

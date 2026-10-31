@@ -184,6 +184,9 @@ pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     let select_voxels = state.settings.general.layer_click_selects_voxels;
     if let Some(doc) = state.doc_mut() {
         layers_section(ui, doc, ui_state, render, select_voxels);
+        confirm_delete_hidden(&ui.ctx().clone(), doc, ui_state);
+    } else {
+        ui_state.confirm_delete_hidden = false;
     }
     if !render {
         empty_layer_hint(ui, state);
@@ -656,12 +659,12 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let many = doc.selected_layer_count();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let mut style = IconStyle::small().size(egui::vec2(26.0, 26.0));
+        let mut style = IconStyle::small().size(egui::vec2(30.0, 30.0));
         style.icon_size = 14.0;
         if ui
             .add(
                 egui::Button::new(icon_label(ui, icon::PLUS, "Layer", Some(13.0)))
-                    .min_size(egui::vec2(0.0, 26.0)),
+                    .min_size(egui::vec2(0.0, 30.0)),
             )
             .on_hover_text("New layer")
             .clicked()
@@ -777,8 +780,8 @@ fn layer_menu(
     }
     ui.separator();
     let label = match hidden {
-        1 => "Delete 1 hidden layer".to_owned(),
-        n => format!("Delete {n} hidden layers"),
+        1 => "Delete 1 hidden layer…".to_owned(),
+        n => format!("Delete {n} hidden layers…"),
     };
     let danger = (hidden > 0 && visible > 0).then_some(theme::p().danger);
     if item(
@@ -788,8 +791,53 @@ fn layer_menu(
         hidden > 0 && visible > 0,
         danger,
     ) {
+        ui_state.confirm_delete_hidden = true;
+    }
+}
+
+/// Asks before *Delete hidden layers*, the one destructive item in the
+/// layer menu.
+fn confirm_delete_hidden(ctx: &egui::Context, doc: &mut Document, ui_state: &mut UiState) {
+    if !ui_state.confirm_delete_hidden {
+        return;
+    }
+    let hidden = doc.data.layers.iter().filter(|l| !l.visible).count();
+    let mut delete = false;
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::new("confirm_delete_hidden")).show(ctx, |ui| {
+        ui.set_width(340.0);
+        let title = match hidden {
+            1 => "Delete 1 hidden layer?".to_owned(),
+            n => format!("Delete {n} hidden layers?"),
+        };
+        ui.label(
+            RichText::new(title)
+                .font(theme::semibold(14.0))
+                .color(theme::p().text_strong),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Their voxels go with them. Undo brings them back.")
+                .color(theme::p().text_dim),
+        );
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let text = RichText::new("Delete").color(theme::ACCENT_INK);
+            let button = egui::Button::new(text).fill(theme::p().danger);
+            if ui.add(button).clicked() {
+                delete = true;
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if delete {
         doc.delete_hidden_layers();
         ui_state.renaming_layer = None;
+    }
+    if delete || close || modal.should_close() || hidden == 0 {
+        ui_state.confirm_delete_hidden = false;
     }
 }
 

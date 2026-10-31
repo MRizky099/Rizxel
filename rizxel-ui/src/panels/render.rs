@@ -112,7 +112,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                     // One group open at a time, its settings under its header.
                     for tab in RenderTab::ALL {
                         let open = ui_state.render.tab == tab;
-                        if group_header(ui, tab, open).clicked() {
+                        let value = summary(state, tab);
+                        if group_header(ui, tab, &value, open).clicked() {
                             ui_state.render.tab = tab;
                         }
                         if open {
@@ -138,18 +139,22 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
 
 // ------------------------------------------------------------ presets
 
+/// One picker: the built-in presets, the user's, and *Save preset* at the
+/// foot of its menu.
 fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
     ui.horizontal(|ui| {
         ui.label(label("Preset"));
         egui::ComboBox::from_id_salt("render_preset")
             .selected_text("Apply…")
-            .width(150.0)
+            .width(ui.available_width())
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
                 for preset in RenderPreset::ALL {
                     if ui.selectable_label(false, preset.label()).clicked() {
                         if let Some(doc) = state.doc_mut() {
                             doc.apply_render_preset(preset);
                         }
+                        ui.close();
                     }
                 }
                 let names: Vec<String> = state
@@ -165,6 +170,7 @@ fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
                     ui.horizontal(|ui| {
                         if ui.selectable_label(false, &name).clicked() {
                             state.apply_user_render_preset(&name);
+                            ui.close();
                         }
                         if ui
                             .small_button(icon::TRASH)
@@ -175,28 +181,81 @@ fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
                         }
                     });
                 }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let edit = egui::TextEdit::singleline(&mut render.preset_name)
+                        .hint_text("Preset name")
+                        .desired_width(120.0);
+                    let enter =
+                        ui.add(edit).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let can_save = !render.preset_name.trim().is_empty();
+                    let save = ui
+                        .add_enabled(can_save, egui::Button::new("Save preset"))
+                        .on_hover_text("Keep these settings (without the output) as a preset")
+                        .clicked();
+                    if (save || (enter && can_save))
+                        && state.save_render_preset(&render.preset_name)
+                    {
+                        render.preset_name.clear();
+                        ui.close();
+                    }
+                });
             });
     });
-    ui.horizontal(|ui| {
-        let edit = egui::TextEdit::singleline(&mut render.preset_name)
-            .hint_text("Preset name")
-            .desired_width(150.0);
-        ui.add(edit);
-        let can_save = !render.preset_name.trim().is_empty();
-        if ui
-            .add_enabled(can_save, egui::Button::new("Save preset"))
-            .on_hover_text("Keep these settings (without the output) as a preset")
-            .clicked()
-            && state.save_render_preset(&render.preset_name)
-        {
-            render.preset_name.clear();
+}
+
+/// The current value of a settings group, shown on its header.
+fn summary(state: &AppState, tab: RenderTab) -> String {
+    let Some(doc) = state.doc() else {
+        return String::new();
+    };
+    let r = &doc.data.render;
+    match tab {
+        RenderTab::Light => {
+            let sky = format!("{} sky", r.light.sky.label());
+            if r.light.sun {
+                format!("Sun, {sky}")
+            } else {
+                sky
+            }
         }
-    });
+        RenderTab::Sample => format!("{} samples", r.sample.samples),
+        RenderTab::Display => {
+            let background = r.display.background.label();
+            if r.display.ground {
+                format!("{background}, ground")
+            } else {
+                background.to_owned()
+            }
+        }
+        RenderTab::Material => {
+            let layer = doc.data.layers.get(doc.active_layer);
+            match layer {
+                Some(l) if l.kind().is_group() => "Group".to_owned(),
+                Some(l) => l
+                    .props
+                    .material
+                    .and_then(|m| doc.data.materials.get(m as usize))
+                    .map_or_else(|| "Default".to_owned(), |m| m.name.clone()),
+                None => String::new(),
+            }
+        }
+        RenderTab::Camera => match state.camera.projection {
+            Projection::Perspective => format!("Perspective, {:.0}°", r.camera.fov),
+            Projection::Orthographic => "Orthographic".to_owned(),
+        },
+        RenderTab::Output => format!(
+            "{} × {} {}",
+            r.output.width,
+            r.output.height,
+            r.output.kind.label()
+        ),
+    }
 }
 
 /// Full-width header of a settings group: a caret, the name, and a hairline
 /// above it. Clicking opens the group (and closes the open one).
-fn group_header(ui: &mut Ui, tab: RenderTab, open: bool) -> egui::Response {
+fn group_header(ui: &mut Ui, tab: RenderTab, value: &str, open: bool) -> egui::Response {
     let height = 30.0;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
@@ -233,6 +292,33 @@ fn group_header(ui: &mut Ui, tab: RenderTab, open: bool) -> egui::Response {
             theme::p().text
         },
     );
+    // The current value, cut short when the panel is narrow.
+    let name_width = painter
+        .layout_no_wrap(
+            tab.label().to_owned(),
+            theme::semibold(13.0),
+            Color32::WHITE,
+        )
+        .size()
+        .x;
+    let room = rect.right() - 8.0 - (rect.left() + 34.0 + name_width);
+    if room > 24.0 && !value.is_empty() {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            value.to_owned(),
+            theme::regular(11.0),
+            theme::p().text_muted,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let galley = painter.layout_job(job);
+        painter.galley(
+            egui::pos2(
+                rect.right() - 8.0 - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            theme::p().text_muted,
+        );
+    }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -934,7 +1020,16 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
                 );
             }
             None => {
-                let text = render.last_result.as_deref().unwrap_or("");
+                // What Render makes, until a job has finished.
+                let text = render.last_result.clone().unwrap_or_else(|| {
+                    state.doc().map_or(String::new(), |d| {
+                        format!(
+                            "{}, {} samples",
+                            output_size(state),
+                            d.data.render.sample.samples
+                        )
+                    })
+                });
                 ui.add(
                     egui::Label::new(RichText::new(text).size(11.0).color(theme::p().text_dim))
                         .truncate(),

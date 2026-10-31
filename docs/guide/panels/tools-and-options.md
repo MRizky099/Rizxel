@@ -1,7 +1,8 @@
 # Tools and Options
 
 The **Tools** panel (the rail on the left) holds the [tools](../tools/index.md), two mode
-toggles and the Settings button. Hover a tool for its name and shortcut.
+toggles and the Settings button. Hover a tool for its name and shortcut. In a short
+window the rail scrolls with the mouse wheel.
 
 - **Slice** (`Space`): Slice Mode, one slice of the model with any tool. While it is
   on, its label shows the axis and the slice number (`Y 3/12`) in the axis colour.

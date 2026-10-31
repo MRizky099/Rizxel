@@ -20,6 +20,8 @@ pub struct UiState {
     pub show_shortcuts: bool,
     /// Layer currently being renamed and its edit buffer.
     pub renaming_layer: Option<(usize, String)>,
+    /// *Delete hidden layers* was picked: the confirmation is open.
+    pub confirm_delete_hidden: bool,
     /// Zen mode: hide all panels except the viewport and status bar.
     pub zen_mode: bool,
     /// Autosaves offered for recovery at startup (dialog open while non-empty).

@@ -18,7 +18,8 @@ While the active voxel layer is empty, the panel says so under the list, with a
 
 **+ Layer**, *New group*, *Delete*, *Move up* and *Move down*, then the **⋮** menu:
 *Duplicate*, *Merge down*, *Merge visible*, *Lock / Unlock all layers* and, in red,
-*Delete N hidden layers*. Every one of them is a single undo step (`Ctrl+Z`).
+*Delete N hidden layers…*, which asks first. Every one of them is a single undo step
+(`Ctrl+Z`).
 
 ## Selecting several layers
 
