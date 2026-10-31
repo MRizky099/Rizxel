@@ -15,21 +15,26 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         Stroke::new(1.0, theme::p().bg_header),
     );
 
-    let small = |s: String| RichText::new(s).size(11.0).color(theme::p().text);
+    let small = |s: &str| RichText::new(s).size(11.0).color(theme::p().text_dim);
+    let value = |s: String| {
+        RichText::new(s)
+            .font(theme::mono(11.0))
+            .color(theme::p().text)
+    };
 
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
         let coords = match state.cursor_voxel {
-            Some(v) => format!("X: {} Y: {} Z: {}", v.x, v.y, v.z),
-            None => "X: - Y: - Z: -".to_owned(),
+            Some(v) => format!("X {}  Y {}  Z {}", v.x, v.y, v.z),
+            None => "X -  Y -  Z -".to_owned(),
         };
         ui.label(
             RichText::new(icon::CROSSHAIR)
                 .font(theme::icon(12.0))
                 .color(theme::p().text_dim),
         );
-        ui.label(small(coords));
+        ui.label(value(coords));
 
         separator(ui);
 
@@ -38,10 +43,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                 .font(theme::icon(12.0))
                 .color(theme::p().text_dim),
         );
-        ui.label(small(format!(
-            "Selected: {} voxels",
-            state.selected_voxels()
-        )));
+        ui.label(small("Selected"));
+        ui.label(value(state.selected_voxels().to_string()));
         // Mask mode of the selection tools, following the held modifiers.
         let option = match state.tool {
             rizxel_engine::Tool::Selection => Some(state.options.selection.mask),
@@ -76,7 +79,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                     .font(theme::icon(12.0))
                     .color(theme::p().text_dim),
             );
-            ui.label(small(format!("Voxels: {}", doc.visible_voxel_count())));
+            ui.label(small("Voxels"));
+            ui.label(value(doc.visible_voxel_count().to_string()));
 
             separator(ui);
             let b = doc.data.bounds;
@@ -85,7 +89,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                     .font(theme::icon(12.0))
                     .color(theme::p().text_dim),
             );
-            ui.label(small(format!("Bounds: {}×{}×{}", b.x(), b.y(), b.z())));
+            ui.label(small("Bounds"));
+            ui.label(value(format!("{}×{}×{}", b.x(), b.y(), b.z())));
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

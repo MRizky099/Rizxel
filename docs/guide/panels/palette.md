@@ -1,7 +1,8 @@
 # Color Palette
 
 The palette holds up to 255 colors (slot 0 means empty). Click a swatch to select it;
-click the selected swatch to edit its color.
+click the selected swatch to edit its color. The count above the swatches says how many
+colors there are (with *Used only*, how many the model uses).
 
 | Control | Effect |
 |---|---|

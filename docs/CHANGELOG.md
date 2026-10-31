@@ -42,6 +42,12 @@ All notable changes to Rizxel are documented here. Format follows
 - **Tools rail**: the *2D* text button, its dash and the shield are now two labelled
   toggles, *Slice* (showing `Y 3/12` while slicing) and *Mask*.
 - craft-ui (vendored): `DockArea::compact` for grip-only groups, patch 0002.
+- **Measured values in Geist Mono** (redesign phase 5): the status bar's position,
+  selected and visible voxel counts and bounds (labels stay in the body face), the
+  palette's hex and RGB, and the layer voxel counts.
+- **Palette**: the swatches sit in a recessed well under their count ("64 colors", or
+  "12 of 64 colors used" with *Used only*).
+- **Empty layers** say so under the layer list, with a *Use Brush* button.
 
 ## [0.11.0] — 2026-10-31
 

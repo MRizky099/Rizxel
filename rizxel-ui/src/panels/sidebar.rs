@@ -3,6 +3,7 @@
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use egui_phosphor::regular as icon;
 use rizxel_app::{AppState, Document, Favorites, LayerDrop, PaletteSort};
+use rizxel_engine::Tool;
 use rizxel_math::{BoundSize, LayerKind};
 
 use super::UiState;
@@ -184,6 +185,9 @@ pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     if let Some(doc) = state.doc_mut() {
         layers_section(ui, doc, ui_state, render, select_voxels);
     }
+    if !render {
+        empty_layer_hint(ui, state);
+    }
     // `Ctrl+A` and `Esc` act on the layers while the pointer is here.
     if ui.ui_contains_pointer() {
         ui_state.layers_hovered = true;
@@ -193,6 +197,43 @@ pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
             }
         }
     }
+}
+
+/// Under an empty voxel layer: what it is for, and the one action that
+/// fills it.
+fn empty_layer_hint(ui: &mut Ui, state: &mut AppState) {
+    let empty = state
+        .doc()
+        .and_then(|d| d.active_layer())
+        .is_some_and(|l| matches!(l.kind(), LayerKind::Voxels) && l.volume.voxel_count() == 0);
+    if !empty {
+        return;
+    }
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            egui::Frame::NONE
+                .stroke(Stroke::new(1.0, theme::p().separator))
+                .corner_radius(theme::RADIUS)
+                .inner_margin(8)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(
+                        RichText::new(
+                            "This layer is empty. Pick a drawing tool and click the viewport: new voxels land on the active layer.",
+                        )
+                        .size(12.0)
+                        .color(theme::p().text_dim),
+                    );
+                    if state.tool != Tool::Brush
+                        && ui
+                            .button(icon_label(ui, icon::PAINT_BRUSH, "Use Brush", Some(13.0)))
+                            .clicked()
+                    {
+                        state.tool = Tool::Brush;
+                    }
+                });
+        });
 }
 
 /// Bound Model dock panel.
@@ -261,10 +302,25 @@ fn palette_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     ui.painter()
         .hline(r.x_range(), r.top(), Stroke::new(1.0, theme::p().border));
 
-    // Swatch grid.
-    egui::Frame::NONE
-        .inner_margin(12)
-        .show(ui, |ui| swatch_grid(ui, doc, ui_state));
+    // Swatch grid, in a recessed well under its count, so a grid cut off by
+    // the panel edge reads as a container that goes on.
+    egui::Frame::NONE.inner_margin(12).show(ui, |ui| {
+        let total = doc.data.palette.colors().len();
+        let count = if ui_state.palette_used_only {
+            let used = doc.used_colors().iter().filter(|u| **u).count();
+            format!("{used} of {total} colors used")
+        } else {
+            format!("{total} colors")
+        };
+        ui.label(RichText::new(count).size(11.0).color(theme::p().text_dim));
+        ui.add_space(2.0);
+        egui::Frame::NONE
+            .fill(theme::p().bg_app)
+            .stroke(Stroke::new(1.0, theme::p().border))
+            .corner_radius(theme::RADIUS)
+            .inner_margin(4)
+            .show(ui, |ui| swatch_grid(ui, doc, ui_state));
+    });
 }
 
 fn kv_row(ui: &mut Ui, key: &str, value: &str) {
@@ -274,7 +330,7 @@ fn kv_row(ui: &mut Ui, key: &str, value: &str) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(value)
-                    .size(12.0)
+                    .font(theme::mono(12.0))
                     .color(theme::p().text_strong),
             );
         });
@@ -995,7 +1051,7 @@ fn layer_row(
     };
     let count_galley =
         ui.painter()
-            .layout_no_wrap(count_text, theme::regular(11.0), theme::p().text_muted);
+            .layout_no_wrap(count_text, theme::mono(11.0), theme::p().text_muted);
     let count_pos = egui::pos2(
         lock_rect.left() - 6.0 - count_galley.size().x,
         rect.center().y - count_galley.size().y / 2.0,
@@ -1008,7 +1064,7 @@ fn layer_row(
     if selected_cells > 0 {
         let galley = ui.painter().layout_no_wrap(
             selected_cells.to_string(),
-            theme::regular(11.0),
+            theme::mono(11.0),
             theme::ACCENT_INK,
         );
         let size = galley.size() + egui::vec2(8.0, 2.0);
