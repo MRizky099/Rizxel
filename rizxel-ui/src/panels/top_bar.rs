@@ -218,7 +218,11 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
                         actions::import(state, &mut ui_state.dialogs, format);
                     }
-                    ui.label(egui::RichText::new(hint).size(11.0).color(theme::TEXT_DIM));
+                    ui.label(
+                        egui::RichText::new(hint)
+                            .size(11.0)
+                            .color(theme::p().text_dim),
+                    );
                 }
                 ui.separator();
                 if menu_item(ui, icon::MOUNTAINS, "Heightmap (.png, .jpg)...", "", true) {
@@ -227,7 +231,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 ui.label(
                     egui::RichText::new("Grayscale image to terrain, in a new tab")
                         .size(11.0)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             },
         );
@@ -247,7 +251,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 ui.label(
                     egui::RichText::new(format.export_note())
                         .size(11.0)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             }
             ui.separator();
@@ -263,7 +267,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
             ui.label(
                 egui::RichText::new("one image per voxel slice, into a folder")
                     .size(11.0)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.separator();
             if menu_item(
@@ -280,7 +284,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     "Render mode: the model as bricks, spheres, ... (OBJ, STL, GLB)",
                 )
                 .size(11.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
             );
         });
         ui.separator();
@@ -674,7 +678,7 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
     ui.label(
         egui::RichText::new("By Color: the selected swatch, within the Fuzzy Select threshold")
             .size(11.0)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.separator();
     if menu_item(
@@ -752,7 +756,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     ui.label(
         egui::RichText::new("Drag rows in the Layers panel into and out of groups")
             .size(11.0)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.separator();
     if menu_item(ui, icon::PUZZLE_PIECE, "Separate Parts", "", editable) {
@@ -763,7 +767,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
         ui.label(
             egui::RichText::new("Keep parts under")
                 .size(11.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.add(
             egui::DragValue::new(&mut state.structure.min_part_voxels)
@@ -784,7 +788,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     ui.label(
         egui::RichText::new("Voxels on the plane's + side move to a new layer")
             .size(11.0)
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     );
     ui.separator();
     // Boolean ▸ op ▸ other layer.
@@ -809,7 +813,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
                     ui.label(
                         egui::RichText::new("Active layer with:")
                             .size(11.0)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                     for (index, name) in &others {
                         if ui.button(name).clicked() {
@@ -844,7 +848,7 @@ fn model_menu(ui: &mut Ui, state: &mut AppState) {
         ui.label(
             egui::RichText::new("Closed cavities get the selected color")
                 .size(11.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         if menu_item(ui, icon::CUBE_TRANSPARENT, "Hollow", "", editable) {
             state.core_op(CoreOp::Hollow);
@@ -858,7 +862,7 @@ fn model_menu(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 egui::RichText::new("Shell")
                     .size(11.0)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add(
                 egui::DragValue::new(&mut state.structure.hollow_thickness)
@@ -981,7 +985,7 @@ fn recent_menu(ui: &mut Ui, state: &mut AppState) {
                     }
                 }
                 if state.recent.is_empty() {
-                    ui.label(egui::RichText::new("No recent files").color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new("No recent files").color(theme::p().text_dim));
                 }
                 ui.separator();
                 if menu_item(
@@ -1081,7 +1085,7 @@ fn panels_menu(ui: &mut Ui, dock: &mut Workspace) {
 fn window_controls(ui: &mut Ui, height: f32) {
     let base = IconStyle::bar()
         .size(egui::vec2(CONTROL_WIDTH, height))
-        .color(theme::TEXT);
+        .color(theme::p().text);
 
     // Laid out right-to-left: close, maximize, minimize.
     let close = base
@@ -1137,12 +1141,12 @@ pub fn close_prompt(ctx: &egui::Context, state: &mut AppState) -> bool {
         ui.label(
             egui::RichText::new(format!("Save changes to {title} before closing?"))
                 .font(theme::semibold(14.0))
-                .color(theme::TEXT_STRONG),
+                .color(theme::p().text_strong),
         );
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new("Your changes will be lost if you don't save them.")
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -1206,12 +1210,12 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
         ui.label(
             egui::RichText::new("Recover unsaved work")
                 .font(theme::semibold(14.0))
-                .color(theme::TEXT_STRONG),
+                .color(theme::p().text_strong),
         );
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new("Rizxel did not close normally. These documents were autosaved:")
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.add_space(8.0);
         for (i, entry) in ui_state.recovery.iter().enumerate() {
@@ -1228,11 +1232,11 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
                 .as_ref()
                 .map_or("never saved".to_owned(), |p| p.display().to_string());
             ui.separator();
-            ui.label(egui::RichText::new(&meta.title).color(theme::TEXT_STRONG));
+            ui.label(egui::RichText::new(&meta.title).color(theme::p().text_strong));
             ui.label(
                 egui::RichText::new(format!("{place}, autosaved {when}"))
                     .size(11.0)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.horizontal(|ui| {
                 if ui.button("Restore").clicked() {
@@ -1295,7 +1299,7 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
                 ui.label("Native voxel art editor built with Rust, egui and wgpu.");
                 ui.label(format!("Created by {AUTHOR_NAME} ({AUTHOR_HANDLE})"));
                 ui.label(
-                    egui::RichText::new(format!("© 2026 {AUTHOR_NAME}")).color(theme::TEXT_DIM),
+                    egui::RichText::new(format!("© 2026 {AUTHOR_NAME}")).color(theme::p().text_dim),
                 );
                 ui.add_space(6.0);
                 ui.label(
@@ -1303,7 +1307,7 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
                         "Free software under the GNU General Public License v3 or later.\n\
                          This program comes with ABSOLUTELY NO WARRANTY.",
                     )
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
                 ui.hyperlink_to("Source code and license", REPO_URL);
             });
@@ -1331,7 +1335,7 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
 /// mouse and the fixed keys.
 fn shortcut_rows(ui: &mut Ui, keymap: &rizxel_app::Keymap) {
     let strong = |ui: &mut Ui, text: &str| {
-        ui.label(egui::RichText::new(text).color(theme::TEXT_STRONG));
+        ui.label(egui::RichText::new(text).color(theme::p().text_strong));
     };
     for group in rizxel_app::ActionGroup::ALL {
         ui.label(egui::RichText::new(group.label()).font(theme::semibold(12.0)));

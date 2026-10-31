@@ -12,10 +12,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
     ui.painter().hline(
         bar.x_range(),
         bar.top() + 0.5,
-        Stroke::new(1.0, theme::BG_HEADER),
+        Stroke::new(1.0, theme::p().bg_header),
     );
 
-    let small = |s: String| RichText::new(s).size(11.0).color(theme::TEXT);
+    let small = |s: String| RichText::new(s).size(11.0).color(theme::p().text);
 
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -27,7 +27,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         ui.label(
             RichText::new(icon::CROSSHAIR)
                 .font(theme::icon(12.0))
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.label(small(coords));
 
@@ -36,7 +36,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         ui.label(
             RichText::new(icon::CUBE)
                 .font(theme::icon(12.0))
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.label(small(format!(
             "Selected: {} voxels",
@@ -52,12 +52,12 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 RichText::new(icon::SHIELD_CHECK)
                     .font(theme::icon(12.0))
-                    .color(theme::ACCENT_LINE),
+                    .color(theme::p().accent_line),
             );
             ui.label(
                 RichText::new("Mask Mode")
                     .size(11.0)
-                    .color(theme::ACCENT_LINE),
+                    .color(theme::p().accent_line),
             );
         }
         if let Some(option) = option {
@@ -65,7 +65,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 RichText::new(format!("Mask: {}", mode.label()))
                     .size(11.0)
-                    .color(theme::ACCENT_LINE),
+                    .color(theme::p().accent_line),
             );
         }
 
@@ -74,7 +74,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 RichText::new(icon::CUBE_TRANSPARENT)
                     .font(theme::icon(12.0))
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.label(small(format!("Voxels: {}", doc.visible_voxel_count())));
 
@@ -83,7 +83,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 RichText::new(icon::BOUNDING_BOX)
                     .font(theme::icon(12.0))
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.label(small(format!("Bounds: {}×{}×{}", b.x(), b.y(), b.z())));
         }
@@ -94,9 +94,9 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             // A hint is neither a warning nor live state: it stays neutral, with
             // its key names drawn as caps.
             let (text, color, icon_color) = match (&state.status_message, &state.tool_feedback) {
-                (Some(msg), _) => (msg.clone(), theme::TEXT_STRONG, theme::TEXT_DIM),
-                (None, Some(fb)) => (fb.clone(), theme::ACCENT_LINE, theme::ACCENT_LINE),
-                (None, None) => (state.hint(), theme::TEXT, theme::TEXT_DIM),
+                (Some(msg), _) => (msg.clone(), theme::p().text_strong, theme::p().text_dim),
+                (None, Some(fb)) => (fb.clone(), theme::p().accent_line, theme::p().accent_line),
+                (None, None) => (state.hint(), theme::p().text, theme::p().text_dim),
             };
             ui.label(hint_job(&text, color));
             ui.label(
@@ -170,8 +170,8 @@ fn hint_job(text: &str, color: egui::Color32) -> egui::text::LayoutJob {
         if is_key {
             let format = egui::TextFormat {
                 font_id: theme::regular(11.0),
-                color: theme::TEXT_STRONG,
-                background: theme::BG_BUTTON,
+                color: theme::p().text_strong,
+                background: theme::p().bg_button,
                 ..Default::default()
             };
             job.append(&format!(" {run} "), 0.0, format);
@@ -191,7 +191,7 @@ fn separator(ui: &mut Ui) {
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        Stroke::new(1.0, egui::Color32::from_white_alpha(51)),
+        Stroke::new(1.0, theme::p().separator),
     );
 }
 

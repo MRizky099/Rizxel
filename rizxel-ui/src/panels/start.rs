@@ -81,7 +81,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
                 ui.label(RichText::new("Rizxel").font(theme::semibold(18.0)));
                 ui.label(
                     RichText::new(format!("Voxel Editor v{}", env!("CARGO_PKG_VERSION")))
-                        .color(theme::TEXT_DIM),
+                        .color(theme::p().text_dim),
                 );
             });
         });
@@ -111,7 +111,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
                 if recent.is_empty() {
                     ui.label(
                         RichText::new("Projects you open or save appear here.")
-                            .color(theme::TEXT_DIM),
+                            .color(theme::p().text_dim),
                     );
                     return;
                 }
@@ -138,7 +138,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, screen: &mut Option<Start
         ui.painter().vline(
             x,
             row.response.rect.y_range(),
-            egui::Stroke::new(1.0, theme::SEPARATOR),
+            egui::Stroke::new(1.0, theme::p().separator),
         );
         ui.add_space(6.0);
         ui.separator();
@@ -185,9 +185,9 @@ fn card(ui: &mut Ui, path: &Path, thumb: Option<&TextureHandle>) -> egui::Respon
     let hovered = response.hovered();
     let painter = ui.painter_at(rect);
     let fill = if hovered {
-        theme::HOVER
+        theme::p().hover
     } else {
-        theme::BG_BUTTON
+        theme::p().bg_button
     };
     painter.rect_filled(rect, theme::RADIUS, fill);
     let image_rect =
@@ -198,13 +198,13 @@ fn card(ui: &mut Ui, path: &Path, thumb: Option<&TextureHandle>) -> egui::Respon
             painter.image(t.id(), image_rect, uv, egui::Color32::WHITE);
         }
         None => {
-            painter.rect_filled(image_rect, theme::RADIUS, theme::WORKSPACE);
+            painter.rect_filled(image_rect, theme::RADIUS, theme::p().workspace);
             painter.text(
                 image_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 icon::CUBE,
                 theme::icon(36.0),
-                theme::TEXT_DIM,
+                theme::p().text_dim,
             );
         }
     }
@@ -222,20 +222,20 @@ fn card(ui: &mut Ui, path: &Path, thumb: Option<&TextureHandle>) -> egui::Respon
         egui::Align2::LEFT_TOP,
         name,
         theme::semibold(12.0),
-        theme::TEXT_STRONG,
+        theme::p().text_strong,
     );
     painter.text(
         egui::pos2(rect.left() + 6.0, text_top + 16.0),
         egui::Align2::LEFT_TOP,
         folder,
         theme::regular(11.0),
-        theme::TEXT_DIM,
+        theme::p().text_dim,
     );
     if hovered {
         painter.rect_stroke(
             rect,
             theme::RADIUS,
-            egui::Stroke::new(1.0, theme::ACCENT_LINE),
+            egui::Stroke::new(1.0, theme::p().accent_line),
             egui::StrokeKind::Inside,
         );
     }

@@ -339,7 +339,7 @@ impl RizxelApp {
 
 impl eframe::App for RizxelApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        egui::Rgba::from(theme::BG_APP).to_array()
+        egui::Rgba::from(theme::p().bg_app).to_array()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -347,6 +347,13 @@ impl eframe::App for RizxelApp {
         let scale = self.state.settings.general.ui_scale;
         if (ctx.zoom_factor() - scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(scale);
+        }
+        let system_light = ctx.system_theme().map(|t| t == egui::Theme::Light);
+        if theme::set_light(
+            &ctx,
+            self.state.settings.general.theme.is_light(system_light),
+        ) {
+            ctx.request_repaint();
         }
         panels::settings::capture_keys(&ctx, self.ui.settings.as_mut());
         self.handle_close(&ctx);
@@ -375,14 +382,14 @@ impl eframe::App for RizxelApp {
         // Panel order matters: outermost first, central panel last.
         Panel::top("title_bar")
             .exact_size(theme::TITLE_BAR_HEIGHT)
-            .frame(flat(theme::BG_HEADER))
+            .frame(flat(theme::p().bg_header))
             .show_separator_line(false)
             .resizable(false)
             .show(ui, |ui| panels::top_bar::show(ui, state, ui_state, dock));
 
         Panel::bottom("status_bar")
             .exact_size(theme::STATUS_BAR_HEIGHT)
-            .frame(flat(theme::BG_APP).inner_margin(egui::Margin::symmetric(12, 0)))
+            .frame(flat(theme::p().bg_app).inner_margin(egui::Margin::symmetric(12, 0)))
             .show_separator_line(false)
             .resizable(false)
             .show(ui, |ui| panels::status::show(ui, state));

@@ -126,7 +126,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     ui.painter().hline(
         footer_rect.x_range(),
         footer_rect.top(),
-        (1.0, theme::BORDER),
+        (1.0, theme::p().border),
     );
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(footer_rect.shrink(8.0)),
@@ -207,9 +207,9 @@ fn group_header(ui: &mut Ui, tab: RenderTab, open: bool) -> egui::Response {
     });
     let painter = ui.painter();
     if response.hovered() {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
-    painter.hline(rect.x_range(), rect.top(), (1.0, theme::BORDER));
+    painter.hline(rect.x_range(), rect.top(), (1.0, theme::p().border));
     let caret = if open {
         icon::CARET_DOWN
     } else {
@@ -220,7 +220,7 @@ fn group_header(ui: &mut Ui, tab: RenderTab, open: bool) -> egui::Response {
         egui::Align2::LEFT_CENTER,
         caret,
         theme::icon(12.0),
-        theme::TEXT_DIM,
+        theme::p().text_dim,
     );
     painter.text(
         rect.left_center() + egui::vec2(26.0, 0.0),
@@ -228,9 +228,9 @@ fn group_header(ui: &mut Ui, tab: RenderTab, open: bool) -> egui::Response {
         tab.label(),
         theme::semibold(13.0),
         if open {
-            theme::TEXT_STRONG
+            theme::p().text_strong
         } else {
-            theme::TEXT
+            theme::p().text
         },
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -284,11 +284,11 @@ fn continues_drag(ui: &Ui, key: &str, changed: bool) -> bool {
 }
 
 fn label(text: &str) -> RichText {
-    RichText::new(text).size(12.0).color(theme::TEXT)
+    RichText::new(text).size(12.0).color(theme::p().text)
 }
 
 fn note(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(theme::TEXT_MUTED));
+    ui.label(RichText::new(text).size(11.0).color(theme::p().text_muted));
 }
 
 /// Collapsible section with a two-column grid.
@@ -386,7 +386,7 @@ fn light_tab(ui: &mut Ui, s: &mut RenderSettings) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "None".to_owned());
-                    ui.label(RichText::new(name).size(11.0).color(theme::TEXT_DIM))
+                    ui.label(RichText::new(name).size(11.0).color(theme::p().text_dim))
                         .on_hover_text(&l.sky_image);
                     if ui.small_button("Browse…").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
@@ -696,7 +696,7 @@ fn output_tab(ui: &mut Ui, s: &mut RenderSettings) {
             } else {
                 o.folder.clone()
             };
-            ui.label(RichText::new(shown).size(11.0).color(theme::TEXT_DIM));
+            ui.label(RichText::new(shown).size(11.0).color(theme::p().text_dim));
             if ui.small_button("…").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     o.folder = dir.to_string_lossy().into_owned();
@@ -764,7 +764,7 @@ fn material_tab(ui: &mut Ui, doc: &mut Document) {
     ui.label(
         RichText::new(format!("Layer \"{layer_name}\""))
             .size(12.0)
-            .color(theme::TEXT_STRONG),
+            .color(theme::p().text_strong),
     );
     note(ui, "Alt+click the model to pick a layer.");
 
@@ -908,7 +908,7 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
         } else {
             let text = RichText::new(format!("{}  Render", icon::CAMERA))
                 .size(13.0)
-                .color(Color32::WHITE);
+                .color(theme::ACCENT_INK);
             let button = egui::Button::new(text)
                 .fill(theme::ACCENT)
                 .min_size([96.0, 28.0].into());
@@ -936,7 +936,7 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
             None => {
                 let text = render.last_result.as_deref().unwrap_or("");
                 ui.add(
-                    egui::Label::new(RichText::new(text).size(11.0).color(theme::TEXT_DIM))
+                    egui::Label::new(RichText::new(text).size(11.0).color(theme::p().text_dim))
                         .truncate(),
                 );
             }
@@ -1025,11 +1025,11 @@ pub fn shaped_dialog(ctx: &egui::Context, state: &mut AppState, render: &mut Ren
             };
             let too_many = triangles > MAX_SHAPED_TRIANGLES;
             let color = if too_many {
-                theme::DANGER
+                theme::p().danger
             } else if triangles > WARN_SHAPED_TRIANGLES {
                 theme::BOUND
             } else {
-                theme::TEXT_DIM
+                theme::p().text_dim
             };
             ui.label(
                 RichText::new(format!("{triangles} triangles"))

@@ -68,7 +68,7 @@ pub use rizxel_io::shaped_export::{
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use rizxel_io::{GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
-pub use settings::{CameraControls, Settings};
+pub use settings::{CameraControls, Settings, Theme};
 pub use shaped::{ShapedExport, SHAPED_EXTENSIONS};
 pub use transform_session::{pivot_point, TransformSession};
 

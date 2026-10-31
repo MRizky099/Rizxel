@@ -5,7 +5,7 @@ use egui::{Color32, RichText, Ui};
 use rizxel_app::settings::{
     GRID_OPACITY_RANGE, GRID_WIDTH_RANGE, MAX_AUTOSAVE_MINUTES, UI_SCALE_RANGE, UNDO_LIMIT_RANGE,
 };
-use rizxel_app::{ActionGroup, ActionId, AppState, CameraControls, KeyChord, Settings};
+use rizxel_app::{ActionGroup, ActionId, AppState, CameraControls, KeyChord, Settings, Theme};
 
 use crate::{keys, theme};
 
@@ -160,7 +160,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, dialog: &mut Option<Setti
                 close = true;
             }
             if !can_save {
-                ui.label(RichText::new("Keymap conflicts must be resolved").color(theme::DANGER));
+                ui.label(
+                    RichText::new("Keymap conflicts must be resolved").color(theme::p().danger),
+                );
             }
         });
     });
@@ -194,7 +196,7 @@ fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new(text).size(11.0).color(theme::p().text_dim));
 }
 
 fn general(ui: &mut Ui, d: &mut SettingsDialog) {
@@ -204,8 +206,13 @@ fn general(ui: &mut Ui, d: &mut SettingsDialog) {
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
             row(ui, "Theme", |ui| {
-                ui.add_enabled(false, egui::Button::new("Dark"))
-                    .on_disabled_hover_text("A light theme is planned");
+                egui::ComboBox::from_id_salt("theme")
+                    .selected_text(g.theme.label())
+                    .show_ui(ui, |ui| {
+                        for t in Theme::ALL {
+                            ui.selectable_value(&mut g.theme, t, t.label());
+                        }
+                    });
             });
             row(ui, "UI scale", |ui| {
                 ui.add(
@@ -224,7 +231,7 @@ fn general(ui: &mut Ui, d: &mut SettingsDialog) {
                         .suffix(" min"),
                 );
                 if g.autosave_minutes == 0 {
-                    ui.label(RichText::new("off: no crash recovery").color(theme::DANGER));
+                    ui.label(RichText::new("off: no crash recovery").color(theme::p().danger));
                 }
             });
             row(ui, "Start screen", |ui| {
@@ -274,7 +281,7 @@ fn viewport(ui: &mut Ui, d: &mut SettingsDialog) {
             row(ui, "Background (Model mode)", |ui| {
                 let mut custom = v.background.is_some();
                 if ui.checkbox(&mut custom, "Custom").changed() {
-                    let c = theme::WORKSPACE;
+                    let c = theme::p().workspace;
                     v.background = custom.then_some([c.r(), c.g(), c.b()]);
                 }
                 if let Some(rgb) = &mut v.background {
@@ -322,7 +329,7 @@ fn paths(ui: &mut Ui, d: &mut SettingsDialog) {
                     .export_folder
                     .as_ref()
                     .map_or("System default".to_owned(), |f| f.display().to_string());
-                ui.label(RichText::new(text).color(theme::TEXT_STRONG));
+                ui.label(RichText::new(text).color(theme::p().text_strong));
             });
             row(ui, "", |ui| {
                 if ui.button("Browse...").clicked() {
@@ -359,7 +366,7 @@ fn keymap(ui: &mut Ui, d: &mut SettingsDialog) {
          × removes it.",
     );
     if let Some(e) = &d.error {
-        ui.label(RichText::new(e).color(theme::DANGER));
+        ui.label(RichText::new(e).color(theme::p().danger));
     }
     for c in d.draft.keymap.conflicts() {
         let names: Vec<String> = c.actions.iter().map(|a| a.label()).collect();
@@ -369,7 +376,7 @@ fn keymap(ui: &mut Ui, d: &mut SettingsDialog) {
                 c.chord.label(),
                 names.join(", ")
             ))
-            .color(theme::DANGER),
+            .color(theme::p().danger),
         );
     }
     let filter = d.filter.to_lowercase();
@@ -403,13 +410,17 @@ fn keymap(ui: &mut Ui, d: &mut SettingsDialog) {
 
 fn keymap_row(ui: &mut Ui, d: &mut SettingsDialog, action: ActionId) {
     let conflict = d.draft.keymap.in_conflict(action);
-    let color = if conflict { theme::DANGER } else { theme::TEXT };
+    let color = if conflict {
+        theme::p().danger
+    } else {
+        theme::p().text
+    };
     ui.label(RichText::new(action.label()).color(color));
     ui.horizontal(|ui| {
         let chords: Vec<KeyChord> = d.draft.keymap.chords(action).to_vec();
         if action.is_fixed() {
             for c in &chords {
-                chip(ui, &c.label(), false, theme::TEXT_DIM)
+                chip(ui, &c.label(), false, theme::p().text_dim)
                     .on_hover_text("Clipboard shortcuts can't be changed");
             }
             return;
@@ -424,9 +435,9 @@ fn keymap_row(ui: &mut Ui, d: &mut SettingsDialog, action: ActionId) {
             let text = if waiting { "Press keys..." } else { &c.label() };
             let in_conflict = d.draft.keymap.conflicts().iter().any(|k| &k.chord == c);
             let color = if in_conflict {
-                theme::DANGER
+                theme::p().danger
             } else {
-                theme::TEXT_STRONG
+                theme::p().text_strong
             };
             if chip(ui, text, waiting, color).clicked() {
                 d.capture = Some(Capture {
@@ -441,7 +452,7 @@ fn keymap_row(ui: &mut Ui, d: &mut SettingsDialog, action: ActionId) {
         }
         let adding = d.capture == Some(Capture { action, slot: None });
         if adding {
-            chip(ui, "Press keys...", true, theme::TEXT_STRONG);
+            chip(ui, "Press keys...", true, theme::p().text_strong);
         } else if ui
             .small_button("+")
             .on_hover_text("Add a shortcut")

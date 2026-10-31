@@ -5,6 +5,14 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Light theme** (redesign phase 4). *Settings ▸ General ▸ Theme* offers *Dark* (the
+  default), *Light* and *Follow system*, and switches at once. Both themes share the hue
+  and the ultramarine accent; every text colour stays at 4.5:1 contrast or better on
+  panels and headers in both, checked by a test. The viewport keeps a mid-grey ground in
+  either theme, so colours are judged the same way. Palette marks (favourite numbers,
+  the selected swatch outline) pick light or dark ink by the colour under them.
+
 ### Changed
 - **New interface colours and type** (redesign phase 1, see `docs/rizxel_ui_redesign.html`).
   The greys are tinted slightly toward the slate of the Rizxel icon, the accent is the

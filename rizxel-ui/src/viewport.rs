@@ -651,13 +651,13 @@ pub fn show(
         }
         // No wgpu device (should not happen with the wgpu renderer).
         None => {
-            painter.rect_filled(rect, 0.0, theme::WORKSPACE);
+            painter.rect_filled(rect, 0.0, theme::p().workspace);
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
                 "wgpu renderer unavailable",
                 theme::regular(13.0),
-                theme::TEXT,
+                theme::p().text,
             );
         }
     }
@@ -680,7 +680,7 @@ pub fn show(
             Align2::LEFT_BOTTOM,
             "Meshing...",
             theme::regular(12.0),
-            theme::TEXT_DIM,
+            theme::p().text_dim,
         );
     }
 
@@ -983,7 +983,7 @@ fn paint_slice_slider(painter: &egui::Painter, state: &AppState, track: Rect, ac
         Vec2::new(SLIDER_WIDTH, thumb_h),
     );
     let color = if active {
-        theme::TEXT_STRONG
+        theme::p().text_strong
     } else {
         Color32::from_gray(200)
     };
@@ -1000,7 +1000,7 @@ fn paint_slice_slider(painter: &egui::Painter, state: &AppState, track: Rect, ac
             Align2::RIGHT_CENTER,
             format!("{} {} / {count}", ["X", "Y", "Z"][axis], layer + 1),
             theme::semibold(11.0),
-            theme::TEXT_STRONG,
+            theme::p().text_strong,
         );
     }
 }
@@ -1027,7 +1027,7 @@ fn scene_frame(
         }
         _ => {
             let bg = state.settings.viewport.background;
-            let bg = bg.map_or(theme::WORKSPACE, |[r, g, b]| {
+            let bg = bg.map_or(theme::p().workspace, |[r, g, b]| {
                 egui::Color32::from_rgb(r, g, b)
             });
             (RenderLook::default(), bg)
@@ -1348,7 +1348,7 @@ fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget
         let stroke = if highlighted {
             theme::BOUND
         } else {
-            theme::BORDER
+            theme::p().border
         };
         painter.add(Shape::convex_polygon(
             quad.to_vec(),
@@ -1358,7 +1358,7 @@ fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget
         if depth > 0.35 {
             let label_pos = to_screen(n).0;
             let text = if highlighted {
-                theme::TEXT_STRONG
+                theme::p().text_strong
             } else {
                 Color32::from_rgb(0xd4, 0xd4, 0xd8)
             };
@@ -1377,7 +1377,7 @@ fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget
             if let Some(&(_, idx)) = CUBE_EDGES.iter().find(|&&(ve, _)| ve == e) {
                 painter.add(Shape::line_segment(
                     [verts[idx[0] as usize], verts[idx[1] as usize]],
-                    Stroke::new(4.0, theme::TEXT_STRONG),
+                    Stroke::new(4.0, theme::p().text_strong),
                 ));
             }
         }
@@ -1386,7 +1386,7 @@ fn view_cube(ui: &mut Ui, camera: &OrbitCamera, rect: Rect) -> Option<ViewTarget
                 painter.add(Shape::circle_filled(
                     verts[i],
                     CORNER_DOT_RADIUS,
-                    theme::TEXT_STRONG,
+                    theme::p().text_strong,
                 ));
             }
         }
@@ -1486,9 +1486,9 @@ fn view_toggles(ui: &mut Ui, state: &mut AppState, rect: Rect) {
             glyph,
             theme::icon(15.0),
             if *on {
-                theme::TEXT_STRONG
+                theme::p().text_strong
             } else {
-                theme::TEXT_DIM
+                theme::p().text_dim
             },
         );
     }

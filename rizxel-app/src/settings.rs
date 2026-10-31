@@ -30,12 +30,38 @@ pub const GRID_WIDTH_RANGE: std::ops::RangeInclusive<f32> = 0.5..=4.0;
 /// Range of the voxel grid opacity.
 pub const GRID_OPACITY_RANGE: std::ops::RangeInclusive<f32> = 0.1..=1.0;
 
-/// Color theme. Only the dark theme exists so far.
+/// Color theme of the interface. The viewport keeps its own mid-grey
+/// ground in every theme.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
     #[default]
     Dark,
+    Light,
+    /// Dark or light, following the operating system.
+    System,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::Dark, Theme::Light, Theme::System];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+            Theme::System => "Follow system",
+        }
+    }
+
+    /// Whether to draw the light theme, given whether the system is light
+    /// (`None` when it is not known: dark).
+    pub fn is_light(self, system_light: Option<bool>) -> bool {
+        match self {
+            Theme::Dark => false,
+            Theme::Light => true,
+            Theme::System => system_light.unwrap_or(false),
+        }
+    }
 }
 
 /// How the mouse moves the viewport camera.
@@ -339,10 +365,25 @@ mod tests {
     }
 
     #[test]
+    fn theme_follows_the_system_only_when_asked() {
+        assert!(!Theme::Dark.is_light(Some(true)));
+        assert!(Theme::Light.is_light(Some(false)));
+        assert!(Theme::System.is_light(Some(true)));
+        assert!(!Theme::System.is_light(Some(false)));
+        assert!(!Theme::System.is_light(None), "unknown system: dark");
+        // Settings saved before the light theme still read as dark.
+        let g: GeneralSettings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(g.theme, Theme::Dark);
+        let g: GeneralSettings = serde_json::from_str(r#"{"theme":"system"}"#).unwrap();
+        assert_eq!(g.theme, Theme::System);
+    }
+
+    #[test]
     fn round_trip() {
         let dir = temp("rt");
         let file = dir.join("settings.json");
         let mut s = Settings::default();
+        s.general.theme = Theme::System;
         s.general.undo_limit = 100;
         s.general.autosave_minutes = 5;
         s.viewport.camera_controls = CameraControls::AltMouse;

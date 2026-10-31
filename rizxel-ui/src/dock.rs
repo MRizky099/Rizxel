@@ -732,13 +732,13 @@ fn style(ui: &Ui) -> DockStyle {
     // Every panel sets its own minimum size (`Panel::limits`); a zero floor
     // lets a collapsed group shrink to its tab strip.
     style.min_pane = 0.0;
-    style.background = theme::BG_PANEL;
-    style.tab_background = theme::BG_HEADER;
-    style.active_background = theme::BG_PANEL;
-    style.text = theme::TEXT;
-    style.inactive_text = theme::TEXT_DIM;
-    style.border = Stroke::new(1.0, theme::BORDER);
-    style.accent = theme::ACCENT_LINE;
+    style.background = theme::p().bg_panel;
+    style.tab_background = theme::p().bg_header;
+    style.active_background = theme::p().bg_panel;
+    style.text = theme::p().text;
+    style.inactive_text = theme::p().text_dim;
+    style.border = Stroke::new(1.0, theme::p().border);
+    style.accent = theme::p().accent_line;
     style.font = theme::regular(12.0);
     // Tabs share their strip's width; strips with too many tabs scroll.
     style.tab_sizing = TabSizing::Fill;

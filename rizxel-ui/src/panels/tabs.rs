@@ -31,7 +31,7 @@ pub fn wanted_width(ui: &Ui, state: &AppState) -> f32 {
 fn tab_width(ui: &Ui, title: &str) -> f32 {
     let text_width = ui
         .painter()
-        .layout_no_wrap(title.to_owned(), theme::regular(13.0), theme::TEXT)
+        .layout_no_wrap(title.to_owned(), theme::regular(13.0), theme::p().text)
         .size()
         .x;
     // Padding (16) + icon (18) + text + gap (12) + close (14) + padding (16).
@@ -55,7 +55,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
             "doc_tabs",
             height,
             NEW_BUTTON_WIDTH,
-            theme::BG_TAB_HOVER,
+            theme::p().bg_tab_hover,
             |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (i, doc) in state.documents.iter().enumerate() {
@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         // Pinned outside the scroll area so it is always reachable.
         let new_style = IconStyle::small()
             .size(egui::vec2(NEW_BUTTON_WIDTH, height))
-            .hover_fill(theme::BG_TAB_HOVER);
+            .hover_fill(theme::p().bg_tab_hover);
         if icon_button(ui, icon::PLUS, new_style, true)
             .on_hover_text("New project (Ctrl+N)")
             .clicked()
@@ -135,27 +135,27 @@ fn tab(
     let hovered = response.hovered() || close.hovered();
     let painter = ui.painter();
     if active {
-        painter.rect_filled(rect, 0.0, theme::BG_PANEL);
+        painter.rect_filled(rect, 0.0, theme::p().bg_panel);
         painter.hline(
             rect.x_range(),
             rect.top() + 1.0,
-            Stroke::new(2.0, theme::ACCENT_LINE),
+            Stroke::new(2.0, theme::p().accent_line),
         );
     } else {
         if hovered {
-            painter.rect_filled(rect, 0.0, theme::BG_TAB_HOVER);
+            painter.rect_filled(rect, 0.0, theme::p().bg_tab_hover);
         }
         painter.vline(
             rect.right() - 0.5,
             rect.y_range(),
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0, theme::p().border),
         );
     }
 
     let text_color = if active {
-        theme::TEXT_STRONG
+        theme::p().text_strong
     } else {
-        theme::TEXT_DIM
+        theme::p().text_dim
     };
     let logo_rect = Rect::from_center_size(
         rect.left_center() + egui::vec2(23.0, 0.0),
@@ -177,12 +177,12 @@ fn tab(
     // Dirty documents show a filled dot, the one unsaved marker, that turns
     // into × on hover (VS Code style).
     if dirty && !hovered {
-        painter.circle_filled(close_rect.center(), 4.0, theme::TEXT);
+        painter.circle_filled(close_rect.center(), 4.0, theme::p().text);
     } else {
         let color = if close.hovered() {
-            theme::TEXT_STRONG
+            theme::p().text_strong
         } else {
-            theme::TEXT_DIM
+            theme::p().text_dim
         };
         if close.hovered() || active || hovered {
             painter.text(

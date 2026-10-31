@@ -26,7 +26,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     // panel's vertical one an overflowing bar pushed its content below the
     // left arrow, out of view.
     ui.horizontal(|ui| {
-        hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
+        hscroll_strip(ui, "option_bar", height, 0.0, theme::p().hover, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             if state.view_mode == ViewMode::Render {
                 render_bar(ui, state, icons);
@@ -109,12 +109,20 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     } else {
         1.0
     };
-    ui.add(
-        egui::ProgressBar::new(fraction)
-            .text(egui::RichText::new(text).size(11.0))
-            .desired_width(120.0),
-    )
-    .on_hover_text("Samples per pixel of the preview");
+    // The count runs across the filled and the empty part: on a light well
+    // the bar is a pale accent under dark text, on dark the solid accent.
+    let mut bar = egui::ProgressBar::new(fraction).desired_width(120.0);
+    bar = if theme::is_light() {
+        bar.fill(theme::ACCENT.gamma_multiply(0.3)).text(
+            egui::RichText::new(text)
+                .size(11.0)
+                .color(theme::p().text_strong),
+        )
+    } else {
+        bar.text(egui::RichText::new(text).size(11.0))
+    };
+    ui.add(bar)
+        .on_hover_text("Samples per pixel of the preview");
 
     vertical_divider(ui, DIVIDER_HEIGHT);
     if let Some(doc) = state.doc_mut() {
@@ -122,7 +130,7 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         ui.label(
             egui::RichText::new("Output")
                 .size(12.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         let max = rizxel_math::render::MAX_OUTPUT_SIDE;
         ui.add(egui::DragValue::new(&mut s.output.width).range(1..=max));
@@ -144,7 +152,7 @@ fn help_button(ui: &mut Ui, page: &str, topic: &str) {
     let button = egui::Button::new(
         egui::RichText::new(egui_phosphor::regular::QUESTION)
             .font(theme::icon(14.0))
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     )
     .frame(false);
     if ui
@@ -186,7 +194,7 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     // Operations only affect the drawing tools; others show them dimmed.
     let ops_enabled = state.tool.uses_voxel_op();
     for op in [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Join] {
-        op_button(ui, state, icons, op, ops_enabled, theme::ACCENT_LINE);
+        op_button(ui, state, icons, op, ops_enabled, theme::p().accent_line);
     }
 
     vertical_divider(ui, DIVIDER_HEIGHT);
@@ -205,7 +213,7 @@ fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
             icons.get(op),
             carves == carve,
             true,
-            Some(theme::ACCENT_LINE),
+            Some(theme::p().accent_line),
         );
         let tip = if carve {
             "Subtract: carve the face region inward (hold Shift to switch)"
@@ -222,7 +230,7 @@ fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         icons.get(VoxelOp::Join),
         false,
         false,
-        Some(theme::ACCENT_LINE),
+        Some(theme::p().accent_line),
     )
     .on_hover_text(unused(VoxelOp::Join));
 
@@ -284,8 +292,8 @@ fn icon_texture_button(
     let hovered = enabled && response.hovered();
 
     if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::BG_BUTTON);
-        let stroke = accent.unwrap_or(theme::ACCENT_LINE);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().bg_button);
+        let stroke = accent.unwrap_or(theme::p().accent_line);
         let stroke = if enabled {
             stroke
         } else {
@@ -298,7 +306,7 @@ fn icon_texture_button(
             StrokeKind::Inside,
         );
     } else if hovered {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
 
     let tint = match (enabled, active || hovered) {
@@ -317,7 +325,7 @@ fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
         egui::RichText::new(state.tool.label())
             .size(12.0)
             .strong()
-            .color(theme::TEXT_STRONG),
+            .color(theme::p().text_strong),
     );
     let tool = state.tool;
     help_button(
@@ -482,7 +490,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 ui.painter().rect_stroke(
                     rect,
                     theme::RADIUS,
-                    Stroke::new(1.0, theme::BORDER),
+                    Stroke::new(1.0, theme::p().border),
                     StrokeKind::Inside,
                 );
                 response.on_hover_text(format!(
@@ -622,7 +630,7 @@ fn caption_small(ui: &mut Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(11.0)
-            .color(theme::TEXT_MUTED),
+            .color(theme::p().text_muted),
     );
 }
 
@@ -698,7 +706,7 @@ fn axis_drag(ui: &mut Ui, label: &str, value: &mut i32, range: std::ops::RangeIn
     ui.label(
         egui::RichText::new(label)
             .size(11.0)
-            .color(theme::TEXT_MUTED),
+            .color(theme::p().text_muted),
     );
     ui.add(egui::DragValue::new(value).speed(0.1).range(range));
 }
@@ -882,14 +890,18 @@ fn gap(ui: &mut Ui) {
 }
 
 fn caption(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(12.0).color(theme::TEXT_DIM));
+    ui.label(
+        egui::RichText::new(text)
+            .size(12.0)
+            .color(theme::p().text_dim),
+    );
 }
 
 fn labeled_drag(ui: &mut Ui, label: &str, value: &mut u32, range: std::ops::RangeInclusive<u32>) {
     ui.label(
         egui::RichText::new(label)
             .size(11.0)
-            .color(theme::TEXT_MUTED),
+            .color(theme::p().text_muted),
     );
     ui.add(egui::DragValue::new(value).speed(0.1).range(range));
 }
@@ -969,7 +981,7 @@ fn segment_widths<T>(ui: &Ui, items: &[(T, &str)]) -> (Vec<f32>, f32) {
         .map(|(_, label)| {
             let size = ui
                 .painter()
-                .layout_no_wrap((*label).to_owned(), seg_font(), theme::TEXT)
+                .layout_no_wrap((*label).to_owned(), seg_font(), theme::p().text)
                 .size();
             height = height.max(size.y);
             size.x + SEG_PAD.x * 2.0
@@ -1040,7 +1052,7 @@ fn segments_sized(
     let (outer, _) =
         ui.allocate_exact_size(egui::vec2(widths.iter().sum(), height), Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(outer, theme::RADIUS, theme::BG_APP);
+    painter.rect_filled(outer, theme::RADIUS, theme::p().bg_app);
 
     let radius = theme::RADIUS.nw;
     let last = labels.len() - 1;
@@ -1054,9 +1066,9 @@ fn segments_sized(
         let response = ui.interact(rect, ui.id().with((id, i)), Sense::click());
         let active = active[i];
         let fill = if active {
-            theme::HOVER
+            theme::p().hover
         } else if response.hovered() {
-            theme::BG_BUTTON
+            theme::p().bg_button
         } else {
             Color32::TRANSPARENT
         };
@@ -1069,9 +1081,9 @@ fn segments_sized(
         };
         painter.rect_filled(rect, corners, fill);
         let color = if active || response.hovered() {
-            theme::TEXT_STRONG
+            theme::p().text_strong
         } else {
-            theme::TEXT_DIM
+            theme::p().text_dim
         };
         painter.text(
             rect.center(),
@@ -1088,7 +1100,7 @@ fn segments_sized(
     painter.rect_stroke(
         outer,
         theme::RADIUS,
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::p().border),
         StrokeKind::Inside,
     );
     clicked

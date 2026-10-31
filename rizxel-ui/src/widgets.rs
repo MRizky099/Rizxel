@@ -20,9 +20,9 @@ impl IconStyle {
         Self {
             size: Vec2::splat(32.0),
             icon_size: 15.0,
-            color: theme::TEXT,
-            hover_color: theme::TEXT_STRONG,
-            hover_fill: theme::HOVER,
+            color: theme::p().text,
+            hover_color: theme::p().text_strong,
+            hover_fill: theme::p().hover,
         }
     }
 
@@ -31,7 +31,7 @@ impl IconStyle {
         Self {
             size: Vec2::splat(40.0),
             icon_size: 17.0,
-            color: theme::TEXT_DIM,
+            color: theme::p().text_dim,
             ..Self::bar()
         }
     }
@@ -41,8 +41,8 @@ impl IconStyle {
         Self {
             size: Vec2::splat(18.0),
             icon_size: 13.0,
-            color: theme::TEXT_DIM,
-            hover_color: theme::TEXT_STRONG,
+            color: theme::p().text_dim,
+            hover_color: theme::p().text_strong,
             hover_fill: Color32::TRANSPARENT,
         }
     }
@@ -127,7 +127,7 @@ pub fn vertical_divider(ui: &mut Ui, height: f32) {
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::p().separator),
     );
 }
 
@@ -137,7 +137,7 @@ pub fn horizontal_divider(ui: &mut Ui, width: f32) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::p().separator),
     );
 }
 

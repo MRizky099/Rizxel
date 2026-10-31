@@ -91,7 +91,7 @@ fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(
         RichText::new(text)
             .font(theme::semibold(14.0))
-            .color(theme::TEXT_STRONG),
+            .color(theme::p().text_strong),
     );
     ui.add_space(4.0);
 }
@@ -121,7 +121,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialogs) {
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new(text).size(11.0).color(theme::p().text_dim));
 }
 
 /// Options for mesh exports, then the save dialog.
@@ -154,7 +154,7 @@ fn export_options(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialo
                         FileFormat::Stl => "mm per voxel",
                         _ => "units per voxel",
                     };
-                    ui.label(RichText::new(unit).color(theme::TEXT_DIM));
+                    ui.label(RichText::new(unit).color(theme::p().text_dim));
                     if scale != format.default_scale() && ui.small_button("Default").clicked() {
                         scale = format.default_scale();
                     }
@@ -314,7 +314,7 @@ fn voxelizer(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialogs) {
                 file_name(&d.mesh.path),
                 d.mesh.triangles.len()
             ))
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         );
         ui.add_space(8.0);
         let s = &mut d.settings;
@@ -357,11 +357,11 @@ fn voxelizer(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialogs) {
                         p.voxels,
                         if p.exact { " (exact grid)" } else { "" }
                     ))
-                    .color(theme::TEXT_STRONG),
+                    .color(theme::p().text_strong),
                 );
             }
             Some(Err(e)) => {
-                ui.label(RichText::new(e).color(theme::DANGER));
+                ui.label(RichText::new(e).color(theme::p().danger));
             }
             None => {}
         }
@@ -402,7 +402,7 @@ fn heightmap(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialogs) {
                 "{}: brighter pixels make taller columns; images over 256 pixels are scaled down",
                 file_name(&d.path)
             ))
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -415,7 +415,7 @@ fn heightmap(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialogs) {
                 .color
                 .as_deref()
                 .map_or("Default color".to_owned(), file_name);
-            ui.label(RichText::new(label).color(theme::TEXT_STRONG));
+            ui.label(RichText::new(label).color(theme::p().text_strong));
             if ui.button("Choose...").clicked() {
                 if let Some(p) = rfd::FileDialog::new()
                     .set_title("Color Image")

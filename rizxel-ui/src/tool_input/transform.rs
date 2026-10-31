@@ -590,7 +590,7 @@ fn draw(f: &Frame, doc: &Document, area: &VoxelBox, active: Option<Handle>, out:
             ghost(
                 bmin,
                 &s.out_of_bounds,
-                theme::DANGER.gamma_multiply(0.6),
+                theme::p().danger.gamma_multiply(0.6),
                 out,
             );
         }

@@ -41,19 +41,22 @@ fn history_row(ui: &mut Ui, row: usize, label: &str, position: usize) -> Option<
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::click());
     let current = row == position;
     if current {
-        ui.painter().rect_filled(rect, theme::RADIUS, theme::HOVER);
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::p().hover);
         let accent =
             egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        ui.painter().rect_filled(accent, 0.0, theme::ACCENT_LINE);
+        ui.painter()
+            .rect_filled(accent, 0.0, theme::p().accent_line);
     } else if response.hovered() {
-        ui.painter().rect_filled(rect, theme::RADIUS, theme::HOVER);
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
     let color = if row > position {
-        theme::TEXT_DIM
+        theme::p().text_dim
     } else if current {
-        theme::TEXT_STRONG
+        theme::p().text_strong
     } else {
-        theme::TEXT
+        theme::p().text
     };
     let glyph = if row == 0 {
         icon::FILE

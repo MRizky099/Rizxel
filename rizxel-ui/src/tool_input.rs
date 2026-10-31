@@ -1354,7 +1354,7 @@ impl ToolInput {
         };
         let paint = color32(doc.selected_rgba());
         let ghost_color = match op {
-            VoxelOp::Subtract => theme::DANGER.gamma_multiply(0.45),
+            VoxelOp::Subtract => theme::p().danger.gamma_multiply(0.45),
             _ => paint.gamma_multiply(0.55),
         };
         match tool {
@@ -1411,7 +1411,7 @@ impl ToolInput {
                 }
                 // Red while a click would carve, as Subtract's ghosts are.
                 let fill = if state.options.extrude.carves(mods.shift) {
-                    theme::DANGER.gamma_multiply(0.45)
+                    theme::p().danger.gamma_multiply(0.45)
                 } else {
                     theme::ACCENT_LIGHT.gamma_multiply(0.4)
                 };

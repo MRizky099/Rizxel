@@ -29,7 +29,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, icons: &I
     ui.painter().vline(
         panel.right() - 0.5,
         panel.y_range(),
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::p().border),
     );
 
     ui.vertical_centered(|ui| {
@@ -129,16 +129,16 @@ fn mode_toggle(
     let painter = ui.painter();
     let hovered = response.hovered() && enabled;
     if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
         let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
+        painter.rect_filled(accent, 0.0, theme::p().accent_line);
     } else if hovered {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
     let color = if !enabled {
-        theme::TEXT_MUTED
+        theme::p().text_muted
     } else if active || hovered {
-        theme::TEXT_STRONG
+        theme::p().text_strong
     } else {
         INACTIVE_TINT
     };
@@ -166,11 +166,11 @@ fn textured_button(ui: &mut Ui, texture: &TextureHandle, active: bool) -> Respon
     let painter = ui.painter();
 
     if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
         let accent = Rect::from_min_max(rect.min, egui::pos2(rect.left() + 2.0, rect.bottom()));
-        painter.rect_filled(accent, 0.0, theme::ACCENT_LINE);
+        painter.rect_filled(accent, 0.0, theme::p().accent_line);
     } else if response.hovered() {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
 
     let tint = if active || response.hovered() {

@@ -98,7 +98,7 @@ pub fn paint_border(ctx: &egui::Context) {
     painter.rect_stroke(
         ctx.content_rect(),
         0.0,
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::p().border),
         StrokeKind::Inside,
     );
 }

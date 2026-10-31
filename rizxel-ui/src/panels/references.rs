@@ -93,7 +93,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                     "Add PNG or JPEG concept art to trace, or drop image files on the viewport.",
                 )
                 .size(11.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
             );
             return;
         }
@@ -178,7 +178,7 @@ fn header(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         {
             state.toggle_all_references();
         }
-        let del = style.hover_color(theme::DANGER);
+        let del = style.hover_color(theme::p().danger);
         if icon_button(ui, icon::TRASH, del, has)
             .on_hover_text("Delete the selected reference")
             .clicked()
@@ -259,16 +259,16 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
     response.dnd_set_drag_payload(RefDrag(i));
     if selected {
         ui.painter()
-            .rect_filled(rect, theme::RADIUS, theme::BG_SELECTED);
+            .rect_filled(rect, theme::RADIUS, theme::p().bg_selected);
         ui.painter().rect_stroke(
             rect,
             theme::RADIUS,
-            Stroke::new(1.0, theme::ACCENT_LINE),
+            Stroke::new(1.0, theme::p().accent_line),
             StrokeKind::Inside,
         );
     } else if response.hovered() {
         ui.painter()
-            .rect_filled(rect, theme::RADIUS, theme::BG_HEADER);
+            .rect_filled(rect, theme::RADIUS, theme::p().bg_header);
     }
     let mut action = None;
 
@@ -302,7 +302,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
             ui.painter().rect_stroke(
                 thumb_rect,
                 2.0,
-                Stroke::new(1.0, theme::TEXT_DIM),
+                Stroke::new(1.0, theme::p().text_dim),
                 StrokeKind::Inside,
             );
         }
@@ -347,7 +347,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
     let badge_galley = ui.painter().layout_no_wrap(
         r.plane.label().to_owned(),
         theme::semibold(11.0),
-        theme::TEXT_STRONG,
+        theme::p().text_strong,
     );
     let badge_size = badge_galley.size() + egui::vec2(8.0, 2.0);
     let badge = Rect::from_min_size(
@@ -366,7 +366,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
     ui.painter().galley(
         badge.min + egui::vec2(4.0, 1.0),
         badge_galley,
-        theme::TEXT_STRONG,
+        theme::p().text_strong,
     );
 
     // Name (inline rename on double-click).
@@ -399,9 +399,11 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
     } else if name_rect.width() > 0.0 {
         let mut text = RichText::new(&r.name).size(12.0);
         text = match (selected, r.visible) {
-            (true, _) => text.color(theme::TEXT_STRONG).font(theme::semibold(12.0)),
-            (false, false) => text.color(theme::TEXT_DIM).italics(),
-            (false, true) => text.color(theme::TEXT_DIM),
+            (true, _) => text
+                .color(theme::p().text_strong)
+                .font(theme::semibold(12.0)),
+            (false, false) => text.color(theme::p().text_dim).italics(),
+            (false, true) => text.color(theme::p().text_dim),
         };
         let galley = egui::WidgetText::from(text).into_galley(
             ui,
@@ -410,7 +412,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
             egui::TextStyle::Body,
         );
         let pos = egui::pos2(name_rect.left(), rect.center().y - galley.size().y / 2.0);
-        ui.painter().galley(pos, galley, theme::TEXT);
+        ui.painter().galley(pos, galley, theme::p().text);
     }
 
     // Drag a row onto another to change the draw order.
@@ -426,7 +428,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
                 rect.bottom() + 2.0
             };
             ui.painter()
-                .hline(rect.x_range(), y, Stroke::new(2.0, theme::ACCENT_LINE));
+                .hline(rect.x_range(), y, Stroke::new(2.0, theme::p().accent_line));
         }
     }
     if let Some(from) = response.dnd_release_payload::<RefDrag>().map(|p| p.0) {
@@ -484,12 +486,12 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
             r.name, r.image.width, r.image.height
         ))
         .size(11.0)
-        .color(theme::TEXT_MUTED),
+        .color(theme::p().text_muted),
     );
     ui.add_enabled_ui(!r.locked, |ui| {
         // Plane.
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Plane").size(12.0).color(theme::TEXT));
+            ui.label(RichText::new("Plane").size(12.0).color(theme::p().text));
             for plane in RefPlane::ALL {
                 let tip = match plane {
                     RefPlane::Xz => "Floor (seen from the top)",
@@ -512,7 +514,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         // Offset, normal axis highlighted.
         let normal = new.plane.normal_axis();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Offset").size(12.0).color(theme::TEXT));
+            ui.label(RichText::new("Offset").size(12.0).color(theme::p().text));
             for (axis, (name, color)) in [
                 ("X", theme::AXIS_X),
                 ("Y", theme::AXIS_Y),
@@ -542,7 +544,11 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
             }
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Snap plane").size(12.0).color(theme::TEXT));
+            ui.label(
+                RichText::new("Snap plane")
+                    .size(12.0)
+                    .color(theme::p().text),
+            );
             for (which, text) in [(0u8, "Min"), (1, "Center"), (2, "Max")] {
                 if ui
                     .small_button(text)
@@ -556,7 +562,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         });
         // Size with aspect lock, or pixels per voxel.
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Size").size(12.0).color(theme::TEXT));
+            ui.label(RichText::new("Size").size(12.0).color(theme::p().text));
             let aspect = r.size.y / r.size.x.max(f32::EPSILON);
             let lock = !ui_state.reference_free_aspect;
             let w = ui.add(
@@ -593,7 +599,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
             ui.label(
                 RichText::new("Pixels per voxel")
                     .size(12.0)
-                    .color(theme::TEXT),
+                    .color(theme::p().text),
             );
             let mut ppv = r.image.width as f32 / r.size.x.max(f32::EPSILON);
             let resp = ui.add(
@@ -610,7 +616,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         // Turns and flips.
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            ui.label(RichText::new("Orient").size(12.0).color(theme::TEXT));
+            ui.label(RichText::new("Orient").size(12.0).color(theme::p().text));
             if icon_button(ui, icon::ARROW_COUNTER_CLOCKWISE, IconStyle::small(), true)
                 .on_hover_text("Rotate 90° counterclockwise")
                 .clicked()
@@ -637,7 +643,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     });
     // Look: allowed while locked.
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Opacity").size(12.0).color(theme::TEXT));
+        ui.label(RichText::new("Opacity").size(12.0).color(theme::p().text));
         let mut percent = new.opacity * 100.0;
         let resp = ui.add(
             egui::Slider::new(&mut percent, 0.0..=100.0)
@@ -651,7 +657,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
         }
     });
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Depth").size(12.0).color(theme::TEXT));
+        ui.label(RichText::new("Depth").size(12.0).color(theme::p().text));
         egui::ComboBox::from_id_salt("reference_depth")
             .selected_text(new.depth.label())
             .show_ui(ui, |ui| {
@@ -661,7 +667,11 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
             });
     });
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Slice Mode").size(12.0).color(theme::TEXT));
+        ui.label(
+            RichText::new("Slice Mode")
+                .size(12.0)
+                .color(theme::p().text),
+        );
         egui::ComboBox::from_id_salt("reference_slice")
             .selected_text(new.slice.label())
             .show_ui(ui, |ui| {
