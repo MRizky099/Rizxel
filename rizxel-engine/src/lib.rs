@@ -28,8 +28,8 @@ pub use shapes::rasterize_shape;
 pub use tools::{
     BrushOptions, BrushShape, ColorPickerOptions, Connectivity, CursorOptions, DragMode,
     ExtrudeOptions, FillMode, FillOptions, FuzzySelectOptions, KeepSide, LineMode, LineOptions,
-    MaskMode, MoveOptions, NamesMode, Pivot, PlaneOptions, SelectionMode, SelectionOptions,
-    ShapeOptions, SliceRequest, Symmetry, Tool, ToolContext, ToolOptions, TransformOptions,
-    VoxelChange, VoxelOp, WorkPlane,
+    MaskMode, Mirror, MoveOptions, NamesMode, Pivot, PlaneOptions, SelectionMode, SelectionOptions,
+    ShapeOptions, SliceRequest, Tool, ToolContext, ToolOptions, TransformOptions, VoxelChange,
+    VoxelOp, WorkPlane,
 };
 pub use voxelize::{voxelize, ColorGrid, Triangle, VoxelizeOptions};

@@ -13,7 +13,7 @@ Drag on the model, the floor or the work plane to paint voxels.
 | **Size X / Y / Z** | Tip size per axis, in voxels. |
 | **Surface paint** | Only paint the voxels on the surface under the cursor. |
 | **Antialias** | Smooth the stroke edges. |
-| **Symmetry** | Mirror the stroke on X, Y and/or Z. |
+| **Mirror** | Mirror the stroke on X, Y and/or Z. |
 | **Connectivity** | For size-1 strokes: *Diagonal*, *Pixel perfect* (no L-shaped corners) or *Solid* (face-connected steps). |
 
 The operation (Add, Subtract, Join, Paint) comes from the option bar.

@@ -33,7 +33,7 @@ The option bar's operation buttons apply to the drawing tools:
 
 ## Common options and modifiers
 
-- **Symmetry X / Y / Z** mirrors the stroke across the middle of the bounds.
+- **Mirror X / Y / Z** mirrors the stroke across the middle of the bounds.
 - **Antialias** smooths the edges of strokes and shapes.
 - `Alt` + click picks a color with any tool.
 - `Esc` cancels and `Enter` applies an open drag, box, curve, paste or transform.

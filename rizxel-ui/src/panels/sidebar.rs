@@ -8,49 +8,208 @@ use rizxel_math::{BoundSize, LayerKind};
 
 use super::UiState;
 use crate::theme;
-use crate::widgets::{icon_button, icon_label, IconStyle};
+use crate::widgets::{check_box, icon_button, icon_label, IconStyle};
 
 const PALETTE_COLUMNS: usize = 8;
 const SWATCH_GAP: f32 = 4.0;
 
-/// Color Palette dock panel.
+/// Height of the favorites footer at the foot of the panel.
+const FAVORITES_HEIGHT: f32 = 40.0;
+
+/// Width of the color picker popup.
+const PICKER_WIDTH: f32 = 264.0;
+
+/// Color Palette dock panel: the current color (its chip opens the picker
+/// in a popup), the swatch grid, and the favorites pinned to the foot.
 pub fn palette(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     if state.doc().is_none() {
         return;
     }
-    palette_tools(ui, state, ui_state);
-    favorites_row(ui, state);
-    if let Some(doc) = state.doc_mut() {
-        palette_section(ui, doc, ui_state);
+    let rect = ui.max_rect();
+    let (body_rect, footer_rect) = rect.split_top_bottom_at_y(rect.bottom() - FAVORITES_HEIGHT);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+        // Nothing of the body may run under the favorites.
+        ui.set_clip_rect(body_rect.intersect(ui.clip_rect()));
+        egui::Frame::NONE.inner_margin(12).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 12.0;
+            let chip = current_color(ui, state, ui_state);
+            if let Some(chip) = chip {
+                picker_popup(&chip, state, ui_state);
+            }
+            palette_head(ui, state, ui_state);
+            if let Some(doc) = state.doc_mut() {
+                swatch_well(ui, doc, ui_state, body_rect.bottom() - 12.0);
+            }
+        });
+    });
+    // The footer is opaque, like the Render panel's: the favorites never
+    // show anything through them.
+    ui.painter()
+        .rect_filled(footer_rect, 0.0, theme::p().bg_panel);
+    ui.painter().hline(
+        footer_rect.x_range(),
+        footer_rect.top(),
+        Stroke::new(1.0, theme::p().border),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(footer_rect.shrink2(egui::vec2(12.0, 9.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| favorites_row(ui, state),
+    );
+}
+
+/// The color picker in a popup under the chip: a click on the chip opens
+/// or closes it, as does a click outside.
+fn picker_popup(chip: &egui::Response, state: &mut AppState, ui_state: &mut UiState) {
+    let mut eyedropper = false;
+    egui::Popup::from_response(chip)
+        .id(picker_popup_id())
+        .open_memory(chip.clicked().then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_width(PICKER_WIDTH);
+            if let Some(doc) = state.doc_mut() {
+                let action = super::color_picker::show(ui, doc, &mut ui_state.color_picker);
+                if action == Some(super::color_picker::PickerAction::Eyedropper) {
+                    eyedropper = true;
+                    ui.close();
+                }
+            }
+        });
+    if eyedropper {
+        state.tool = Tool::ColorPicker;
     }
 }
 
-/// Palette menu, used-colors toggle and the Shift+click marker.
-fn palette_tools(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
-    let Some(doc) = state.doc() else { return };
+fn picker_popup_id() -> egui::Id {
+    egui::Id::new("palette_color_picker")
+}
+
+/// The selected color: a large chip that opens the picker, its hex and RGB,
+/// and the palette menu. Returns the chip's response.
+fn current_color(
+    ui: &mut Ui,
+    state: &mut AppState,
+    ui_state: &mut UiState,
+) -> Option<egui::Response> {
+    let doc = state.doc()?;
+    let rgba = doc.selected_rgba();
     let selected = doc.selected_color;
     let mark = ui_state
         .palette_mark
         .filter(|&m| doc.data.palette.is_selectable(m) && m != selected);
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.menu_button(icon_label(ui, icon::LIST, "Palette", None), |ui| {
+    let open = egui::Popup::is_id_open(ui.ctx(), picker_popup_id());
+    let mut chip = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), Sense::click());
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::to_color32(rgba));
+        let ring = if open || response.hovered() {
+            Stroke::new(2.0, theme::p().accent_line)
+        } else {
+            Stroke::new(1.0, theme::p().separator)
+        };
+        ui.painter()
+            .rect_stroke(rect, theme::RADIUS, ring, StrokeKind::Inside);
+        let tip = if open {
+            "Close the color picker"
+        } else {
+            "Edit this palette color"
+        };
+        chip = Some(response.on_hover_text(tip));
+
+        egui::Grid::new("current_color_values")
+            .num_columns(2)
+            .spacing(egui::vec2(12.0, 4.0))
+            .show(ui, |ui| {
+                let key = |t: &str| RichText::new(t).color(theme::p().text_dim);
+                let value = |t: String| {
+                    RichText::new(t)
+                        .font(theme::mono(12.0))
+                        .color(theme::p().text_strong)
+                };
+                ui.label(key("Hex"));
+                ui.label(value(rgba.to_hex_string()));
+                ui.end_row();
+                ui.label(key("RGB"));
+                ui.label(value(format!("{}, {}, {}", rgba.r, rgba.g, rgba.b)));
+                ui.end_row();
+            });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Flat at rest, the hover fill under the pointer and while open.
+            let menu = egui::Button::new(RichText::new(icon::DOTS_THREE).font(theme::icon(16.0)))
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(28.0, 28.0));
+            egui::containers::menu::MenuButton::from_button(menu)
+                .ui(ui, |ui| {
                     ui.set_min_width(260.0);
                     palette_menu(ui, state, mark);
-                });
-                ui.toggle_value(&mut ui_state.palette_used_only, "Used only")
-                    .on_hover_text("Show only the colors the model uses");
-                if let Some(m) = mark {
-                    ui.label(
-                        RichText::new(format!("Marked: {m}"))
-                            .size(11.0)
-                            .color(theme::p().text_dim),
-                    )
-                    .on_hover_text("Shift+click a swatch to mark it for Gradient and Remap");
-                }
-            });
+                })
+                .0
+                .on_hover_text("Palette menu: load, save, sort, gradient and remap");
+        });
+    });
+    chip
+}
+
+/// "Palette, 56 colors", the Shift+click marker and *Used only*.
+fn palette_head(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+    let Some(doc) = state.doc() else { return };
+    let total = doc.data.palette.colors().len();
+    let count = if ui_state.palette_used_only {
+        let used = doc.used_colors().iter().filter(|u| **u).count();
+        format!("{used} of {total} colors used")
+    } else {
+        format!("{total} colors")
+    };
+    let mark = ui_state
+        .palette_mark
+        .filter(|&m| doc.data.palette.is_selectable(m) && m != doc.selected_color);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(
+            RichText::new("Palette")
+                .font(theme::semibold(13.0))
+                .color(theme::p().text_strong),
+        );
+        ui.label(RichText::new(count).color(theme::p().text_dim));
+        if let Some(m) = mark {
+            ui.label(
+                RichText::new(format!("· marked {m}"))
+                    .size(11.0)
+                    .color(theme::p().accent_line),
+            )
+            .on_hover_text("Shift+click a swatch to mark it for Gradient and Remap");
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            check_box(ui, &mut ui_state.palette_used_only, "Used only")
+                .on_hover_text("Show only the colors the model uses");
+        });
+    });
+}
+
+/// The swatch grid in a recessed well that fills the panel down to `bottom`
+/// (above the favorites) and scrolls on its own.
+fn swatch_well(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, bottom: f32) {
+    // The well's margin (4) and border (1) on each side.
+    let room = (bottom - ui.cursor().top() - 10.0).max(22.0);
+    egui::Frame::NONE
+        .fill(theme::p().bg_app)
+        .stroke(Stroke::new(1.0, theme::p().border))
+        .corner_radius(theme::RADIUS)
+        .inner_margin(4)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("palette_swatches")
+                .max_height(room)
+                // egui keeps a scrolling area 64 px tall by default: here it
+                // takes only the room there is.
+                .min_scrolled_height(room)
+                .auto_shrink([false, true])
+                .show(ui, |ui| swatch_grid(ui, doc, ui_state));
         });
 }
 
@@ -129,65 +288,82 @@ fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
     }
 }
 
-/// Favorite colors `0`-`9`: click selects, right-click stores the selected
-/// color (also `Ctrl+digit` / `Ctrl+Shift+digit`).
+/// Favorite colors `0`-`9`: an empty slot stores the selected color on
+/// click; a filled one selects its color (right-click replaces it). Also
+/// `Ctrl+digit` / `Ctrl+Shift+digit`.
 fn favorites_row(ui: &mut Ui, state: &mut AppState) {
     let Some(palette) = state.doc().map(|d| d.data.palette.clone()) else {
         return;
     };
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(12, 2))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                let size = ((ui.available_width() - 27.0) / 10.0).clamp(12.0, 22.0);
-                for slot in 0..Favorites::SLOTS {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(size, size), Sense::click());
-                    let color = state.favorites.get(slot).and_then(|i| palette.get(i));
-                    match color {
-                        Some(c) => ui.painter().rect_filled(rect, 2.0, theme::to_color32(c)),
-                        None => ui.painter().rect_stroke(
-                            rect.shrink(0.5),
-                            2.0,
-                            Stroke::new(1.0, theme::p().text_dim),
-                            StrokeKind::Inside,
-                        ),
-                    };
-                    let ink = color.map_or(theme::p().text_dim, |c| {
-                        theme::ink_on(theme::to_color32(c))
-                    });
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        slot.to_string(),
-                        theme::regular(11.0),
-                        ink,
+    ui.spacing_mut().item_spacing.x = 3.0;
+    let gaps = 3.0 * (Favorites::SLOTS as f32 - 1.0);
+    let width = ((ui.available_width() - gaps) / Favorites::SLOTS as f32).max(12.0);
+    for slot in 0..Favorites::SLOTS {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 22.0), Sense::click());
+        let color = state.favorites.get(slot).and_then(|i| palette.get(i));
+        match color {
+            Some(c) => {
+                ui.painter().rect_filled(rect, 3.0, theme::to_color32(c));
+                if response.hovered() {
+                    ui.painter().rect_stroke(
+                        rect,
+                        3.0,
+                        Stroke::new(1.0, theme::p().text_strong),
+                        StrokeKind::Outside,
                     );
-                    let tip = if color.is_some() {
-                        format!(
-                            "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
-                        )
-                    } else {
-                        format!(
-                            "Favorite {slot} is empty: click (or Ctrl+Shift+{slot}) stores the selected color"
-                        )
-                    };
-                    let response = response.on_hover_text(tip);
-                    // An empty slot has nothing to select: a click fills it.
-                    if response.clicked() {
-                        if color.is_some() {
-                            state.recall_favorite(slot);
-                        } else {
-                            state.store_favorite(slot);
-                        }
-                    }
-                    if response.secondary_clicked() {
-                        state.store_favorite(slot);
-                    }
                 }
-            });
-        });
+            }
+            None => {
+                let edge = if response.hovered() {
+                    theme::p().text
+                } else {
+                    theme::p().separator
+                };
+                dashed_rect(ui, rect.shrink(0.5), Stroke::new(1.0, edge));
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    slot.to_string(),
+                    theme::mono(11.0),
+                    theme::p().text_muted,
+                );
+            }
+        }
+        let tip = if color.is_some() {
+            format!(
+                "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
+            )
+        } else {
+            format!(
+                "Favorite {slot} is empty: click (or Ctrl+Shift+{slot}) stores the selected color"
+            )
+        };
+        let response = response.on_hover_text(tip);
+        // An empty slot has nothing to select: a click fills it.
+        if response.clicked() {
+            if color.is_some() {
+                state.recall_favorite(slot);
+            } else {
+                state.store_favorite(slot);
+            }
+        }
+        if response.secondary_clicked() {
+            state.store_favorite(slot);
+        }
+    }
+}
+
+/// A rectangle outlined in dashes (an empty favorite slot).
+fn dashed_rect(ui: &Ui, rect: Rect, stroke: Stroke) {
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    ui.painter()
+        .extend(egui::Shape::dashed_line(&corners, stroke, 3.0, 2.0));
 }
 
 /// Layers dock panel.
@@ -259,98 +435,6 @@ pub fn bounds(ui: &mut Ui, state: &mut AppState) {
 }
 
 // ------------------------------------------------------------------ palette
-
-fn palette_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    // Selected color preview with an editable color picker.
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: 12,
-            right: 12,
-            top: 12,
-            bottom: 8,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                let rgba = doc.selected_rgba();
-                let mut color = theme::to_color32(rgba);
-
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(48.0, 48.0), Sense::click());
-                ui.painter().rect_filled(rect, theme::RADIUS, color);
-                ui.painter().rect_stroke(
-                    rect,
-                    theme::RADIUS,
-                    Stroke::new(2.0, theme::p().text_strong),
-                    StrokeKind::Inside,
-                );
-                // Click the preview to edit the palette entry.
-                let popup_id = ui.id().with("palette_color_edit");
-                let response = response.on_hover_text("Click to edit this palette color");
-                egui::Popup::from_response(&response)
-                    .id(popup_id)
-                    .open_memory(response.clicked().then_some(egui::SetOpenCommand::Toggle))
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| {
-                        if egui::color_picker::color_picker_color32(
-                            ui,
-                            &mut color,
-                            egui::color_picker::Alpha::Opaque,
-                        ) {
-                            let [r, g, b, _] = color.to_array();
-                            let new = rizxel_math::Rgba8::rgb(r, g, b);
-                            let index = doc.selected_color;
-                            // Merge continuous picker drags into one undo step.
-                            doc.set_palette_color(index, new, true);
-                        }
-                    });
-
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    ui.add_space(6.0);
-                    kv_row(ui, "HEX", &rgba.to_hex_string());
-                    kv_row(ui, "RGB", &format!("{}, {}, {}", rgba.r, rgba.g, rgba.b));
-                });
-            });
-        });
-    let r = ui.cursor();
-    ui.painter()
-        .hline(r.x_range(), r.top(), Stroke::new(1.0, theme::p().border));
-
-    // Swatch grid, in a recessed well under its count, so a grid cut off by
-    // the panel edge reads as a container that goes on.
-    egui::Frame::NONE.inner_margin(12).show(ui, |ui| {
-        let total = doc.data.palette.colors().len();
-        let count = if ui_state.palette_used_only {
-            let used = doc.used_colors().iter().filter(|u| **u).count();
-            format!("{used} of {total} colors used")
-        } else {
-            format!("{total} colors")
-        };
-        ui.label(RichText::new(count).size(11.0).color(theme::p().text_dim));
-        ui.add_space(2.0);
-        egui::Frame::NONE
-            .fill(theme::p().bg_app)
-            .stroke(Stroke::new(1.0, theme::p().border))
-            .corner_radius(theme::RADIUS)
-            .inner_margin(4)
-            .show(ui, |ui| swatch_grid(ui, doc, ui_state));
-    });
-}
-
-fn kv_row(ui: &mut Ui, key: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new(key).size(12.0).color(theme::p().text));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                RichText::new(value)
-                    .font(theme::mono(12.0))
-                    .color(theme::p().text_strong),
-            );
-        });
-    });
-}
 
 fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let colors = doc.data.palette.colors().to_vec();
@@ -897,7 +981,7 @@ fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
     let mut picked = props.material;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Material").size(12.0).color(theme::p().text));
-        egui::ComboBox::from_id_salt(("layer_material", index))
+        crate::widgets::dropdown(("layer_material", index))
             .selected_text(name(doc, picked))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut picked, None, "Default");

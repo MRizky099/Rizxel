@@ -273,7 +273,7 @@ fn lines_and_curves_are_one_step_each() {
     assert!(n > 0);
     // A thick, mirrored curve.
     options.brush.size = [2; 3];
-    options.brush.symmetry.x = true;
+    options.brush.mirror.x = true;
     let curve = bezier_path(
         &[
             IVec3::new(2, 2, 2),

@@ -658,7 +658,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     });
     ui.horizontal(|ui| {
         ui.label(RichText::new("Depth").size(12.0).color(theme::p().text));
-        egui::ComboBox::from_id_salt("reference_depth")
+        crate::widgets::dropdown("reference_depth")
             .selected_text(new.depth.label())
             .show_ui(ui, |ui| {
                 for mode in DepthMode::ALL {
@@ -672,7 +672,7 @@ fn properties(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                 .size(12.0)
                 .color(theme::p().text),
         );
-        egui::ComboBox::from_id_salt("reference_slice")
+        crate::widgets::dropdown("reference_slice")
             .selected_text(new.slice.label())
             .show_ui(ui, |ui| {
                 for filter in SliceFilter::ALL {

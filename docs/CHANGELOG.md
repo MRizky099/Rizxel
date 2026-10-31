@@ -58,6 +58,21 @@ All notable changes to Rizxel are documented here. Format follows
   one group with the active one filled in blue, and the option bar's `?` at its far
   right.
 
+- **Color Palette panel like the mock**: the selected color with its hex and RGB and a
+  **⋯** palette menu, a "Palette, 56 colors" head with a *Used only* box, the swatches in
+  a well that scrolls on its own, and the favorite slots pinned to the foot of the panel
+  (dashed when empty).
+- **Color picker** in a popup from the Color Palette panel's color chip: a saturation /
+  value square with a hue bar, an eyedropper that switches to the Color Picker tool, RGB
+  and HSV sliders with values, and a hex field with a copy button. A drag is one undo
+  step.
+- **Tool options**: checkboxes are filled with the accent when on, the active X / Y / Z is
+  underlined in its axis colour, and value fields sit in wells with Geist Mono numbers.
+- **Drop-downs** show a chevron, are outlined in the accent while open, and mark the
+  current item in grey.
+- **Symmetry is now Mirror** in the Brush, Line and Shape options (older saved options
+  still load).
+
 ### Fixed
 - **Favorite colors**: clicking an empty slot stores the selected color. Before, only
   right-click or `Ctrl+Shift+digit` did, and a click just reported the slot as empty.

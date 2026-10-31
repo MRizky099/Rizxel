@@ -162,7 +162,7 @@ fn export_options(ctx: &egui::Context, state: &mut AppState, dialogs: &mut Dialo
                 ui.end_row();
 
                 ui.label("Pivot");
-                egui::ComboBox::from_id_salt("export_pivot")
+                crate::widgets::dropdown("export_pivot")
                     .selected_text(o.pivot.label())
                     .show_ui(ui, |ui| {
                         for p in Pivot::ALL {

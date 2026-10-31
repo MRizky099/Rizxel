@@ -306,7 +306,8 @@ fn style_with(style: &mut egui::Style, c: &Palette, theme: egui::Theme) {
 
     w.open.bg_fill = c.hover;
     w.open.weak_bg_fill = c.hover;
-    w.open.bg_stroke = Stroke::new(1.0, edge);
+    // An open drop-down is outlined in the accent line.
+    w.open.bg_stroke = Stroke::new(1.0, c.accent_line);
     w.open.fg_stroke = Stroke::new(1.0, c.text_strong);
     w.open.corner_radius = RADIUS;
 }

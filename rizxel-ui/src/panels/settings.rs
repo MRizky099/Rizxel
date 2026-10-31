@@ -206,7 +206,7 @@ fn general(ui: &mut Ui, d: &mut SettingsDialog) {
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
             row(ui, "Theme", |ui| {
-                egui::ComboBox::from_id_salt("theme")
+                crate::widgets::dropdown("theme")
                     .selected_text(g.theme.label())
                     .show_ui(ui, |ui| {
                         for t in Theme::ALL {
@@ -289,7 +289,7 @@ fn viewport(ui: &mut Ui, d: &mut SettingsDialog) {
                 }
             });
             row(ui, "Camera controls", |ui| {
-                egui::ComboBox::from_id_salt("camera_controls")
+                crate::widgets::dropdown("camera_controls")
                     .selected_text(v.camera_controls.label())
                     .width(300.0)
                     .show_ui(ui, |ui| {

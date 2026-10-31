@@ -6,9 +6,7 @@ use std::collections::HashSet;
 use glam::{IVec3, Vec3};
 use rizxel_math::{BoundSize, VoxelVolume, EMPTY_VOXEL};
 
-use super::{
-    apply_op, apply_symmetry, BrushOptions, BrushShape, ToolContext, VoxelChange, VoxelOp,
-};
+use super::{apply_mirror, apply_op, BrushOptions, BrushShape, ToolContext, VoxelChange, VoxelOp};
 use crate::raycast::RayHit;
 
 /// Stamp center for an operation: additive ops build in front of the hit
@@ -98,7 +96,7 @@ fn hash01(p: IVec3) -> f32 {
 pub fn brush_positions(center: IVec3, opts: &BrushOptions, bounds: BoundSize) -> Vec<IVec3> {
     let (lo, hi) = stamp_box(center, opts.size);
     let cells = soft_box_shape(lo, hi, opts.shape, opts.antialiasing, IVec3::Y);
-    apply_symmetry(cells, bounds, opts.symmetry)
+    apply_mirror(cells, bounds, opts.mirror)
 }
 
 /// [`box_shape`] with the dithered antialiasing band of `antialiasing`

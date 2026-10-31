@@ -1,5 +1,6 @@
 //! UI panels, one module per dockable region of the workspace.
 
+pub mod color_picker;
 pub mod export;
 pub mod history;
 pub mod options;
@@ -30,6 +31,8 @@ pub struct UiState {
     pub palette_used_only: bool,
     /// Second swatch for Gradient and Remap (`Shift+click`).
     pub palette_mark: Option<usize>,
+    /// The Color Palette panel's picker.
+    pub color_picker: color_picker::PickerState,
     /// Reference image being renamed and its edit buffer.
     pub renaming_reference: Option<(usize, String)>,
     /// References panel: width and height change independently.

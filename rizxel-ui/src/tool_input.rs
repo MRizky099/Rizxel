@@ -55,7 +55,7 @@ use rizxel_engine::tools::{
     selection_region, shape_box, shape_cells_toward, MAX_FLOOD_CELLS,
 };
 use rizxel_engine::{
-    Connectivity, DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool,
+    Connectivity, DragMode, ExtrudeOptions, FillMode, MaskMode, Mirror, Ray, RayHit, Tool,
     ToolContext, VoxelOp, WorkPlane,
 };
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
@@ -1677,10 +1677,10 @@ fn write(
     make: impl FnOnce(&ToolContext) -> Vec<VoxelChange>,
 ) {
     let options = state.options;
-    let symmetry = match state.tool {
-        Tool::Brush | Tool::Line => options.brush.symmetry,
-        Tool::Shape => options.shape.symmetry,
-        _ => Symmetry::default(),
+    let axes = match state.tool {
+        Tool::Brush | Tool::Line => options.brush.mirror,
+        Tool::Shape => options.shape.mirror,
+        _ => Mirror::default(),
     };
     let Some(doc) = state.doc_mut() else { return };
     let Some(volume) = doc.data.layers.get(layer).map(|l| &l.volume) else {
@@ -1698,22 +1698,22 @@ fn write(
     // operation, e.g. Add overwrites. A mirror axis along the slice normal
     // still writes its copy onto the mirrored slice (as Qubicle does).
     if let Some(slab) = doc.edit_clip() {
-        let mirrored = mirrored_slab(&doc.plane, slab, doc.data.bounds, symmetry);
+        let mirrored = mirrored_slab(&doc.plane, slab, doc.data.bounds, axes);
         changes.retain(|c| slab.contains(c.pos) || mirrored.is_some_and(|m| m.contains(c.pos)));
     }
     doc.edit_voxels(layer, &changes);
 }
 
-/// Mirror image of the slice slab when `symmetry` mirrors along the slice
+/// Mirror image of the slice slab when `axes` mirrors along the slice
 /// normal.
 fn mirrored_slab(
     plane: &WorkPlane,
     slab: VoxelBox,
     bounds: BoundSize,
-    symmetry: Symmetry,
+    axes: Mirror,
 ) -> Option<VoxelBox> {
     let axis = plane.axis.min(2);
-    if ![symmetry.x, symmetry.y, symmetry.z][axis] {
+    if ![axes.x, axes.y, axes.z][axis] {
         return None;
     }
     let mut m = slab;
@@ -2260,15 +2260,15 @@ mod tests {
         };
         plane.set_slice_layer(8, bounds);
         let slab = plane.slice_box(bounds).unwrap();
-        let z = Symmetry {
+        let z = Mirror {
             z: true,
-            ..Symmetry::default()
+            ..Mirror::default()
         };
         let m = mirrored_slab(&plane, slab, bounds, z).unwrap();
         assert_eq!((m.min.z, m.max.z), (0, 1), "z = 8 mirrors onto z = 0");
-        let x = Symmetry {
+        let x = Mirror {
             x: true,
-            ..Symmetry::default()
+            ..Mirror::default()
         };
         assert_eq!(
             mirrored_slab(&plane, slab, bounds, x),

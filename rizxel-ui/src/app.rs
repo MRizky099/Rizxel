@@ -411,9 +411,7 @@ impl eframe::App for RizxelApp {
                         .inner_margin(egui::Margin::symmetric(8, 0))
                         .show(ui, |ui| panels::options::show(ui, state, icons));
                 }),
-                dock::Panel::Palette => scroll_panel(ui, panel, |ui| {
-                    panels::sidebar::palette(ui, state, ui_state)
-                }),
+                dock::Panel::Palette => panels::sidebar::palette(ui, state, ui_state),
                 dock::Panel::Layers => {
                     scroll_panel(ui, panel, |ui| panels::sidebar::layers(ui, state, ui_state))
                 }

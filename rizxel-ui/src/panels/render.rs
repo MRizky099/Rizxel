@@ -144,7 +144,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
 fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
     ui.horizontal(|ui| {
         ui.label(label("Preset"));
-        egui::ComboBox::from_id_salt("render_preset")
+        crate::widgets::dropdown("render_preset")
             .selected_text("Apply…")
             .width(ui.available_width())
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -436,7 +436,7 @@ fn combo<T: PartialEq + Copy>(
     text: impl Fn(T) -> &'static str,
 ) {
     ui.label(label(name));
-    egui::ComboBox::from_id_salt(("render_combo", name))
+    crate::widgets::dropdown(("render_combo", name))
         .selected_text(text(*value))
         .show_ui(ui, |ui| {
             for item in items {
@@ -759,7 +759,7 @@ fn output_tab(ui: &mut Ui, s: &mut RenderSettings) {
             ui.add(egui::DragValue::new(&mut o.width).range(1..=MAX_OUTPUT_SIDE));
             ui.label("×");
             ui.add(egui::DragValue::new(&mut o.height).range(1..=MAX_OUTPUT_SIDE));
-            egui::ComboBox::from_id_salt("output_size")
+            crate::widgets::dropdown("output_size")
                 .selected_text("")
                 .width(24.0)
                 .show_ui(ui, |ui| {
@@ -863,7 +863,7 @@ fn material_tab(ui: &mut Ui, doc: &mut Document) {
     let mut unique = false;
     ui.horizontal(|ui| {
         ui.label(label("Material"));
-        egui::ComboBox::from_id_salt(("render_material", index))
+        crate::widgets::dropdown(("render_material", index))
             .selected_text(name(doc, picked))
             .width(130.0)
             .show_ui(ui, |ui| {
@@ -1099,7 +1099,7 @@ pub fn shaped_dialog(ctx: &egui::Context, state: &mut AppState, render: &mut Ren
                     ui.end_row();
                     combo(ui, "Pivot", &mut e.pivot, &Pivot::ALL, Pivot::label);
                     ui.label(label("Format"));
-                    egui::ComboBox::from_id_salt("shaped_format")
+                    crate::widgets::dropdown("shaped_format")
                         .selected_text(SHAPED_EXTENSIONS[dialog.format].to_uppercase())
                         .show_ui(ui, |ui| {
                             for (i, ext) in SHAPED_EXTENSIONS.iter().enumerate() {

@@ -11,7 +11,7 @@ use glam::IVec3;
 use rizxel_math::{BoundSize, VoxelBox};
 
 use super::brush::soft_box_shape;
-use super::{apply_symmetry, ShapeOptions};
+use super::{apply_mirror, ShapeOptions};
 
 /// Box of a shape drag. `anchor` and `current` are cells; `grow` is the
 /// unit direction the shape extends in from the anchor's plane (`+normal`
@@ -52,7 +52,7 @@ pub fn shape_cells_toward(
         return Vec::new();
     }
     let cells = soft_box_shape(area.min, area.max, opts.shape, opts.antialiasing, up);
-    apply_symmetry(cells, bounds, opts.symmetry)
+    apply_mirror(cells, bounds, opts.mirror)
 }
 
 #[cfg(test)]

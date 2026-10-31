@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use glam::{Affine3A, IVec3, Mat3, Vec3};
 use rizxel_math::{BoundSize, Voxel, VoxelVolume, EMPTY_VOXEL};
 
-use super::symmetry::mirror as mirror_cell;
+use super::mirror::mirror as mirror_cell;
 use super::VoxelChange;
 
 /// A rotation or flip of the cells inside a box.
@@ -362,7 +362,7 @@ pub fn apply_transform(
 }
 
 /// One-shot mirror across the center plane of `bounds` on `axis` (the live
-/// Symmetry plane): the cells of `region` on the `-axis` side are copied onto
+/// Mirror plane): the cells of `region` on the `-axis` side are copied onto
 /// the `+axis` side, so that side becomes their mirror image. Cells on an odd
 /// axis' center plane stay. `region` is the selection, or `None` for every
 /// cell of the layer.

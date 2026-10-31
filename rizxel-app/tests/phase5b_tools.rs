@@ -532,7 +532,7 @@ fn random_op(d: &mut Document, rng: &mut Lcg) -> usize {
             let path = connect(path, Connectivity::ALL[rng.below(3) as usize]);
             let mut options = ToolOptions::default();
             options.brush.size = [1 + rng.below(2) as u32; 3];
-            options.brush.symmetry.x = rng.below(3) == 0;
+            options.brush.mirror.x = rng.below(3) == 0;
             let op = [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Paint][rng.below(3) as usize];
             let changes = line_stroke(
                 &ToolContext {
