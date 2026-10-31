@@ -91,16 +91,18 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Transient messages (save/open results) take precedence over hints.
             // Transient messages first, then live tool feedback, then the hint.
-            let (text, color) = match (&state.status_message, &state.tool_feedback) {
-                (Some(msg), _) => (msg.clone(), theme::TEXT),
-                (None, Some(fb)) => (fb.clone(), theme::ACCENT_LINE),
-                (None, None) => (state.hint(), theme::BOUND),
+            // A hint is neither a warning nor live state: it stays neutral, with
+            // its key names drawn as caps.
+            let (text, color, icon_color) = match (&state.status_message, &state.tool_feedback) {
+                (Some(msg), _) => (msg.clone(), theme::TEXT_STRONG, theme::TEXT_DIM),
+                (None, Some(fb)) => (fb.clone(), theme::ACCENT_LINE, theme::ACCENT_LINE),
+                (None, None) => (state.hint(), theme::TEXT, theme::TEXT_DIM),
             };
-            ui.label(RichText::new(text).size(11.0).color(color));
+            ui.label(hint_job(&text, color));
             ui.label(
                 RichText::new(icon::INFO)
                     .font(theme::icon(12.0))
-                    .color(color),
+                    .color(icon_color),
             );
         });
     });
@@ -111,6 +113,79 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
     }
 }
 
+/// Key names a hint may start a word with (`Ctrl+click`, `Shift/Ctrl:`).
+const KEYS: [&str; 6] = ["Ctrl", "Shift", "Alt", "Esc", "Enter", "Space"];
+
+/// Splits `text` into plain runs and key names (`true`). A key name is one
+/// of [`KEYS`] or `F1`-`F12`, at the start of a word or after `+` or `/`,
+/// and followed by `+`, `/`, `:`, `,`, `.`, `)`, a space or the end.
+fn hint_spans(text: &str) -> Vec<(bool, &str)> {
+    let mut spans = Vec::new();
+    let mut plain = 0;
+    let mut i = 0;
+    while i < text.len() {
+        let at_boundary = i == 0
+            || text[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c == ' ' || c == '+' || c == '/' || c == '(');
+        let key_len = at_boundary.then(|| key_at(&text[i..])).flatten();
+        match key_len {
+            Some(len) => {
+                if plain < i {
+                    spans.push((false, &text[plain..i]));
+                }
+                spans.push((true, &text[i..i + len]));
+                i += len;
+                plain = i;
+            }
+            None => i += text[i..].chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    if plain < text.len() {
+        spans.push((false, &text[plain..]));
+    }
+    spans
+}
+
+/// Length of the key name `s` starts with, if any.
+fn key_at(s: &str) -> Option<usize> {
+    let function_key = s.strip_prefix('F').and_then(|rest| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let n: u32 = rest[..digits].parse().ok()?;
+        (1..=12).contains(&n).then_some(1 + digits)
+    });
+    let len = function_key.or_else(|| KEYS.iter().find(|k| s.starts_with(**k)).map(|k| k.len()))?;
+    let ends_word = s[len..]
+        .chars()
+        .next()
+        .is_none_or(|c| matches!(c, '+' | '/' | ':' | ',' | '.' | ')' | ' '));
+    ends_word.then_some(len)
+}
+
+/// The status text with each key name on a raised cap.
+fn hint_job(text: &str, color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for (is_key, run) in hint_spans(text) {
+        if is_key {
+            let format = egui::TextFormat {
+                font_id: theme::regular(11.0),
+                color: theme::TEXT_STRONG,
+                background: theme::BG_BUTTON,
+                ..Default::default()
+            };
+            job.append(&format!(" {run} "), 0.0, format);
+        } else {
+            job.append(
+                run,
+                0.0,
+                egui::TextFormat::simple(theme::regular(11.0), color),
+            );
+        }
+    }
+    job
+}
+
 fn separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 12.0), egui::Sense::hover());
     ui.painter().vline(
@@ -118,4 +193,43 @@ fn separator(ui: &mut Ui) {
         rect.y_range(),
         Stroke::new(1.0, egui::Color32::from_white_alpha(51)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(text: &str) -> Vec<&str> {
+        hint_spans(text)
+            .into_iter()
+            .filter_map(|(key, run)| key.then_some(run))
+            .collect()
+    }
+
+    #[test]
+    fn hint_keys_become_caps() {
+        let hint =
+            "Drag to paint. Ctrl+click: line from the last click. Shift: erase, Alt: pick color.";
+        assert_eq!(keys(hint), ["Ctrl", "Shift", "Alt"]);
+        assert_eq!(
+            keys("Shift/Ctrl: finer steps. Enter: apply."),
+            ["Shift", "Ctrl", "Enter"]
+        );
+        assert_eq!(
+            keys("Alt+click picks a layer. F5: Model mode"),
+            ["Alt", "F5"]
+        );
+    }
+
+    #[test]
+    fn hint_spans_keep_every_character() {
+        let hint = "Shift: carve, Esc: cancel.";
+        let joined: String = hint_spans(hint).into_iter().map(|(_, run)| run).collect();
+        assert_eq!(joined, hint);
+    }
+
+    #[test]
+    fn words_that_only_start_like_keys_stay_plain() {
+        assert!(keys("Altitude, Shifted, Escape, Opened F:/models/a.rzxl, F13").is_empty());
+    }
 }

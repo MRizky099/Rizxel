@@ -228,7 +228,7 @@ fn card(ui: &mut Ui, path: &Path, thumb: Option<&TextureHandle>) -> egui::Respon
         egui::pos2(rect.left() + 6.0, text_top + 16.0),
         egui::Align2::LEFT_TOP,
         folder,
-        theme::regular(10.0),
+        theme::regular(11.0),
         theme::TEXT_DIM,
     );
     if hovered {

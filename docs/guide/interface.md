@@ -5,7 +5,7 @@
 | Area | What it holds |
 |---|---|
 | **Title bar** | The [menus](menus.md), the document name, the **Model / Render** switch (`F5`) and the window buttons. |
-| **Document tabs** | One tab per open model. `+` (`Ctrl+N`) adds a new project; unsaved tabs are marked. |
+| **Document tabs** | One tab per open model. `+` (`Ctrl+N`) adds a new project; a dot on a tab marks unsaved changes and turns into the close button on hover. |
 | **Tools rail** (left) | The [tools](tools/index.md), with the Settings button at the bottom. |
 | **Option bar** (top) | Undo and redo, the voxel operation (Add, Subtract, Join, Paint) and the active tool's options. The `?` opens the tool's guide page. |
 | **Viewport** (center) | The model, the grids, the work plane and the view cube. See [Viewport](panels/viewport.md). |

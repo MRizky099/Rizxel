@@ -36,8 +36,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
         toggle_maximize(ui.ctx());
     }
 
+    // Unsaved changes are marked on the document tab, not here.
     let title = match state.doc() {
-        Some(d) if d.is_dirty() => format!("{} \u{2022} Rizxel - Voxel Editor", d.title()),
         Some(d) => format!("{} - Rizxel - Voxel Editor", d.title()),
         None => "Rizxel - Voxel Editor".to_owned(),
     };
@@ -241,7 +241,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
                         actions::import(state, &mut ui_state.dialogs, format);
                     }
-                    ui.label(egui::RichText::new(hint).size(10.0).color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new(hint).size(11.0).color(theme::TEXT_DIM));
                 }
                 ui.separator();
                 if menu_item(ui, icon::MOUNTAINS, "Heightmap (.png, .jpg)...", "", true) {
@@ -249,7 +249,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 }
                 ui.label(
                     egui::RichText::new("Grayscale image to terrain, in a new tab")
-                        .size(10.0)
+                        .size(11.0)
                         .color(theme::TEXT_DIM),
                 );
             },
@@ -269,7 +269,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 }
                 ui.label(
                     egui::RichText::new(format.export_note())
-                        .size(10.0)
+                        .size(11.0)
                         .color(theme::TEXT_DIM),
                 );
             }
@@ -285,7 +285,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
             }
             ui.label(
                 egui::RichText::new("one image per voxel slice, into a folder")
-                    .size(10.0)
+                    .size(11.0)
                     .color(theme::TEXT_DIM),
             );
             ui.separator();
@@ -302,7 +302,7 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 egui::RichText::new(
                     "Render mode: the model as bricks, spheres, ... (OBJ, STL, GLB)",
                 )
-                .size(10.0)
+                .size(11.0)
                 .color(theme::TEXT_DIM),
             );
         });
@@ -696,7 +696,7 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
     }
     ui.label(
         egui::RichText::new("By Color: the selected swatch, within the Fuzzy Select threshold")
-            .size(10.0)
+            .size(11.0)
             .color(theme::TEXT_DIM),
     );
     ui.separator();
@@ -774,7 +774,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     }
     ui.label(
         egui::RichText::new("Drag rows in the Layers panel into and out of groups")
-            .size(10.0)
+            .size(11.0)
             .color(theme::TEXT_DIM),
     );
     ui.separator();
@@ -806,7 +806,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     }
     ui.label(
         egui::RichText::new("Voxels on the plane's + side move to a new layer")
-            .size(10.0)
+            .size(11.0)
             .color(theme::TEXT_DIM),
     );
     ui.separator();
@@ -831,7 +831,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
                 ui.menu_button(op.label(), |ui| {
                     ui.label(
                         egui::RichText::new("Active layer with:")
-                            .size(10.0)
+                            .size(11.0)
                             .color(theme::TEXT_DIM),
                     );
                     for (index, name) in &others {
@@ -866,7 +866,7 @@ fn model_menu(ui: &mut Ui, state: &mut AppState) {
         }
         ui.label(
             egui::RichText::new("Closed cavities get the selected color")
-                .size(10.0)
+                .size(11.0)
                 .color(theme::TEXT_DIM),
         );
         if menu_item(ui, icon::CUBE_TRANSPARENT, "Hollow", "", editable) {

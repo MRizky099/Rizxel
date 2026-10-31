@@ -346,7 +346,7 @@ fn row(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, i: usize) -> O
     }
     let badge_galley = ui.painter().layout_no_wrap(
         r.plane.label().to_owned(),
-        theme::semibold(10.0),
+        theme::semibold(11.0),
         theme::TEXT_STRONG,
     );
     let badge_size = badge_galley.size() + egui::vec2(8.0, 2.0);

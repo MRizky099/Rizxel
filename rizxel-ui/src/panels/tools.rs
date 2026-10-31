@@ -121,7 +121,7 @@ fn slice_toggle(ui: &mut Ui, state: &mut AppState) {
         ),
         None => ("–".to_owned(), theme::TEXT_MUTED),
     };
-    ui.label(RichText::new(label).size(10.0).color(color));
+    ui.label(RichText::new(label).size(11.0).color(color));
 }
 
 /// Mask Mode button (`Shift+M`): protects the selection from every tool.

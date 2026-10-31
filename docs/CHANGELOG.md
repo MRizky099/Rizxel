@@ -12,6 +12,13 @@ All notable changes to Rizxel are documented here. Format follows
   active tool), and muted text now meets 4.5:1 contrast on every panel. The interface
   font is Geist, with Geist Mono for monospaced values (SIL Open Font License, embedded
   in place of Inter).
+- **Readable small text and calmer hints** (redesign phase 2). No interface text is
+  smaller than 11 px (menu notes, layer counts, favourite numbers, reference badges,
+  the axis gizmo). The status bar hint is neutral instead of amber, which stays for the
+  model bounds, and its key names (`Ctrl`, `Shift`, `Alt`, `F5`...) sit on key caps.
+- **Unsaved changes are marked once**: a filled dot on the document tab, which turns
+  into the close button on hover. The `*` in the tab name and the bullet in the title
+  bar are gone; screen readers hear "unsaved changes" on the tab.
 
 ## [0.11.0] — 2026-10-31
 

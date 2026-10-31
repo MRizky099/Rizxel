@@ -1532,7 +1532,7 @@ fn paint_axis_gizmo(painter: &egui::Painter, camera: &OrbitCamera, center: Pos2)
             center + dir * (len + 9.0),
             Align2::CENTER_CENTER,
             label,
-            theme::semibold(10.0),
+            theme::semibold(11.0),
             color,
         );
     }

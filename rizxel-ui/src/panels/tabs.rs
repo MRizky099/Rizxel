@@ -46,8 +46,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState) {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 for (i, doc) in state.documents.iter().enumerate() {
                     let active = i == state.active_doc;
-                    // `name*.rzxl` while unsaved.
-                    let title = doc.tab_title();
+                    // Unsaved changes show as the dot beside the title only.
+                    let title = doc.title();
                     if let Some(a) = tab(
                         ui,
                         i,
@@ -106,6 +106,13 @@ fn tab(
     if reveal {
         response.scroll_to_me(Some(Align::Center));
     }
+    let label = if dirty {
+        format!("{title}, unsaved changes")
+    } else {
+        title.to_owned()
+    };
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, &label));
 
     let close_rect = Rect::from_center_size(
         egui::pos2(rect.right() - 20.0, rect.center().y),
@@ -159,21 +166,26 @@ fn tab(
         text_color,
     );
 
-    // Dirty documents show a dot that turns into × on hover (VS Code style).
-    let (glyph, color) = match (dirty, close.hovered() || hovered) {
-        (true, false) => (icon::CIRCLE, theme::TEXT_DIM),
-        _ if close.hovered() => (icon::X, theme::TEXT_STRONG),
-        _ if active || hovered => (icon::X, theme::TEXT_DIM),
-        _ => ("", theme::TEXT_DIM),
-    };
-    let glyph_size = if glyph == icon::CIRCLE { 8.0 } else { 11.0 };
-    painter.text(
-        close_rect.center(),
-        Align2::CENTER_CENTER,
-        glyph,
-        theme::icon(glyph_size),
-        color,
-    );
+    // Dirty documents show a filled dot, the one unsaved marker, that turns
+    // into × on hover (VS Code style).
+    if dirty && !hovered {
+        painter.circle_filled(close_rect.center(), 4.0, theme::TEXT);
+    } else {
+        let color = if close.hovered() {
+            theme::TEXT_STRONG
+        } else {
+            theme::TEXT_DIM
+        };
+        if close.hovered() || active || hovered {
+            painter.text(
+                close_rect.center(),
+                Align2::CENTER_CENTER,
+                icon::X,
+                theme::icon(11.0),
+                color,
+            );
+        }
+    }
 
     if close.clicked() || response.middle_clicked() {
         Some(TabAction::Close(index))

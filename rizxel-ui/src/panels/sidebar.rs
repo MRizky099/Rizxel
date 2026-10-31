@@ -92,7 +92,7 @@ fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
         None => {
             ui.label(
                 RichText::new("Gradient and Remap: Shift+click a swatch to mark it first")
-                    .size(10.0)
+                    .size(11.0)
                     .color(theme::TEXT_DIM),
             );
         }
@@ -157,7 +157,7 @@ fn favorites_row(ui: &mut Ui, state: &mut AppState) {
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         slot.to_string(),
-                        theme::regular(9.0),
+                        theme::regular(11.0),
                         Color32::from_white_alpha(170),
                     );
                     let response = response.on_hover_text(format!(
@@ -987,7 +987,7 @@ fn layer_row(
     };
     let count_galley =
         ui.painter()
-            .layout_no_wrap(count_text, theme::regular(10.0), theme::TEXT_MUTED);
+            .layout_no_wrap(count_text, theme::regular(11.0), theme::TEXT_MUTED);
     let count_pos = egui::pos2(
         lock_rect.left() - 6.0 - count_galley.size().x,
         rect.center().y - count_galley.size().y / 2.0,
@@ -1000,7 +1000,7 @@ fn layer_row(
     if selected_cells > 0 {
         let galley = ui.painter().layout_no_wrap(
             selected_cells.to_string(),
-            theme::regular(10.0),
+            theme::regular(11.0),
             theme::TEXT_STRONG,
         );
         let size = galley.size() + egui::vec2(8.0, 2.0);
