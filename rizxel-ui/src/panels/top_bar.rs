@@ -61,7 +61,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
 
     // App icon.
     let icon_rect = span((0.0, ICON_WIDTH));
-    crate::icons::paint_logo(ui, icon_rect, 18.0, true);
+    let icon = crate::icons::app_icon(ui.ctx());
+    crate::icons::paint(ui, icon_rect, &icon, 20.0, Color32::WHITE);
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -79,6 +80,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
         // The bar fills the span it is given; measure the menus it holds, so
         // the tabs start right after them.
         let width = egui::MenuBar::new()
+            .style(menu_bar_style)
             .ui(&mut child, |ui| {
                 let left = ui.cursor().left();
                 menu_entries(ui, state, ui_state, dock);
@@ -111,7 +113,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
 
 const VIEW_MODES: [(ViewMode, &str); 2] =
     [(ViewMode::Model, "Model"), (ViewMode::Render, "Render")];
-const ICON_WIDTH: f32 = 32.0;
+/// The app icon's slot: a 20 px icon with room around it.
+const ICON_WIDTH: f32 = 44.0;
 const CONTROLS_WIDTH: f32 = CONTROL_WIDTH * 3.0;
 /// Space between the mode switch and its neighbours.
 const SWITCH_GAP: f32 = 8.0;
@@ -165,6 +168,17 @@ fn bar_layout(width: f32, menus: f32, tabs: f32, switch: f32) -> BarLayout {
         switch,
         controls,
     }
+}
+
+/// The menu bar's buttons: egui's menu style (no frames), with room around
+/// each name and the body text size.
+fn menu_bar_style(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    style.spacing.button_padding = egui::vec2(8.0, 4.0);
+    style.spacing.interact_size.y = 28.0;
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, theme::regular(13.0));
 }
 
 fn menu_style(ui: &mut Ui) {

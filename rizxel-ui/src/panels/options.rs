@@ -20,22 +20,49 @@ const BUTTON_SIZE: f32 = 32.0;
 const ICON_SIZE: f32 = 20.0;
 const DIVIDER_HEIGHT: f32 = 20.0;
 
+/// Width kept at the right end of the bar for its `?` button.
+const HELP_WIDTH: f32 = 36.0;
+
 pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
-    let height = ui.max_rect().height();
+    let rect = ui.max_rect();
+    let height = rect.height();
+    let (strip_rect, help_rect) = rect.split_left_right_at_x(rect.right() - HELP_WIDTH);
+
+    // `?` at the far right, outside the strip, so it stays put whatever the
+    // tool shows.
+    let mut help_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(help_rect)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    help_ui.add_space(8.0);
+    if state.view_mode == ViewMode::Render {
+        help_button(&mut help_ui, crate::help::RENDER_PAGE, "Render mode");
+    } else {
+        let tool = state.tool;
+        help_button(
+            &mut help_ui,
+            &crate::help::tool_page(tool),
+            &format!("The {} tool", tool.label()),
+        );
+    }
+
     // The strip's arrows sit beside it only in a horizontal layout: in the
     // panel's vertical one an overflowing bar pushed its content below the
     // left arrow, out of view.
-    ui.horizontal(|ui| {
-        hscroll_strip(ui, "option_bar", height, 0.0, theme::p().hover, |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if state.view_mode == ViewMode::Render {
-                render_bar(ui, state, icons);
-            } else {
-                common_controls(ui, state, icons);
-                vertical_divider(ui, DIVIDER_HEIGHT);
-                tool_parameters(ui, state);
-            }
-            ui.add_space(8.0);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(strip_rect), |ui| {
+        ui.horizontal(|ui| {
+            hscroll_strip(ui, "option_bar", height, 0.0, theme::p().hover, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if state.view_mode == ViewMode::Render {
+                    render_bar(ui, state, icons);
+                } else {
+                    common_controls(ui, state, icons);
+                    vertical_divider(ui, DIVIDER_HEIGHT);
+                    tool_parameters(ui, state);
+                }
+                ui.add_space(8.0);
+            });
         });
     });
 }
@@ -144,7 +171,6 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 
     vertical_divider(ui, DIVIDER_HEIGHT);
     super::render::projection_buttons(ui, state);
-    help_button(ui, crate::help::RENDER_PAGE, "Render mode");
 }
 
 /// `?` button opening a guide page.
@@ -166,13 +192,13 @@ fn help_button(ui: &mut Ui, page: &str, topic: &str) {
 
 fn undo_redo(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let (can_undo, can_redo) = (state.can_undo(), state.can_redo());
-    if icon_texture_button(ui, icons.get(Icon::Undo), false, can_undo, None)
+    if icon_texture_button(ui, icons.get(Icon::Undo), can_undo)
         .on_hover_text("Undo (Ctrl+Z)")
         .clicked()
     {
         state.undo();
     }
-    if icon_texture_button(ui, icons.get(Icon::Redo), false, can_redo, None)
+    if icon_texture_button(ui, icons.get(Icon::Redo), can_redo)
         .on_hover_text("Redo (Ctrl+Y)")
         .clicked()
     {
@@ -193,13 +219,36 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 
     // Operations only affect the drawing tools; others show them dimmed.
     let ops_enabled = state.tool.uses_voxel_op();
-    for op in [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Join] {
-        op_button(ui, state, icons, op, ops_enabled, theme::p().accent_line);
-    }
+    ops_group(ui, |ui| {
+        for op in [
+            VoxelOp::Add,
+            VoxelOp::Subtract,
+            VoxelOp::Join,
+            VoxelOp::Paint,
+        ] {
+            op_button(ui, state, icons, op, ops_enabled);
+        }
+    });
+}
 
-    vertical_divider(ui, DIVIDER_HEIGHT);
-
-    op_button(ui, state, icons, VoxelOp::Paint, ops_enabled, theme::PAINT);
+/// Add, Subtract, Join and Paint side by side in a well, the active one
+/// filled with the accent.
+fn ops_group(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    // The bar's row spans its whole height: the well only hugs its buttons
+    // (28 px and a 2 px margin).
+    let size = egui::vec2(ui.available_width(), 32.0);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        egui::Frame::NONE
+            .fill(theme::p().bg_app)
+            .stroke(Stroke::new(1.0, theme::p().border))
+            .corner_radius(theme::RADIUS)
+            .inner_margin(2)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                add_contents(ui);
+            });
+    });
 }
 
 /// Extrude's own Add/Subtract (its `carve` option, not the drawing tools'
@@ -207,55 +256,28 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let shift = ui.input(|i| i.modifiers.shift);
     let carves = state.options.extrude.carves(shift);
-    for (op, carve) in [(VoxelOp::Add, false), (VoxelOp::Subtract, true)] {
-        let response = icon_texture_button(
-            ui,
-            icons.get(op),
-            carves == carve,
-            true,
-            Some(theme::p().accent_line),
-        );
-        let tip = if carve {
-            "Subtract: carve the face region inward (hold Shift to switch)"
-        } else {
-            "Add: build the face region outward (hold Shift to switch)"
-        };
-        if response.on_hover_text(tip).clicked() {
-            state.options.extrude.carve = carve;
+    ops_group(ui, |ui| {
+        for (op, carve) in [(VoxelOp::Add, false), (VoxelOp::Subtract, true)] {
+            let response = op_icon_button(ui, icons.get(op), carves == carve, true);
+            let tip = if carve {
+                "Subtract: carve the face region inward (hold Shift to switch)"
+            } else {
+                "Add: build the face region outward (hold Shift to switch)"
+            };
+            if response.on_hover_text(tip).clicked() {
+                state.options.extrude.carve = carve;
+            }
         }
-    }
-    let unused = |op: VoxelOp| format!("{} (not used by the Extrude tool)", op.label());
-    icon_texture_button(
-        ui,
-        icons.get(VoxelOp::Join),
-        false,
-        false,
-        Some(theme::p().accent_line),
-    )
-    .on_hover_text(unused(VoxelOp::Join));
-
-    vertical_divider(ui, DIVIDER_HEIGHT);
-
-    icon_texture_button(
-        ui,
-        icons.get(VoxelOp::Paint),
-        false,
-        false,
-        Some(theme::PAINT),
-    )
-    .on_hover_text(unused(VoxelOp::Paint));
+        let unused = |op: VoxelOp| format!("{} (not used by the Extrude tool)", op.label());
+        for op in [VoxelOp::Join, VoxelOp::Paint] {
+            op_icon_button(ui, icons.get(op), false, false).on_hover_text(unused(op));
+        }
+    });
 }
 
-fn op_button(
-    ui: &mut Ui,
-    state: &mut AppState,
-    icons: &Icons,
-    op: VoxelOp,
-    enabled: bool,
-    accent: Color32,
-) {
+fn op_button(ui: &mut Ui, state: &mut AppState, icons: &Icons, op: VoxelOp, enabled: bool) {
     let active = state.op == op;
-    let response = icon_texture_button(ui, icons.get(op), active, enabled, Some(accent));
+    let response = op_icon_button(ui, icons.get(op), active, enabled);
     let tip = if enabled {
         op.label().to_owned()
     } else {
@@ -270,14 +292,11 @@ fn op_button(
     }
 }
 
-/// 32x32 option-bar button with a pixel-art icon. `active` draws an accent
-/// border (Paint uses yellow, the others blue).
+/// 32x32 option-bar button with a pixel-art icon (Undo and Redo).
 fn icon_texture_button(
     ui: &mut Ui,
     texture: &egui::TextureHandle,
-    active: bool,
     enabled: bool,
-    accent: Option<Color32>,
 ) -> egui::Response {
     let sense = if enabled {
         Sense::click()
@@ -288,27 +307,49 @@ fn icon_texture_button(
     if !ui.is_rect_visible(rect) {
         return response;
     }
-    let painter = ui.painter();
     let hovered = enabled && response.hovered();
-
-    if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::p().bg_button);
-        let stroke = accent.unwrap_or(theme::p().accent_line);
-        let stroke = if enabled {
-            stroke
-        } else {
-            stroke.gamma_multiply(0.4)
-        };
-        painter.rect_stroke(
-            rect,
-            theme::RADIUS,
-            Stroke::new(1.0, stroke),
-            StrokeKind::Inside,
-        );
-    } else if hovered {
-        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
+    if hovered {
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
+    let tint = match (enabled, hovered) {
+        (false, _) => Color32::from_white_alpha(70),
+        (true, true) => Color32::WHITE,
+        (true, false) => Color32::from_gray(185),
+    };
+    icons::paint(ui, rect, texture, ICON_SIZE, tint);
+    response
+}
 
+/// 30x28 button inside the [`ops_group`]: the active one is filled with the
+/// accent (faded when the tool does not use operations).
+fn op_icon_button(
+    ui: &mut Ui,
+    texture: &egui::TextureHandle,
+    active: bool,
+    enabled: bool,
+) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 28.0), sense);
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let hovered = enabled && response.hovered();
+    if active {
+        let fill = if enabled {
+            theme::ACCENT
+        } else {
+            theme::ACCENT.gamma_multiply(0.4)
+        };
+        ui.painter().rect_filled(rect, theme::RADIUS, fill);
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::p().hover);
+    }
     let tint = match (enabled, active || hovered) {
         (false, _) => Color32::from_white_alpha(70),
         (true, true) => Color32::WHITE,
@@ -323,15 +364,8 @@ fn icon_texture_button(
 fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
     ui.label(
         egui::RichText::new(state.tool.label())
-            .size(12.0)
-            .strong()
+            .font(theme::semibold(13.0))
             .color(theme::p().text_strong),
-    );
-    let tool = state.tool;
-    help_button(
-        ui,
-        &crate::help::tool_page(tool),
-        &format!("The {} tool", tool.label()),
     );
     ui.add_space(6.0);
     tool_rows(ui, state);

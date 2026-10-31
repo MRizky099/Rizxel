@@ -164,11 +164,23 @@ fn favorites_row(ui: &mut Ui, state: &mut AppState) {
                         theme::regular(11.0),
                         ink,
                     );
-                    let response = response.on_hover_text(format!(
-                        "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
-                    ));
+                    let tip = if color.is_some() {
+                        format!(
+                            "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
+                        )
+                    } else {
+                        format!(
+                            "Favorite {slot} is empty: click (or Ctrl+Shift+{slot}) stores the selected color"
+                        )
+                    };
+                    let response = response.on_hover_text(tip);
+                    // An empty slot has nothing to select: a click fills it.
                     if response.clicked() {
-                        state.recall_favorite(slot);
+                        if color.is_some() {
+                            state.recall_favorite(slot);
+                        } else {
+                            state.store_favorite(slot);
+                        }
                     }
                     if response.secondary_clicked() {
                         state.store_favorite(slot);

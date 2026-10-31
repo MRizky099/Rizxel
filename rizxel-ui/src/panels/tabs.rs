@@ -34,8 +34,8 @@ fn tab_width(ui: &Ui, title: &str) -> f32 {
         .layout_no_wrap(title.to_owned(), theme::regular(13.0), theme::p().text)
         .size()
         .x;
-    // Padding (16) + icon (18) + text + gap (12) + close (14) + padding (16).
-    (text_width + 76.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+    // Padding (16) + text + gap (12) + close (14) + padding (16).
+    (text_width + 58.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
 }
 
 pub fn show(ui: &mut Ui, state: &mut AppState) {
@@ -157,17 +157,12 @@ fn tab(
     } else {
         theme::p().text_dim
     };
-    let logo_rect = Rect::from_center_size(
-        rect.left_center() + egui::vec2(23.0, 0.0),
-        egui::Vec2::splat(14.0),
-    );
-    crate::icons::paint_logo(ui, logo_rect, 14.0, active || hovered);
 
     // Title, clipped before the close button.
     let text_clip =
         Rect::from_min_max(rect.min, egui::pos2(close_rect.left() - 4.0, rect.bottom()));
     painter.with_clip_rect(text_clip).text(
-        rect.left_center() + egui::vec2(34.0, 0.0),
+        rect.left_center() + egui::vec2(16.0, 0.0),
         Align2::LEFT_CENTER,
         title,
         font,

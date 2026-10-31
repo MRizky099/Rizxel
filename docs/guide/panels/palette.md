@@ -18,5 +18,6 @@ colors there are (with *Used only*, how many the model uses).
 
 ## Favorite colors
 
-`Ctrl+Shift+0` … `9` stores the selected color as a favorite; `Ctrl+0` … `9` selects it
-again.
+Click an empty slot (`0` … `9`) to store the selected color there. Click a filled slot,
+or press `Ctrl+0` … `9`, to select its color again; right-click a slot, or press
+`Ctrl+Shift+0` … `9`, to replace it with the selected color.

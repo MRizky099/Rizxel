@@ -53,7 +53,14 @@ All notable changes to Rizxel are documented here. Format follows
   menu, and the Render button has the output size and samples beside it.
 - *Delete N hidden layers…* asks first; the layer toolbar's targets are 30 px.
 
+- **Title bar and option bar like the mock**: the app icon at the far left, roomier
+  menus, document tabs without the small logo, *Add*, *Subtract*, *Join* and *Paint* in
+  one group with the active one filled in blue, and the option bar's `?` at its far
+  right.
+
 ### Fixed
+- **Favorite colors**: clicking an empty slot stores the selected color. Before, only
+  right-click or `Ctrl+Shift+digit` did, and a click just reported the slot as empty.
 - The tools rail no longer cuts off *Slice*, *Mask* and Settings in a 768 px window: it
   packs closer and scrolls with the wheel.
 - Light theme: slider rails (layer opacity, render settings) were nearly invisible.
