@@ -7,7 +7,7 @@ use glam::{IVec3, Mat4, Vec3};
 use rizxel_app::{Document, OrbitCamera, Projection, RgbaImage};
 use rizxel_math::{BoundSize, RenderPreset, RenderSettings, Rgba8};
 
-use super::offscreen::{headless_device, Headless, OffscreenRaster};
+use super::offscreen::{test_device, Headless, OffscreenRaster, TestGpu};
 use super::pathtrace::{document_params, PathTracer, PhotoJob, PtInputs};
 use crate::viewport::{output_frame, output_projection};
 
@@ -54,8 +54,8 @@ fn r_doc(settings: impl FnOnce(&mut RenderSettings)) -> Document {
     doc
 }
 
-fn gpu() -> Option<Headless> {
-    let gpu = headless_device();
+fn gpu() -> Option<TestGpu> {
+    let gpu = test_device();
     if gpu.is_none() {
         eprintln!("no GPU adapter: skipped");
     }
