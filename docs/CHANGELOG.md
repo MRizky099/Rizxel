@@ -5,7 +5,14 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-11-01
+
 ### Added
+- **Mirror planes**: with Mirror on in the Brush, Line or Shape options, the viewport shows
+  the plane each axis flips across, in that axis's colour, through the bounds' centre.
+  The eye beside the Mirror axes, or *View ▸ Show ▸ Mirror Planes*, hides them.
+- **Move the work plane with any tool**: while the plane is shown, drag its edge to move
+  it, as in Slice Mode. Placing it on a face still takes the Plane tool.
 - **Light theme** (redesign phase 4). *Settings ▸ General ▸ Theme* offers *Dark* (the
   default), *Light* and *Follow system*, and switches at once. Both themes share the hue
   and the ultramarine accent; every text colour stays at 4.5:1 contrast or better on
@@ -37,8 +44,8 @@ All notable changes to Rizxel are documented here. Format follows
   *Delete N hidden layers* (all undoable). The three full-width buttons and the
   "Active: …" line under the list are gone.
 - **Render panel**: the six tabs in a 3 by 2 grid became a column of group headers (Light,
-  Sample, Display, Material, Camera, Output), one open at a time, its settings under
-  its header.
+  Sample, Display, Material, Camera, Output), each expanding and collapsing on its own,
+  its settings under its header.
 - **Tools rail**: the *2D* text button, its dash and the shield are now two labelled
   toggles, *Slice* (showing `Y 3/12` while slicing) and *Mask*.
 - craft-ui (vendored): `DockArea::compact` for grip-only groups, patch 0002.
@@ -72,6 +79,10 @@ All notable changes to Rizxel are documented here. Format follows
   current item in grey.
 - **Symmetry is now Mirror** in the Brush, Line and Shape options (older saved options
   still load).
+- **Fill empty stands on the work plane**: while the plane is shown, the flood stays on
+  the side of it you click, so filling inside an open shape stops at the plane instead
+  of flooding below it.
+- **The app starts on the Cursor tool** instead of the Plane tool.
 
 ### Fixed
 - **Favorite colors**: clicking an empty slot stores the selected color. Before, only
@@ -79,6 +90,10 @@ All notable changes to Rizxel are documented here. Format follows
 - The tools rail no longer cuts off *Slice*, *Mask* and Settings in a 768 px window: it
   packs closer and scrolls with the wheel.
 - Light theme: slider rails (layer opacity, render settings) were nearly invisible.
+- **Slice Mode follows the work plane**: turned on while the plane is shown, the slice
+  starts where the plane is, and turned off, the plane stays on the slice. Before, the
+  first toggle after moving the plane jumped to the last slice (Y layer 0 the first
+  time), and only a third toggle caught up with the plane.
 
 ## [0.11.0] — 2026-10-31
 
