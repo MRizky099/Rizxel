@@ -5,6 +5,11 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Document tabs**: after closing tabs until the rest fit again, the tab strip kept its
+  scroll arrows (and a scrolled-away first tab). It now returns to a plain row as soon as
+  the tabs fit; the option bar's strip had the same fault.
+
 ## [0.12.0] — 2026-11-01
 
 ### Added
