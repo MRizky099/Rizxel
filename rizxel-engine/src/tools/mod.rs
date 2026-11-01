@@ -14,6 +14,7 @@ mod extrude;
 mod fill;
 mod fuzzy;
 mod line;
+mod mirror;
 mod moving;
 mod options;
 mod pick;
@@ -21,7 +22,6 @@ mod quality;
 mod select;
 mod shape;
 mod slice;
-mod symmetry;
 mod transform;
 mod work_plane;
 
@@ -40,6 +40,7 @@ pub use line::{
     bezier_at, bezier_path, connect, line_cells_stamped, line_path, line_stroke, pixel_perfect,
     polyline_path, solid,
 };
+pub use mirror::{apply_mirror, mirror};
 pub use moving::{drag_axis, move_changes, move_selection_changes, resize_bounds};
 pub use options::*;
 pub use pick::pick_voxel;
@@ -53,7 +54,6 @@ pub use select::{
 };
 pub use shape::{shape_box, shape_cells, shape_cells_toward};
 pub use slice::{slice_layers, slice_volume, SliceRequest};
-pub use symmetry::{apply_symmetry, mirror};
 pub use transform::{
     apply_transform, cells_box, flip, mirror as mirror_changes, relocate_changes, rotate90,
     scale_cells, transform_cells, Transform, TransformParams, MAX_SCALE, MIN_SCALE,
@@ -86,11 +86,11 @@ pub struct ToolContext<'a> {
 /// Editing tools shown in the left toolbar, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Tool {
+    #[default]
     Cursor,
     Brush,
     Line,
     Shape,
-    #[default]
     Plane,
     Move,
     Transform,
@@ -294,8 +294,8 @@ mod tests {
     }
 
     #[test]
-    fn plane_is_default_with_prototype_hint() {
-        assert_eq!(Tool::default(), Tool::Plane);
+    fn cursor_is_default_and_plane_has_a_slice_hint() {
+        assert_eq!(Tool::default(), Tool::Cursor);
         assert_eq!(Tool::Plane.hint_with(false), Tool::Plane.hint());
         assert_eq!(Tool::Plane.hint_with(true), Tool::PLANE_SLICE_HINT);
         assert_eq!(Tool::Brush.hint_with(true), Tool::Brush.hint());

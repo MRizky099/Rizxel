@@ -450,7 +450,7 @@ pub fn settings_section(ui: &mut egui::Ui, status: &mut Option<String>) {
         }
     });
     if let Some(s) = status {
-        ui.label(egui::RichText::new(s.as_str()).color(crate::theme::TEXT_DIM));
+        ui.label(egui::RichText::new(s.as_str()).color(crate::theme::p().text_dim));
     }
 }
 

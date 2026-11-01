@@ -195,7 +195,7 @@ pub fn line_cells_stamped(ctx: &ToolContext, path: &[IVec3]) -> Vec<IVec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{apply_symmetry, mirror, ToolOptions, VoxelOp};
+    use crate::tools::{apply_mirror, mirror, ToolOptions, VoxelOp};
     use rizxel_math::{BoundSize, VoxelVolume};
 
     fn v(x: i32, y: i32, z: i32) -> IVec3 {
@@ -309,7 +309,7 @@ mod tests {
         let bounds = BoundSize::new(32, 32, 32);
         let volume = VoxelVolume::new(bounds);
         let mut options = ToolOptions::default();
-        options.brush.symmetry.x = true;
+        options.brush.mirror.x = true;
         let ctx = ToolContext {
             volume: &volume,
             bounds,
@@ -328,7 +328,7 @@ mod tests {
         for &p in &path {
             assert!(cells.contains(&mirror(p, bounds, 0)));
         }
-        let mirrored: HashSet<IVec3> = apply_symmetry(path.clone(), bounds, options.brush.symmetry)
+        let mirrored: HashSet<IVec3> = apply_mirror(path.clone(), bounds, options.brush.mirror)
             .into_iter()
             .collect();
         assert_eq!(cells, mirrored);

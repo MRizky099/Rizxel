@@ -55,7 +55,7 @@ use rizxel_engine::tools::{
     selection_region, shape_box, shape_cells_toward, MAX_FLOOD_CELLS,
 };
 use rizxel_engine::{
-    Connectivity, DragMode, ExtrudeOptions, FillMode, MaskMode, Ray, RayHit, Symmetry, Tool,
+    Connectivity, DragMode, ExtrudeOptions, FillMode, MaskMode, Mirror, Ray, RayHit, Tool,
     ToolContext, VoxelOp, WorkPlane,
 };
 use rizxel_math::{BoundSize, Voxel, VoxelBox, VoxelVolume, EMPTY_VOXEL};
@@ -478,12 +478,10 @@ impl ToolInput {
             }
             _ => None,
         };
-        // Plane edge or (while slicing, any tool) bounds frame under the
-        // cursor: grab handle for moving the plane.
+        // Edge of the shown plane or (while slicing) bounds frame under the
+        // cursor: grab handle for moving the plane, with any tool.
         let edge = match (&self.drag, hover, state.doc()) {
-            (None, Some(p), Some(doc))
-                if box_grab.is_none() && (tool == Tool::Plane || doc.plane.slice) =>
-            {
+            (None, Some(p), Some(doc)) if box_grab.is_none() && doc.plane.active() => {
                 plane_edge_at(f, doc, p)
             }
             _ => None,
@@ -610,6 +608,9 @@ impl ToolInput {
         };
         if let Some(doc) = state.doc() {
             work_plane_overlay(f, doc, arrow_at, &mut preview);
+            if !mods.alt && state.view.mirror_planes {
+                mirror_overlay(f, doc, mirror_axes(state), &mut preview);
+            }
         }
         self.selection_overlay(f, state, &mut preview);
         if let Some(doc) = state.doc().filter(|_| box_select::box_mode(state)) {
@@ -1354,7 +1355,7 @@ impl ToolInput {
         };
         let paint = color32(doc.selected_rgba());
         let ghost_color = match op {
-            VoxelOp::Subtract => theme::DANGER.gamma_multiply(0.45),
+            VoxelOp::Subtract => theme::p().danger.gamma_multiply(0.45),
             _ => paint.gamma_multiply(0.55),
         };
         match tool {
@@ -1411,7 +1412,7 @@ impl ToolInput {
                 }
                 // Red while a click would carve, as Subtract's ghosts are.
                 let fill = if state.options.extrude.carves(mods.shift) {
-                    theme::DANGER.gamma_multiply(0.45)
+                    theme::p().danger.gamma_multiply(0.45)
                 } else {
                     theme::ACCENT_LIGHT.gamma_multiply(0.4)
                 };
@@ -1637,10 +1638,16 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
         return;
     }
     let Some(hit) = hit else { return };
-    // While slicing the flood stays on the slice layer.
-    let limit = doc
+    // While slicing the flood stays on the slice layer; a shown plane is
+    // the ground a Fill empty stays on.
+    let mut limit = doc
         .edit_clip()
         .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
+    if opts.mode == FillMode::Empty {
+        if let Some(side) = doc.plane.side_box(hit.adjacent(), doc.data.bounds) {
+            limit = limit.intersect(&side);
+        }
+    }
     let allowed = doc.region_selection().map(|s| s.cells().clone());
     let merged;
     let source = if opts.current_layer_only {
@@ -1677,11 +1684,7 @@ fn write(
     make: impl FnOnce(&ToolContext) -> Vec<VoxelChange>,
 ) {
     let options = state.options;
-    let symmetry = match state.tool {
-        Tool::Brush | Tool::Line => options.brush.symmetry,
-        Tool::Shape => options.shape.symmetry,
-        _ => Symmetry::default(),
-    };
+    let axes = mirror_axes(state);
     let Some(doc) = state.doc_mut() else { return };
     let Some(volume) = doc.data.layers.get(layer).map(|l| &l.volume) else {
         return;
@@ -1698,22 +1701,31 @@ fn write(
     // operation, e.g. Add overwrites. A mirror axis along the slice normal
     // still writes its copy onto the mirrored slice (as Qubicle does).
     if let Some(slab) = doc.edit_clip() {
-        let mirrored = mirrored_slab(&doc.plane, slab, doc.data.bounds, symmetry);
+        let mirrored = mirrored_slab(&doc.plane, slab, doc.data.bounds, axes);
         changes.retain(|c| slab.contains(c.pos) || mirrored.is_some_and(|m| m.contains(c.pos)));
     }
     doc.edit_voxels(layer, &changes);
 }
 
-/// Mirror image of the slice slab when `symmetry` mirrors along the slice
+/// Mirror axes of the current tool (none for tools without Mirror).
+fn mirror_axes(state: &AppState) -> Mirror {
+    match state.tool {
+        Tool::Brush | Tool::Line => state.options.brush.mirror,
+        Tool::Shape => state.options.shape.mirror,
+        _ => Mirror::default(),
+    }
+}
+
+/// Mirror image of the slice slab when `axes` mirrors along the slice
 /// normal.
 fn mirrored_slab(
     plane: &WorkPlane,
     slab: VoxelBox,
     bounds: BoundSize,
-    symmetry: Symmetry,
+    axes: Mirror,
 ) -> Option<VoxelBox> {
     let axis = plane.axis.min(2);
-    if ![symmetry.x, symmetry.y, symmetry.z][axis] {
+    if ![axes.x, axes.y, axes.z][axis] {
         return None;
     }
     let mut m = slab;
@@ -1956,9 +1968,9 @@ pub fn axis_color(axis: usize) -> Color32 {
 }
 
 /// Corners of the work plane rectangle (voxel space), at its coordinate.
-fn plane_corners(p: &WorkPlane, bounds: BoundSize, at: f32) -> [Vec3; 4] {
+fn plane_corners(axis: usize, bounds: BoundSize, at: f32) -> [Vec3; 4] {
     let size = bounds.0.as_vec3();
-    let axis = p.axis.min(2);
+    let axis = axis.min(2);
     let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
     let corner = |b: f32, c: f32| {
         let mut q = Vec3::ZERO;
@@ -1984,7 +1996,7 @@ fn plane_edge_at(f: &Frame, doc: &Document, pos: Pos2) -> Option<Vec3> {
     if !p.active() {
         return None;
     }
-    let q = plane_corners(&p, bounds, p.sheet_coord(bounds) as f32);
+    let q = plane_corners(p.axis, bounds, p.sheet_coord(bounds) as f32);
     let mut edges: Vec<(Vec3, Vec3)> = (0..4).map(|i| (q[i], q[(i + 1) % 4])).collect();
     if p.slice {
         let size = bounds.0.as_vec3();
@@ -2040,7 +2052,7 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
         0.0
     };
     let sheet = p.sheet_coord(bounds) as f32;
-    let q = plane_corners(&p, bounds, sheet + lift).map(|c| c + f.bmin);
+    let q = plane_corners(p.axis, bounds, sheet + lift).map(|c| c + f.bmin);
     let (fill, line, width) = if p.slice {
         (
             Color32::from_rgba_unmultiplied(170, 170, 170, 70),
@@ -2078,10 +2090,41 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
     }
 }
 
+/// Mirror planes of the enabled `axes`: a sheet across the bounds' center
+/// in the axis color, so Mirror X shows the plane that X flips across.
+fn mirror_overlay(f: &Frame, doc: &Document, axes: Mirror, out: &mut Preview) {
+    let bounds = doc.data.bounds;
+    let ppp = f.pixels_per_point;
+    for (axis, on) in [axes.x, axes.y, axes.z].into_iter().enumerate() {
+        if !on {
+            continue;
+        }
+        let color = axis_color(axis);
+        let at = bounds.0[axis] as f32 * 0.5;
+        let q = plane_corners(axis, bounds, at).map(|c| c + f.bmin);
+        out.planes.extend(PlaneVertex::quad(
+            q,
+            axis,
+            color.gamma_multiply(0.08),
+            Color32::TRANSPARENT,
+        ));
+        for i in 0..4 {
+            out.lines.push(LineInstance::new(
+                q[i],
+                q[(i + 1) % 4],
+                color.gamma_multiply(0.7),
+                MIRROR_WIDTH * ppp,
+            ));
+        }
+    }
+}
+
 /// Hover distance (logical points) at which the plane edge can be grabbed.
 const EDGE_GRAB: f32 = 10.0;
 /// Outline width of the visible work plane, in logical points.
 const PLANE_WIDTH: f32 = 1.5;
+/// Outline width of a mirror plane, in logical points.
+const MIRROR_WIDTH: f32 = 1.0;
 /// Outline width of the slice plane, in logical points.
 const PLANE_SLICE_WIDTH: f32 = 3.0;
 /// Cell lines on the slice sheet: its neutral grey, brightened.
@@ -2260,15 +2303,15 @@ mod tests {
         };
         plane.set_slice_layer(8, bounds);
         let slab = plane.slice_box(bounds).unwrap();
-        let z = Symmetry {
+        let z = Mirror {
             z: true,
-            ..Symmetry::default()
+            ..Mirror::default()
         };
         let m = mirrored_slab(&plane, slab, bounds, z).unwrap();
         assert_eq!((m.min.z, m.max.z), (0, 1), "z = 8 mirrors onto z = 0");
-        let x = Symmetry {
+        let x = Mirror {
             x: true,
-            ..Symmetry::default()
+            ..Mirror::default()
         };
         assert_eq!(
             mirrored_slab(&plane, slab, bounds, x),

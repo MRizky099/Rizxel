@@ -1,5 +1,5 @@
-//! Title bar: app icon, menus, centered title, the Model/Render switch and
-//! window controls.
+//! Title bar: app icon, menus, the document tabs, the Model/Render switch
+//! and window controls.
 //! Doubles as the drag handle for the frameless window.
 
 use egui::{Align2, Color32, Id, Sense, Ui, ViewportCommand};
@@ -36,50 +36,33 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
         toggle_maximize(ui.ctx());
     }
 
-    let title = match state.doc() {
-        Some(d) if d.is_dirty() => format!("{} \u{2022} Rizxel - Voxel Editor", d.title()),
-        Some(d) => format!("{} - Rizxel - Voxel Editor", d.title()),
-        None => "Rizxel - Voxel Editor".to_owned(),
-    };
-    let font = theme::regular(12.0);
-    let title_width = ui
-        .painter()
-        .layout_no_wrap(title.clone(), font.clone(), theme::TEXT_MUTED)
-        .size()
-        .x;
     let menus_id = Id::new("title_bar_menus_width");
     let menus_width = ui.data(|d| d.get_temp(menus_id)).unwrap_or(MENUS_ESTIMATE);
     let layout = bar_layout(
         bar.width(),
         menus_width,
-        title_width,
+        super::tabs::wanted_width(ui, state),
         options::segmented_width(ui, &VIEW_MODES),
     );
     let span = |(left, right): (f32, f32)| {
         egui::Rect::from_x_y_ranges(bar.left() + left..=bar.left() + right, bar.y_range())
     };
 
-    // Title (painted, not interactive), centered on the bar while it fits,
-    // otherwise in the free space between the menus and the mode switch.
-    if let Some(range) = layout.title {
-        let rect = span(range);
-        let mut job = egui::text::LayoutJob::single_section(
-            title,
-            egui::TextFormat::simple(font, theme::TEXT_MUTED),
+    // Document tabs, only as wide as they need: the rest of the free space
+    // stays a drag handle for the window.
+    if let Some(range) = layout.tabs {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(span(range))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width());
-        let galley = ui.fonts_mut(|f| f.layout_job(job));
-        let pos = Align2::CENTER_CENTER
-            .align_size_within_rect(galley.size(), rect)
-            .min;
-        ui.painter()
-            .with_clip_rect(rect)
-            .galley(pos, galley, theme::TEXT_MUTED);
+        super::tabs::show(&mut child, state);
     }
 
     // App icon.
     let icon_rect = span((0.0, ICON_WIDTH));
-    crate::icons::paint_logo(ui, icon_rect, 18.0, true);
+    let icon = crate::icons::app_icon(ui.ctx());
+    crate::icons::paint(ui, icon_rect, &icon, 20.0, Color32::WHITE);
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -94,11 +77,16 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
             |ui| menu_entries(ui, state, ui_state, dock),
         );
     } else {
+        // The bar fills the span it is given; measure the menus it holds, so
+        // the tabs start right after them.
         let width = egui::MenuBar::new()
-            .ui(&mut child, |ui| menu_entries(ui, state, ui_state, dock))
-            .response
-            .rect
-            .width();
+            .style(menu_bar_style)
+            .ui(&mut child, |ui| {
+                let left = ui.cursor().left();
+                menu_entries(ui, state, ui_state, dock);
+                ui.cursor().left() - left
+            })
+            .inner;
         ui.data_mut(|d| d.insert_temp(menus_id, width));
     }
 
@@ -125,14 +113,18 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock: &mu
 
 const VIEW_MODES: [(ViewMode, &str); 2] =
     [(ViewMode::Model, "Model"), (ViewMode::Render, "Render")];
-const ICON_WIDTH: f32 = 32.0;
+/// The app icon's slot: a 20 px icon with room around it.
+const ICON_WIDTH: f32 = 44.0;
 const CONTROLS_WIDTH: f32 = CONTROL_WIDTH * 3.0;
 /// Space between the mode switch and its neighbours.
 const SWITCH_GAP: f32 = 8.0;
 /// Width of the ☰ button that replaces the menus in narrow windows.
 const COLLAPSED_MENUS_WIDTH: f32 = 36.0;
-/// Narrower than this, the title is hidden rather than squeezed.
-const MIN_TITLE_WIDTH: f32 = 48.0;
+/// The tabs get at least this much room (one tab and `+`) before the menus
+/// fold into ☰; narrower still, they are hidden rather than squeezed.
+const MIN_TABS_WIDTH: f32 = 160.0;
+/// Space between the menus and the first tab.
+const TABS_GAP: f32 = 8.0;
 /// Menu bar width before it has been measured once.
 const MENUS_ESTIMATE: f32 = 420.0;
 
@@ -143,21 +135,22 @@ struct BarLayout {
     menus: (f32, f32),
     /// Menus folded into one ☰ button.
     collapsed: bool,
-    title: Option<(f32, f32)>,
+    tabs: Option<(f32, f32)>,
     switch: (f32, f32),
     controls: (f32, f32),
 }
 
 /// Lays the title bar out right to left: window controls at the far edge,
-/// the mode switch beside them, then the menus and title share the rest. In
-/// narrow bars the title shrinks first, then the menus fold into ☰.
-fn bar_layout(width: f32, menus: f32, title: f32, switch: f32) -> BarLayout {
+/// the mode switch beside them, then the menus and the document tabs share
+/// the rest. The tabs take what they want, up to the free space; in narrow
+/// bars the menus fold into ☰ to keep the tabs at least [`MIN_TABS_WIDTH`].
+fn bar_layout(width: f32, menus: f32, tabs: f32, switch: f32) -> BarLayout {
     let width = width.max(0.0);
     let controls = ((width - CONTROLS_WIDTH).max(0.0), width);
     let switch_right = (controls.0 - SWITCH_GAP).max(0.0);
     let switch = ((switch_right - switch).max(0.0), switch_right);
     let free_right = (switch.0 - SWITCH_GAP).max(ICON_WIDTH);
-    let collapsed = ICON_WIDTH + menus > free_right;
+    let collapsed = ICON_WIDTH + menus + TABS_GAP + MIN_TABS_WIDTH > free_right;
     let menus_right = (ICON_WIDTH
         + if collapsed {
             COLLAPSED_MENUS_WIDTH
@@ -165,29 +158,27 @@ fn bar_layout(width: f32, menus: f32, title: f32, switch: f32) -> BarLayout {
             menus
         })
     .min(free_right);
-    let room = free_right - menus_right;
-    let title = if room < MIN_TITLE_WIDTH {
-        None
-    } else {
-        let centered = (width - title) / 2.0;
-        Some(
-            if centered >= menus_right && centered + title <= free_right {
-                (centered, centered + title)
-            } else if title <= room {
-                let left = menus_right + (room - title) / 2.0;
-                (left, left + title)
-            } else {
-                (menus_right, free_right)
-            },
-        )
-    };
+    let tabs_left = menus_right + TABS_GAP;
+    let room = free_right - tabs_left;
+    let tabs = (room >= MIN_TABS_WIDTH.min(tabs)).then(|| (tabs_left, tabs_left + tabs.min(room)));
     BarLayout {
         menus: (ICON_WIDTH, menus_right),
         collapsed,
-        title,
+        tabs,
         switch,
         controls,
     }
+}
+
+/// The menu bar's buttons: egui's menu style (no frames), with room around
+/// each name and the body text size.
+fn menu_bar_style(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    style.spacing.button_padding = egui::vec2(8.0, 4.0);
+    style.spacing.interact_size.y = 28.0;
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, theme::regular(13.0));
 }
 
 fn menu_style(ui: &mut Ui) {
@@ -241,7 +232,11 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                     if menu_item(ui, icon::FILE_ARROW_DOWN, &label, "", true) {
                         actions::import(state, &mut ui_state.dialogs, format);
                     }
-                    ui.label(egui::RichText::new(hint).size(10.0).color(theme::TEXT_DIM));
+                    ui.label(
+                        egui::RichText::new(hint)
+                            .size(11.0)
+                            .color(theme::p().text_dim),
+                    );
                 }
                 ui.separator();
                 if menu_item(ui, icon::MOUNTAINS, "Heightmap (.png, .jpg)...", "", true) {
@@ -249,8 +244,8 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 }
                 ui.label(
                     egui::RichText::new("Grayscale image to terrain, in a new tab")
-                        .size(10.0)
-                        .color(theme::TEXT_DIM),
+                        .size(11.0)
+                        .color(theme::p().text_dim),
                 );
             },
         );
@@ -269,8 +264,8 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 }
                 ui.label(
                     egui::RichText::new(format.export_note())
-                        .size(10.0)
-                        .color(theme::TEXT_DIM),
+                        .size(11.0)
+                        .color(theme::p().text_dim),
                 );
             }
             ui.separator();
@@ -285,8 +280,8 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
             }
             ui.label(
                 egui::RichText::new("one image per voxel slice, into a folder")
-                    .size(10.0)
-                    .color(theme::TEXT_DIM),
+                    .size(11.0)
+                    .color(theme::p().text_dim),
             );
             ui.separator();
             if menu_item(
@@ -302,8 +297,8 @@ fn menu_entries(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState, dock:
                 egui::RichText::new(
                     "Render mode: the model as bricks, spheres, ... (OBJ, STL, GLB)",
                 )
-                .size(10.0)
-                .color(theme::TEXT_DIM),
+                .size(11.0)
+                .color(theme::p().text_dim),
             );
         });
         ui.separator();
@@ -484,9 +479,10 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
         for ((on, label), shortcut) in [
             (&mut view.voxel_grid, "Voxel Grid"),
             (&mut view.model_bounds, "Model Bounds"),
+            (&mut view.mirror_planes, "Mirror Planes"),
         ]
         .into_iter()
-        .zip(&keys[1..])
+        .zip(keys[1..].iter().chain([&String::new()]))
         {
             if menu_item(ui, check_glyph(*on), label, shortcut, true) {
                 *on = !*on;
@@ -696,8 +692,8 @@ fn selection_menu(ui: &mut Ui, state: &mut AppState) {
     }
     ui.label(
         egui::RichText::new("By Color: the selected swatch, within the Fuzzy Select threshold")
-            .size(10.0)
-            .color(theme::TEXT_DIM),
+            .size(11.0)
+            .color(theme::p().text_dim),
     );
     ui.separator();
     if menu_item(
@@ -774,8 +770,8 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     }
     ui.label(
         egui::RichText::new("Drag rows in the Layers panel into and out of groups")
-            .size(10.0)
-            .color(theme::TEXT_DIM),
+            .size(11.0)
+            .color(theme::p().text_dim),
     );
     ui.separator();
     if menu_item(ui, icon::PUZZLE_PIECE, "Separate Parts", "", editable) {
@@ -786,7 +782,7 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
         ui.label(
             egui::RichText::new("Keep parts under")
                 .size(11.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.add(
             egui::DragValue::new(&mut state.structure.min_part_voxels)
@@ -806,8 +802,8 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
     }
     ui.label(
         egui::RichText::new("Voxels on the plane's + side move to a new layer")
-            .size(10.0)
-            .color(theme::TEXT_DIM),
+            .size(11.0)
+            .color(theme::p().text_dim),
     );
     ui.separator();
     // Boolean ▸ op ▸ other layer.
@@ -831,8 +827,8 @@ fn layer_menu(ui: &mut Ui, state: &mut AppState) {
                 ui.menu_button(op.label(), |ui| {
                     ui.label(
                         egui::RichText::new("Active layer with:")
-                            .size(10.0)
-                            .color(theme::TEXT_DIM),
+                            .size(11.0)
+                            .color(theme::p().text_dim),
                     );
                     for (index, name) in &others {
                         if ui.button(name).clicked() {
@@ -866,8 +862,8 @@ fn model_menu(ui: &mut Ui, state: &mut AppState) {
         }
         ui.label(
             egui::RichText::new("Closed cavities get the selected color")
-                .size(10.0)
-                .color(theme::TEXT_DIM),
+                .size(11.0)
+                .color(theme::p().text_dim),
         );
         if menu_item(ui, icon::CUBE_TRANSPARENT, "Hollow", "", editable) {
             state.core_op(CoreOp::Hollow);
@@ -881,7 +877,7 @@ fn model_menu(ui: &mut Ui, state: &mut AppState) {
             ui.label(
                 egui::RichText::new("Shell")
                     .size(11.0)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.add(
                 egui::DragValue::new(&mut state.structure.hollow_thickness)
@@ -1004,7 +1000,7 @@ fn recent_menu(ui: &mut Ui, state: &mut AppState) {
                     }
                 }
                 if state.recent.is_empty() {
-                    ui.label(egui::RichText::new("No recent files").color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new("No recent files").color(theme::p().text_dim));
                 }
                 ui.separator();
                 if menu_item(
@@ -1104,7 +1100,7 @@ fn panels_menu(ui: &mut Ui, dock: &mut Workspace) {
 fn window_controls(ui: &mut Ui, height: f32) {
     let base = IconStyle::bar()
         .size(egui::vec2(CONTROL_WIDTH, height))
-        .color(theme::TEXT);
+        .color(theme::p().text);
 
     // Laid out right-to-left: close, maximize, minimize.
     let close = base
@@ -1160,12 +1156,12 @@ pub fn close_prompt(ctx: &egui::Context, state: &mut AppState) -> bool {
         ui.label(
             egui::RichText::new(format!("Save changes to {title} before closing?"))
                 .font(theme::semibold(14.0))
-                .color(theme::TEXT_STRONG),
+                .color(theme::p().text_strong),
         );
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new("Your changes will be lost if you don't save them.")
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -1229,12 +1225,12 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
         ui.label(
             egui::RichText::new("Recover unsaved work")
                 .font(theme::semibold(14.0))
-                .color(theme::TEXT_STRONG),
+                .color(theme::p().text_strong),
         );
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new("Rizxel did not close normally. These documents were autosaved:")
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         ui.add_space(8.0);
         for (i, entry) in ui_state.recovery.iter().enumerate() {
@@ -1251,11 +1247,11 @@ pub fn recovery_dialog(ctx: &egui::Context, state: &mut AppState, ui_state: &mut
                 .as_ref()
                 .map_or("never saved".to_owned(), |p| p.display().to_string());
             ui.separator();
-            ui.label(egui::RichText::new(&meta.title).color(theme::TEXT_STRONG));
+            ui.label(egui::RichText::new(&meta.title).color(theme::p().text_strong));
             ui.label(
                 egui::RichText::new(format!("{place}, autosaved {when}"))
                     .size(11.0)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
             );
             ui.horizontal(|ui| {
                 if ui.button("Restore").clicked() {
@@ -1318,7 +1314,7 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
                 ui.label("Native voxel art editor built with Rust, egui and wgpu.");
                 ui.label(format!("Created by {AUTHOR_NAME} ({AUTHOR_HANDLE})"));
                 ui.label(
-                    egui::RichText::new(format!("© 2026 {AUTHOR_NAME}")).color(theme::TEXT_DIM),
+                    egui::RichText::new(format!("© 2026 {AUTHOR_NAME}")).color(theme::p().text_dim),
                 );
                 ui.add_space(6.0);
                 ui.label(
@@ -1326,7 +1322,7 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
                         "Free software under the GNU General Public License v3 or later.\n\
                          This program comes with ABSOLUTELY NO WARRANTY.",
                     )
-                    .color(theme::TEXT_DIM),
+                    .color(theme::p().text_dim),
                 );
                 ui.hyperlink_to("Source code and license", REPO_URL);
             });
@@ -1354,7 +1350,7 @@ pub fn show_dialogs(ctx: &egui::Context, state: &mut AppState, ui_state: &mut Ui
 /// mouse and the fixed keys.
 fn shortcut_rows(ui: &mut Ui, keymap: &rizxel_app::Keymap) {
     let strong = |ui: &mut Ui, text: &str| {
-        ui.label(egui::RichText::new(text).color(theme::TEXT_STRONG));
+        ui.label(egui::RichText::new(text).color(theme::p().text_strong));
     };
     for group in rizxel_app::ActionGroup::ALL {
         ui.label(egui::RichText::new(group.label()).font(theme::semibold(12.0)));
@@ -1400,46 +1396,50 @@ mod tests {
 
     #[test]
     fn mode_switch_never_overlaps_window_controls() {
-        for width in (640..=3840).step_by(16) {
+        for width in (480..=3840).step_by(16) {
             let width = width as f32;
             for menus in [300.0, 420.0, 600.0] {
-                let l = bar_layout(width, menus, 260.0, SWITCH);
+                let l = bar_layout(width, menus, 900.0, SWITCH);
                 assert_eq!(l.controls, (width - CONTROLS_WIDTH, width));
                 assert!(l.switch.1 + SWITCH_GAP <= l.controls.0, "{width}");
                 assert!((l.switch.1 - l.switch.0 - SWITCH).abs() < 1e-3, "{width}");
                 assert!(l.menus.1 <= l.switch.0, "{width}");
-                if let Some((left, right)) = l.title {
-                    assert!(left >= l.menus.1 && right <= l.switch.0, "{width}");
+                if let Some((left, right)) = l.tabs {
+                    assert!(
+                        left >= l.menus.1 && right + SWITCH_GAP <= l.switch.0,
+                        "{width}"
+                    );
                 }
             }
         }
     }
 
     #[test]
-    fn title_shrinks_before_menus_collapse() {
-        let wide = bar_layout(1920.0, 420.0, 260.0, SWITCH);
+    fn tabs_take_what_they_need_and_menus_fold_before_tabs_go() {
+        // Wide: the tabs take their own width and leave the rest to dragging.
+        let wide = bar_layout(1920.0, 420.0, 300.0, SWITCH);
         assert!(!wide.collapsed);
-        let (left, right) = wide.title.unwrap();
-        assert!(
-            ((left + right) / 2.0 - 960.0).abs() < 1e-3,
-            "centered on the bar"
-        );
+        let (left, right) = wide.tabs.unwrap();
+        assert_eq!(left, ICON_WIDTH + 420.0 + TABS_GAP);
+        assert!((right - left - 300.0).abs() < 1e-3);
 
-        // Not enough room to center it: it moves into the free space, then
-        // gets narrower than its text.
-        let moved = bar_layout(1000.0, 420.0, 260.0, SWITCH);
-        let (left, right) = moved.title.unwrap();
-        assert!(left >= moved.menus.1 && (right - left - 260.0).abs() < 1e-3);
-        let snug = bar_layout(960.0, 420.0, 260.0, SWITCH);
-        assert!(!snug.collapsed);
-        let (left, right) = snug.title.unwrap();
-        assert!(right - left < 260.0);
+        // Many tabs: capped at the free space (the strip scrolls).
+        let full = bar_layout(1280.0, 420.0, 5000.0, SWITCH);
+        let (_, right) = full.tabs.unwrap();
+        assert!((right + SWITCH_GAP - full.switch.0).abs() < 1e-3);
 
-        let narrow = bar_layout(640.0, 420.0, 260.0, SWITCH);
-        assert!(narrow.collapsed);
+        // Too narrow for menus and tabs: the menus fold, the tabs stay.
+        let folded = bar_layout(760.0, 420.0, 300.0, SWITCH);
+        assert!(folded.collapsed);
         assert_eq!(
-            narrow.menus,
+            folded.menus,
             (ICON_WIDTH, ICON_WIDTH + COLLAPSED_MENUS_WIDTH)
         );
+        let (left, right) = folded.tabs.unwrap();
+        assert!(right - left >= MIN_TABS_WIDTH);
+
+        // Narrower still: the tabs are hidden rather than squeezed.
+        let tiny = bar_layout(400.0, 420.0, 300.0, SWITCH);
+        assert!(tiny.tabs.is_none());
     }
 }

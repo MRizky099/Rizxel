@@ -3,53 +3,213 @@
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use egui_phosphor::regular as icon;
 use rizxel_app::{AppState, Document, Favorites, LayerDrop, PaletteSort};
+use rizxel_engine::Tool;
 use rizxel_math::{BoundSize, LayerKind};
 
 use super::UiState;
 use crate::theme;
-use crate::widgets::{icon_button, icon_label, IconStyle};
+use crate::widgets::{check_box, icon_button, icon_label, IconStyle};
 
 const PALETTE_COLUMNS: usize = 8;
 const SWATCH_GAP: f32 = 4.0;
 
-/// Color Palette dock panel.
+/// Height of the favorites footer at the foot of the panel.
+const FAVORITES_HEIGHT: f32 = 40.0;
+
+/// Width of the color picker popup.
+const PICKER_WIDTH: f32 = 264.0;
+
+/// Color Palette dock panel: the current color (its chip opens the picker
+/// in a popup), the swatch grid, and the favorites pinned to the foot.
 pub fn palette(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     if state.doc().is_none() {
         return;
     }
-    palette_tools(ui, state, ui_state);
-    favorites_row(ui, state);
-    if let Some(doc) = state.doc_mut() {
-        palette_section(ui, doc, ui_state);
+    let rect = ui.max_rect();
+    let (body_rect, footer_rect) = rect.split_top_bottom_at_y(rect.bottom() - FAVORITES_HEIGHT);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+        // Nothing of the body may run under the favorites.
+        ui.set_clip_rect(body_rect.intersect(ui.clip_rect()));
+        egui::Frame::NONE.inner_margin(12).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 12.0;
+            let chip = current_color(ui, state, ui_state);
+            if let Some(chip) = chip {
+                picker_popup(&chip, state, ui_state);
+            }
+            palette_head(ui, state, ui_state);
+            if let Some(doc) = state.doc_mut() {
+                swatch_well(ui, doc, ui_state, body_rect.bottom() - 12.0);
+            }
+        });
+    });
+    // The footer is opaque, like the Render panel's: the favorites never
+    // show anything through them.
+    ui.painter()
+        .rect_filled(footer_rect, 0.0, theme::p().bg_panel);
+    ui.painter().hline(
+        footer_rect.x_range(),
+        footer_rect.top(),
+        Stroke::new(1.0, theme::p().border),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(footer_rect.shrink2(egui::vec2(12.0, 9.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| favorites_row(ui, state),
+    );
+}
+
+/// The color picker in a popup under the chip: a click on the chip opens
+/// or closes it, as does a click outside.
+fn picker_popup(chip: &egui::Response, state: &mut AppState, ui_state: &mut UiState) {
+    let mut eyedropper = false;
+    egui::Popup::from_response(chip)
+        .id(picker_popup_id())
+        .open_memory(chip.clicked().then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_width(PICKER_WIDTH);
+            if let Some(doc) = state.doc_mut() {
+                let action = super::color_picker::show(ui, doc, &mut ui_state.color_picker);
+                if action == Some(super::color_picker::PickerAction::Eyedropper) {
+                    eyedropper = true;
+                    ui.close();
+                }
+            }
+        });
+    if eyedropper {
+        state.tool = Tool::ColorPicker;
     }
 }
 
-/// Palette menu, used-colors toggle and the Shift+click marker.
-fn palette_tools(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
-    let Some(doc) = state.doc() else { return };
+fn picker_popup_id() -> egui::Id {
+    egui::Id::new("palette_color_picker")
+}
+
+/// The selected color: a large chip that opens the picker, its hex and RGB,
+/// and the palette menu. Returns the chip's response.
+fn current_color(
+    ui: &mut Ui,
+    state: &mut AppState,
+    ui_state: &mut UiState,
+) -> Option<egui::Response> {
+    let doc = state.doc()?;
+    let rgba = doc.selected_rgba();
     let selected = doc.selected_color;
     let mark = ui_state
         .palette_mark
         .filter(|&m| doc.data.palette.is_selectable(m) && m != selected);
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.menu_button(icon_label(ui, icon::LIST, "Palette", None), |ui| {
+    let open = egui::Popup::is_id_open(ui.ctx(), picker_popup_id());
+    let mut chip = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), Sense::click());
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::to_color32(rgba));
+        let ring = if open || response.hovered() {
+            Stroke::new(2.0, theme::p().accent_line)
+        } else {
+            Stroke::new(1.0, theme::p().separator)
+        };
+        ui.painter()
+            .rect_stroke(rect, theme::RADIUS, ring, StrokeKind::Inside);
+        let tip = if open {
+            "Close the color picker"
+        } else {
+            "Edit this palette color"
+        };
+        chip = Some(response.on_hover_text(tip));
+
+        egui::Grid::new("current_color_values")
+            .num_columns(2)
+            .spacing(egui::vec2(12.0, 4.0))
+            .show(ui, |ui| {
+                let key = |t: &str| RichText::new(t).color(theme::p().text_dim);
+                let value = |t: String| {
+                    RichText::new(t)
+                        .font(theme::mono(12.0))
+                        .color(theme::p().text_strong)
+                };
+                ui.label(key("Hex"));
+                ui.label(value(rgba.to_hex_string()));
+                ui.end_row();
+                ui.label(key("RGB"));
+                ui.label(value(format!("{}, {}, {}", rgba.r, rgba.g, rgba.b)));
+                ui.end_row();
+            });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Flat at rest, the hover fill under the pointer and while open.
+            let menu = egui::Button::new(RichText::new(icon::DOTS_THREE).font(theme::icon(16.0)))
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(28.0, 28.0));
+            egui::containers::menu::MenuButton::from_button(menu)
+                .ui(ui, |ui| {
                     ui.set_min_width(260.0);
                     palette_menu(ui, state, mark);
-                });
-                ui.toggle_value(&mut ui_state.palette_used_only, "Used only")
-                    .on_hover_text("Show only the colors the model uses");
-                if let Some(m) = mark {
-                    ui.label(
-                        RichText::new(format!("Marked: {m}"))
-                            .size(11.0)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .on_hover_text("Shift+click a swatch to mark it for Gradient and Remap");
-                }
-            });
+                })
+                .0
+                .on_hover_text("Palette menu: load, save, sort, gradient and remap");
+        });
+    });
+    chip
+}
+
+/// "Palette, 56 colors", the Shift+click marker and *Used only*.
+fn palette_head(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
+    let Some(doc) = state.doc() else { return };
+    let total = doc.data.palette.colors().len();
+    let count = if ui_state.palette_used_only {
+        let used = doc.used_colors().iter().filter(|u| **u).count();
+        format!("{used} of {total} colors used")
+    } else {
+        format!("{total} colors")
+    };
+    let mark = ui_state
+        .palette_mark
+        .filter(|&m| doc.data.palette.is_selectable(m) && m != doc.selected_color);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(
+            RichText::new("Palette")
+                .font(theme::semibold(13.0))
+                .color(theme::p().text_strong),
+        );
+        ui.label(RichText::new(count).color(theme::p().text_dim));
+        if let Some(m) = mark {
+            ui.label(
+                RichText::new(format!("· marked {m}"))
+                    .size(11.0)
+                    .color(theme::p().accent_line),
+            )
+            .on_hover_text("Shift+click a swatch to mark it for Gradient and Remap");
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            check_box(ui, &mut ui_state.palette_used_only, "Used only")
+                .on_hover_text("Show only the colors the model uses");
+        });
+    });
+}
+
+/// The swatch grid in a recessed well that fills the panel down to `bottom`
+/// (above the favorites) and scrolls on its own.
+fn swatch_well(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState, bottom: f32) {
+    // The well's margin (4) and border (1) on each side.
+    let room = (bottom - ui.cursor().top() - 10.0).max(22.0);
+    egui::Frame::NONE
+        .fill(theme::p().bg_app)
+        .stroke(Stroke::new(1.0, theme::p().border))
+        .corner_radius(theme::RADIUS)
+        .inner_margin(4)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("palette_swatches")
+                .max_height(room)
+                // egui keeps a scrolling area 64 px tall by default: here it
+                // takes only the room there is.
+                .min_scrolled_height(room)
+                .auto_shrink([false, true])
+                .show(ui, |ui| swatch_grid(ui, doc, ui_state));
         });
 }
 
@@ -92,8 +252,8 @@ fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
         None => {
             ui.label(
                 RichText::new("Gradient and Remap: Shift+click a swatch to mark it first")
-                    .size(10.0)
-                    .color(theme::TEXT_DIM),
+                    .size(11.0)
+                    .color(theme::p().text_dim),
             );
         }
         Some(m) => {
@@ -128,50 +288,82 @@ fn palette_menu(ui: &mut Ui, state: &mut AppState, mark: Option<usize>) {
     }
 }
 
-/// Favorite colors `0`-`9`: click selects, right-click stores the selected
-/// color (also `Ctrl+digit` / `Ctrl+Shift+digit`).
+/// Favorite colors `0`-`9`: an empty slot stores the selected color on
+/// click; a filled one selects its color (right-click replaces it). Also
+/// `Ctrl+digit` / `Ctrl+Shift+digit`.
 fn favorites_row(ui: &mut Ui, state: &mut AppState) {
     let Some(palette) = state.doc().map(|d| d.data.palette.clone()) else {
         return;
     };
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(12, 2))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                let size = ((ui.available_width() - 27.0) / 10.0).clamp(12.0, 22.0);
-                for slot in 0..Favorites::SLOTS {
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(size, size), Sense::click());
-                    let color = state.favorites.get(slot).and_then(|i| palette.get(i));
-                    match color {
-                        Some(c) => ui.painter().rect_filled(rect, 2.0, theme::to_color32(c)),
-                        None => ui.painter().rect_stroke(
-                            rect.shrink(0.5),
-                            2.0,
-                            Stroke::new(1.0, theme::TEXT_DIM),
-                            StrokeKind::Inside,
-                        ),
-                    };
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        slot.to_string(),
-                        theme::regular(9.0),
-                        Color32::from_white_alpha(170),
+    ui.spacing_mut().item_spacing.x = 3.0;
+    let gaps = 3.0 * (Favorites::SLOTS as f32 - 1.0);
+    let width = ((ui.available_width() - gaps) / Favorites::SLOTS as f32).max(12.0);
+    for slot in 0..Favorites::SLOTS {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 22.0), Sense::click());
+        let color = state.favorites.get(slot).and_then(|i| palette.get(i));
+        match color {
+            Some(c) => {
+                ui.painter().rect_filled(rect, 3.0, theme::to_color32(c));
+                if response.hovered() {
+                    ui.painter().rect_stroke(
+                        rect,
+                        3.0,
+                        Stroke::new(1.0, theme::p().text_strong),
+                        StrokeKind::Outside,
                     );
-                    let response = response.on_hover_text(format!(
-                        "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
-                    ));
-                    if response.clicked() {
-                        state.recall_favorite(slot);
-                    }
-                    if response.secondary_clicked() {
-                        state.store_favorite(slot);
-                    }
                 }
-            });
-        });
+            }
+            None => {
+                let edge = if response.hovered() {
+                    theme::p().text
+                } else {
+                    theme::p().separator
+                };
+                dashed_rect(ui, rect.shrink(0.5), Stroke::new(1.0, edge));
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    slot.to_string(),
+                    theme::mono(11.0),
+                    theme::p().text_muted,
+                );
+            }
+        }
+        let tip = if color.is_some() {
+            format!(
+                "Favorite {slot}: click or Ctrl+{slot} selects it, right-click or Ctrl+Shift+{slot} stores the selected color"
+            )
+        } else {
+            format!(
+                "Favorite {slot} is empty: click (or Ctrl+Shift+{slot}) stores the selected color"
+            )
+        };
+        let response = response.on_hover_text(tip);
+        // An empty slot has nothing to select: a click fills it.
+        if response.clicked() {
+            if color.is_some() {
+                state.recall_favorite(slot);
+            } else {
+                state.store_favorite(slot);
+            }
+        }
+        if response.secondary_clicked() {
+            state.store_favorite(slot);
+        }
+    }
+}
+
+/// A rectangle outlined in dashes (an empty favorite slot).
+fn dashed_rect(ui: &Ui, rect: Rect, stroke: Stroke) {
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    ui.painter()
+        .extend(egui::Shape::dashed_line(&corners, stroke, 3.0, 2.0));
 }
 
 /// Layers dock panel.
@@ -180,6 +372,12 @@ pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     let select_voxels = state.settings.general.layer_click_selects_voxels;
     if let Some(doc) = state.doc_mut() {
         layers_section(ui, doc, ui_state, render, select_voxels);
+        confirm_delete_hidden(&ui.ctx().clone(), doc, ui_state);
+    } else {
+        ui_state.confirm_delete_hidden = false;
+    }
+    if !render {
+        empty_layer_hint(ui, state);
     }
     // `Ctrl+A` and `Esc` act on the layers while the pointer is here.
     if ui.ui_contains_pointer() {
@@ -192,6 +390,43 @@ pub fn layers(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
     }
 }
 
+/// Under an empty voxel layer: what it is for, and the one action that
+/// fills it.
+fn empty_layer_hint(ui: &mut Ui, state: &mut AppState) {
+    let empty = state
+        .doc()
+        .and_then(|d| d.active_layer())
+        .is_some_and(|l| matches!(l.kind(), LayerKind::Voxels) && l.volume.voxel_count() == 0);
+    if !empty {
+        return;
+    }
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            egui::Frame::NONE
+                .stroke(Stroke::new(1.0, theme::p().separator))
+                .corner_radius(theme::RADIUS)
+                .inner_margin(8)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(
+                        RichText::new(
+                            "This layer is empty. Pick a drawing tool and click the viewport: new voxels land on the active layer.",
+                        )
+                        .size(12.0)
+                        .color(theme::p().text_dim),
+                    );
+                    if state.tool != Tool::Brush
+                        && ui
+                            .button(icon_label(ui, icon::PAINT_BRUSH, "Use Brush", Some(13.0)))
+                            .clicked()
+                    {
+                        state.tool = Tool::Brush;
+                    }
+                });
+        });
+}
+
 /// Bound Model dock panel.
 pub fn bounds(ui: &mut Ui, state: &mut AppState) {
     if let Some(doc) = state.doc_mut() {
@@ -200,82 +435,6 @@ pub fn bounds(ui: &mut Ui, state: &mut AppState) {
 }
 
 // ------------------------------------------------------------------ palette
-
-fn palette_section(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    // Selected color preview with an editable color picker.
-    egui::Frame::NONE
-        .inner_margin(egui::Margin {
-            left: 12,
-            right: 12,
-            top: 12,
-            bottom: 8,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                let rgba = doc.selected_rgba();
-                let mut color = theme::to_color32(rgba);
-
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(48.0, 48.0), Sense::click());
-                ui.painter().rect_filled(rect, theme::RADIUS, color);
-                ui.painter().rect_stroke(
-                    rect,
-                    theme::RADIUS,
-                    Stroke::new(2.0, Color32::WHITE),
-                    StrokeKind::Inside,
-                );
-                // Click the preview to edit the palette entry.
-                let popup_id = ui.id().with("palette_color_edit");
-                let response = response.on_hover_text("Click to edit this palette color");
-                egui::Popup::from_response(&response)
-                    .id(popup_id)
-                    .open_memory(response.clicked().then_some(egui::SetOpenCommand::Toggle))
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| {
-                        if egui::color_picker::color_picker_color32(
-                            ui,
-                            &mut color,
-                            egui::color_picker::Alpha::Opaque,
-                        ) {
-                            let [r, g, b, _] = color.to_array();
-                            let new = rizxel_math::Rgba8::rgb(r, g, b);
-                            let index = doc.selected_color;
-                            // Merge continuous picker drags into one undo step.
-                            doc.set_palette_color(index, new, true);
-                        }
-                    });
-
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    ui.add_space(6.0);
-                    kv_row(ui, "HEX", &rgba.to_hex_string());
-                    kv_row(ui, "RGB", &format!("{}, {}, {}", rgba.r, rgba.g, rgba.b));
-                });
-            });
-        });
-    let r = ui.cursor();
-    ui.painter().hline(
-        r.x_range(),
-        r.top(),
-        Stroke::new(1.0, Color32::from_rgb(0x33, 0x33, 0x33)),
-    );
-
-    // Swatch grid.
-    egui::Frame::NONE
-        .inner_margin(12)
-        .show(ui, |ui| swatch_grid(ui, doc, ui_state));
-}
-
-fn kv_row(ui: &mut Ui, key: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new(key).size(12.0).color(theme::TEXT));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(value).size(12.0).color(theme::TEXT_STRONG));
-        });
-    });
-}
 
 fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let colors = doc.data.palette.colors().to_vec();
@@ -316,7 +475,7 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             painter.rect_stroke(
                 rect.shrink(0.5),
                 2.0,
-                Stroke::new(1.0, theme::TEXT_DIM),
+                Stroke::new(1.0, theme::p().text_dim),
                 StrokeKind::Inside,
             );
             painter.line_segment(
@@ -339,7 +498,7 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             ui.painter().rect_stroke(
                 rect.expand(1.0),
                 2.0,
-                Stroke::new(1.0, theme::ACCENT),
+                Stroke::new(1.0, theme::p().accent_line),
                 StrokeKind::Outside,
             );
         }
@@ -351,7 +510,7 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             ui.painter().rect_stroke(
                 rect,
                 2.0,
-                Stroke::new(1.0, Color32::WHITE),
+                Stroke::new(1.0, theme::p().text_strong),
                 StrokeKind::Outside,
             );
         }
@@ -365,7 +524,7 @@ fn swatch_grid(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         ui.painter().rect_stroke(
             grown,
             2.0,
-            Stroke::new(1.0, Color32::WHITE),
+            Stroke::new(1.0, theme::p().text_strong),
             StrokeKind::Outside,
         );
     }
@@ -474,8 +633,6 @@ fn layers_section(
 
         ui.add_space(6.0);
         layer_properties(ui, doc, render);
-        ui.add_space(6.0);
-        layer_operations(ui, doc, ui_state);
     });
 
     let Some(action) = action else { return };
@@ -598,8 +755,13 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
     let many = doc.selected_layer_count();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let style = IconStyle::small();
-        if icon_button(ui, icon::PLUS, style, true)
+        let mut style = IconStyle::small().size(egui::vec2(30.0, 30.0));
+        style.icon_size = 14.0;
+        if ui
+            .add(
+                egui::Button::new(icon_label(ui, icon::PLUS, "Layer", Some(13.0)))
+                    .min_size(egui::vec2(0.0, 30.0)),
+            )
             .on_hover_text("New layer")
             .clicked()
         {
@@ -611,28 +773,21 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
         {
             doc.add_group();
         }
-        let del = style.hover_color(theme::DANGER);
+        let del = style.hover_color(theme::p().danger);
         // Disabled for the last layer and for layers linked clones point at.
         if many > 1 {
             if icon_button(ui, icon::TRASH, del, doc.can_delete_selected_layers())
-                .on_hover_text(format!("Delete the {many} selected layers"))
+                .on_hover_text(format!("Delete the {many} selected layers (Ctrl+Z undoes)"))
                 .clicked()
             {
                 doc.delete_selected_layers();
                 ui_state.renaming_layer = None;
             }
         } else if icon_button(ui, icon::TRASH, del, doc.can_delete_active_layer())
-            .on_hover_text("Delete layer (a group's layers move up a level)")
+            .on_hover_text("Delete layer: a group's layers move up a level (Ctrl+Z undoes)")
             .clicked()
         {
             doc.delete_active_layer();
-            ui_state.renaming_layer = None;
-        }
-        if icon_button(ui, icon::ARROW_LINE_DOWN, style, active > 0 && !is_group)
-            .on_hover_text("Merge down")
-            .clicked()
-        {
-            doc.merge_active_layer_down();
             ui_state.renaming_layer = None;
         }
         if icon_button(ui, icon::ARROW_UP, style, true)
@@ -649,19 +804,137 @@ fn layer_toolbar(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
             doc.move_active_layer(false);
             ui_state.renaming_layer = None;
         }
-        let tip = if many > 1 {
-            format!("Duplicate the {many} selected layers")
-        } else {
-            "Duplicate layer (a group with its contents)".to_owned()
-        };
-        if icon_button(ui, icon::COPY, style, true)
-            .on_hover_text(tip)
-            .clicked()
-        {
-            doc.duplicate_selected_layers();
-            ui_state.renaming_layer = None;
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let more = egui::RichText::new(icon::DOTS_THREE_VERTICAL).font(theme::icon(16.0));
+            ui.menu_button(more, |ui| {
+                ui.set_min_width(220.0);
+                layer_menu(ui, doc, ui_state, active, is_group, many);
+            })
+            .response
+            .on_hover_text("More layer actions");
+        });
     });
+}
+
+/// The More menu of the Layers panel: the active layer's less frequent
+/// actions, then whole-document ones, the deleting ones last and in red.
+fn layer_menu(
+    ui: &mut Ui,
+    doc: &mut Document,
+    ui_state: &mut UiState,
+    active: usize,
+    is_group: bool,
+    many: usize,
+) {
+    let item = |ui: &mut Ui, glyph: &str, label: &str, enabled: bool, color: Option<Color32>| {
+        let mut text = icon_label(ui, glyph, label, None);
+        if let Some(color) = color {
+            for section in &mut text.sections {
+                section.format.color = color;
+            }
+        }
+        let clicked = ui.add_enabled(enabled, egui::Button::new(text)).clicked();
+        if clicked {
+            ui.close();
+        }
+        clicked
+    };
+    let duplicate = if many > 1 {
+        format!("Duplicate {many} layers")
+    } else {
+        "Duplicate".to_owned()
+    };
+    if item(ui, icon::COPY, &duplicate, true, None) {
+        doc.duplicate_selected_layers();
+        ui_state.renaming_layer = None;
+    }
+    if item(
+        ui,
+        icon::ARROW_LINE_DOWN,
+        "Merge down",
+        active > 0 && !is_group,
+        None,
+    ) {
+        doc.merge_active_layer_down();
+        ui_state.renaming_layer = None;
+    }
+    ui.separator();
+    let visible = doc.data.layers.iter().filter(|l| l.visible).count();
+    let hidden = doc.data.layers.len() - visible;
+    let all_locked = doc.data.layers.iter().all(|l| l.locked);
+    if item(ui, icon::STACK, "Merge visible", visible > 1, None) {
+        doc.merge_visible_layers();
+        ui_state.renaming_layer = None;
+    }
+    let (glyph, label) = if all_locked {
+        (icon::LOCK_OPEN, "Unlock all layers")
+    } else {
+        (icon::LOCK, "Lock all layers")
+    };
+    if item(ui, glyph, label, true, None) {
+        doc.set_all_locked(!all_locked);
+    }
+    ui.separator();
+    let label = match hidden {
+        1 => "Delete 1 hidden layer…".to_owned(),
+        n => format!("Delete {n} hidden layers…"),
+    };
+    let danger = (hidden > 0 && visible > 0).then_some(theme::p().danger);
+    if item(
+        ui,
+        icon::EYE_SLASH,
+        &label,
+        hidden > 0 && visible > 0,
+        danger,
+    ) {
+        ui_state.confirm_delete_hidden = true;
+    }
+}
+
+/// Asks before *Delete hidden layers*, the one destructive item in the
+/// layer menu.
+fn confirm_delete_hidden(ctx: &egui::Context, doc: &mut Document, ui_state: &mut UiState) {
+    if !ui_state.confirm_delete_hidden {
+        return;
+    }
+    let hidden = doc.data.layers.iter().filter(|l| !l.visible).count();
+    let mut delete = false;
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::new("confirm_delete_hidden")).show(ctx, |ui| {
+        ui.set_width(340.0);
+        let title = match hidden {
+            1 => "Delete 1 hidden layer?".to_owned(),
+            n => format!("Delete {n} hidden layers?"),
+        };
+        ui.label(
+            RichText::new(title)
+                .font(theme::semibold(14.0))
+                .color(theme::p().text_strong),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Their voxels go with them. Undo brings them back.")
+                .color(theme::p().text_dim),
+        );
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let text = RichText::new("Delete").color(theme::ACCENT_INK);
+            let button = egui::Button::new(text).fill(theme::p().danger);
+            if ui.add(button).clicked() {
+                delete = true;
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if delete {
+        doc.delete_hidden_layers();
+        ui_state.renaming_layer = None;
+    }
+    if delete || close || modal.should_close() || hidden == 0 {
+        ui_state.confirm_delete_hidden = false;
+    }
 }
 
 /// Opacity of the active layer. One undo step per drag; the viewport
@@ -673,7 +946,7 @@ fn layer_properties(ui: &mut Ui, doc: &mut Document, render: bool) {
     };
     ui.spacing_mut().slider_width = (ui.available_width() - 130.0).max(60.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Opacity").size(12.0).color(theme::TEXT));
+        ui.label(RichText::new("Opacity").size(12.0).color(theme::p().text));
         let mut percent = props.opacity * 100.0;
         let response = ui.add(
             egui::Slider::new(&mut percent, 0.0..=100.0)
@@ -707,8 +980,8 @@ fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
         };
     let mut picked = props.material;
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Material").size(12.0).color(theme::TEXT));
-        egui::ComboBox::from_id_salt(("layer_material", index))
+        ui.label(RichText::new("Material").size(12.0).color(theme::p().text));
+        crate::widgets::dropdown(("layer_material", index))
             .selected_text(name(doc, picked))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut picked, None, "Default");
@@ -743,7 +1016,7 @@ fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
         .num_columns(2)
         .show(ui, |ui| {
             let mut slider = |ui: &mut Ui, label: &str, value: &mut f32| {
-                ui.label(RichText::new(label).size(12.0).color(theme::TEXT));
+                ui.label(RichText::new(label).size(12.0).color(theme::p().text));
                 let r = ui.add(egui::Slider::new(value, 0.0..=1.0).fixed_decimals(2));
                 changed |= r.changed();
                 started |= r.drag_started();
@@ -751,10 +1024,10 @@ fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
             };
             slider(ui, "Metallic", &mut mat.metallic);
             slider(ui, "Roughness", &mut mat.roughness);
-            ui.label(RichText::new("Emission").size(12.0).color(theme::TEXT));
+            ui.label(RichText::new("Emission").size(12.0).color(theme::p().text));
             changed |= ui.color_edit_button_rgb(&mut mat.emission).changed();
             ui.end_row();
-            ui.label(RichText::new("Tint").size(12.0).color(theme::TEXT));
+            ui.label(RichText::new("Tint").size(12.0).color(theme::p().text));
             let [r, g, b, a] = mat.tint;
             let mut tint = egui::Rgba::from_rgba_unmultiplied(r, g, b, a);
             let alpha = egui::color_picker::Alpha::OnlyBlend;
@@ -769,71 +1042,6 @@ fn layer_material(ui: &mut Ui, doc: &mut Document, index: usize) {
     }
 }
 
-/// Full-width button for an operation spanning several layers.
-fn wide_button(ui: &mut Ui, glyph: &str, label: &str, enabled: bool, tip: &str) -> bool {
-    let text = icon_label(ui, glyph, label, Some(12.0));
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(text).min_size(egui::vec2(ui.available_width(), 26.0)),
-    )
-    .on_hover_text(tip)
-    .on_disabled_hover_text(tip)
-    .clicked()
-}
-
-fn layer_operations(ui: &mut Ui, doc: &mut Document, ui_state: &mut UiState) {
-    let visible = doc.data.layers.iter().filter(|l| l.visible).count();
-    let hidden = doc.data.layers.len() - visible;
-    let all_locked = doc.data.layers.iter().all(|l| l.locked);
-
-    if wide_button(
-        ui,
-        icon::STACK,
-        "Merge visible",
-        visible > 1,
-        "Merge every visible layer into the lowest visible one",
-    ) {
-        doc.merge_visible_layers();
-        ui_state.renaming_layer = None;
-    }
-    if wide_button(
-        ui,
-        icon::EYE_SLASH,
-        "Delete hidden layers",
-        hidden > 0 && visible > 0,
-        "Delete every hidden layer",
-    ) {
-        doc.delete_hidden_layers();
-        ui_state.renaming_layer = None;
-    }
-    let (glyph, label) = if all_locked {
-        (icon::LOCK_OPEN, "Unlock all layers")
-    } else {
-        (icon::LOCK, "Lock all layers")
-    };
-    if wide_button(ui, glyph, label, true, "Lock or unlock every layer") {
-        doc.set_all_locked(!all_locked);
-    }
-
-    if let Some(layer) = doc.active_layer() {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(format!(
-                "Active: {} ({} voxels)",
-                layer.name,
-                layer.volume.voxel_count()
-            ))
-            .size(11.0)
-            .color(theme::TEXT_MUTED),
-        );
-    }
-}
-
-/// Drop zone of the pointer at height `y` over a row: the upper third
-/// drops above and the lower third below; the middle of a group row drops
-/// into it (other rows split at the middle). The lower third of an
-/// expanded group with children also drops into it, as its top child,
-/// since that is where the row below it is.
 fn drop_zone(row: Rect, y: f32, i: usize, group: bool, open_children: bool) -> LayerDrop {
     let t = (y - row.top()) / row.height().max(1.0);
     match (group, t) {
@@ -885,17 +1093,17 @@ fn layer_row(
 
     let painter = ui.painter();
     if selected {
-        painter.rect_filled(rect, theme::RADIUS, theme::BG_SELECTED);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().bg_selected);
         painter.rect_stroke(
             rect,
             theme::RADIUS,
-            Stroke::new(1.0, theme::ACCENT),
+            Stroke::new(1.0, theme::p().accent_line),
             StrokeKind::Inside,
         );
     } else if in_selection {
-        painter.rect_filled(rect, theme::RADIUS, theme::BG_SELECTED);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().bg_selected);
     } else if response.hovered() {
-        painter.rect_filled(rect, theme::RADIUS, theme::BG_HEADER);
+        painter.rect_filled(rect, theme::RADIUS, theme::p().bg_header);
     }
 
     let mut action = None;
@@ -905,12 +1113,12 @@ fn layer_row(
         rect.left_center() + egui::vec2(16.0, 0.0),
         egui::vec2(18.0, 18.0),
     );
-    let dim = Color32::from_rgb(0x4b, 0x55, 0x63);
+    let dim = theme::p().separator;
     let (eye_glyph, eye_color) = match (visible, info.hidden_by_group) {
         (false, _) => (icon::EYE_SLASH, dim),
         (true, true) => (icon::EYE, dim),
-        (true, false) if selected => (icon::EYE, theme::TEXT),
-        (true, false) => (icon::EYE, theme::TEXT_DIM),
+        (true, false) if selected => (icon::EYE, theme::p().text),
+        (true, false) => (icon::EYE, theme::p().text_dim),
     };
     let eye = ui
         .put(eye_rect, |ui: &mut Ui| {
@@ -943,9 +1151,9 @@ fn layer_row(
     let lock_color = if !locked && info.locked_by_group {
         dim
     } else if selected && !locked {
-        theme::TEXT_MUTED
+        theme::p().text_muted
     } else {
-        theme::TEXT_DIM
+        theme::p().text_dim
     };
     let lock = ui
         .put(lock_rect, |ui: &mut Ui| {
@@ -978,7 +1186,7 @@ fn layer_row(
         let fill = super::render::material_swatch(doc.layer_material(i));
         ui.painter().circle_filled(swatch.center(), 5.0, fill);
         ui.painter()
-            .circle_stroke(swatch.center(), 5.0, Stroke::new(1.0, theme::BORDER));
+            .circle_stroke(swatch.center(), 5.0, Stroke::new(1.0, theme::p().border));
     }
     let lock_rect = if render && group.is_none() {
         lock_rect.translate(egui::vec2(-16.0, 0.0))
@@ -987,21 +1195,21 @@ fn layer_row(
     };
     let count_galley =
         ui.painter()
-            .layout_no_wrap(count_text, theme::regular(10.0), theme::TEXT_MUTED);
+            .layout_no_wrap(count_text, theme::mono(11.0), theme::p().text_muted);
     let count_pos = egui::pos2(
         lock_rect.left() - 6.0 - count_galley.size().x,
         rect.center().y - count_galley.size().y / 2.0,
     );
     ui.painter()
-        .galley(count_pos, count_galley, theme::TEXT_MUTED);
+        .galley(count_pos, count_galley, theme::p().text_muted);
 
     // Selection badge: selected cell count in a pill before the voxel count.
     let mut count_left = count_pos.x;
     if selected_cells > 0 {
         let galley = ui.painter().layout_no_wrap(
             selected_cells.to_string(),
-            theme::regular(10.0),
-            theme::TEXT_STRONG,
+            theme::mono(11.0),
+            theme::ACCENT_INK,
         );
         let size = galley.size() + egui::vec2(8.0, 2.0);
         let badge = Rect::from_min_size(
@@ -1011,7 +1219,7 @@ fn layer_row(
         ui.painter()
             .rect_filled(badge, egui::CornerRadius::same(6), theme::ACCENT);
         ui.painter()
-            .galley(badge.min + egui::vec2(4.0, 1.0), galley, theme::TEXT_STRONG);
+            .galley(badge.min + egui::vec2(4.0, 1.0), galley, theme::ACCENT_INK);
         ui.interact(badge, ui.id().with(("sel_badge", i)), Sense::hover())
             .on_hover_text(format!("{selected_cells} selected cells"));
         count_left = badge.left();
@@ -1031,7 +1239,12 @@ fn layer_row(
         };
         let toggle = ui
             .put(caret_rect, |ui: &mut Ui| {
-                icon_button(ui, caret, IconStyle::small().color(theme::TEXT_DIM), true)
+                icon_button(
+                    ui,
+                    caret,
+                    IconStyle::small().color(theme::p().text_dim),
+                    true,
+                )
             })
             .on_hover_text(if collapsed {
                 "Expand group"
@@ -1052,9 +1265,9 @@ fn layer_row(
             folder,
             theme::icon(14.0),
             if selected {
-                theme::TEXT
+                theme::p().text
             } else {
-                theme::TEXT_DIM
+                theme::p().text_dim
             },
         );
         name_left = caret_rect.right() + 18.0;
@@ -1089,9 +1302,11 @@ fn layer_row(
         let shown = visible && !info.hidden_by_group;
         let mut text = RichText::new(&name).size(12.0);
         text = match (selected, shown) {
-            (true, _) => text.color(theme::TEXT_STRONG).font(theme::semibold(12.0)),
-            (false, false) => text.color(theme::TEXT_DIM).italics(),
-            (false, true) => text.color(theme::TEXT_DIM),
+            (true, _) => text
+                .color(theme::p().text_strong)
+                .font(theme::semibold(12.0)),
+            (false, false) => text.color(theme::p().text_dim).italics(),
+            (false, true) => text.color(theme::p().text_dim),
         };
         let galley = egui::WidgetText::from(text).into_galley(
             ui,
@@ -1100,7 +1315,7 @@ fn layer_row(
             egui::TextStyle::Body,
         );
         let pos = egui::pos2(name_rect.left(), rect.center().y - galley.size().y / 2.0);
-        ui.painter().galley(pos, galley, theme::TEXT);
+        ui.painter().galley(pos, galley, theme::p().text);
     }
 
     // Drag a row onto another: above, below or into a group. Drops the
@@ -1121,7 +1336,7 @@ fn layer_row(
     };
     if let Some(from) = response.dnd_hover_payload::<LayerDrag>().map(|p| p.0) {
         if let Some(target) = zone(ui).filter(|&t| allowed(doc, from, t)) {
-            let stroke = Stroke::new(2.0, theme::ACCENT);
+            let stroke = Stroke::new(2.0, theme::p().accent_line);
             let indented = (name_left - 4.0)..=rect.right();
             match target {
                 LayerDrop::Above(_) => {
@@ -1308,7 +1523,7 @@ fn bounds_section(ui: &mut Ui, doc: &mut Document) {
         ui.label(
             RichText::new("Adjust 3D bounds area size:")
                 .size(12.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
 
         let current = doc.data.bounds;
@@ -1356,7 +1571,7 @@ fn bounds_section(ui: &mut Ui, doc: &mut Document) {
         ui.label(
             RichText::new(format!("Volume: {} voxels", current.volume()))
                 .size(11.0)
-                .color(theme::TEXT_MUTED),
+                .color(theme::p().text_muted),
         );
     });
 }

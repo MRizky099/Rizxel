@@ -57,6 +57,49 @@ pub fn headless_device() -> Option<Headless> {
     })
 }
 
+/// A [`Headless`] device for one unit test, held under a lock shared by
+/// every GPU test.
+///
+/// libtest runs tests on parallel threads, and each GPU test creates its
+/// own device with the adapter's full limits plus its targets and the path
+/// tracer's buffers: together they ran a 2 GB card out of memory. The lock
+/// runs them one at a time, and the device is drained and dropped before
+/// the next test gets it.
+#[cfg(test)]
+pub(crate) struct TestGpu {
+    // Declared before the lock so it drops (and frees its memory) first.
+    gpu: Headless,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestGpu {
+    type Target = Headless;
+
+    fn deref(&self) -> &Headless {
+        &self.gpu
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestGpu {
+    fn drop(&mut self) {
+        let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+}
+
+/// [`headless_device`] for a unit test, see [`TestGpu`].
+#[cfg(test)]
+pub(crate) fn test_device() -> Option<TestGpu> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A failed test poisons the lock; the next one still gets its turn.
+    let lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let gpu = headless_device()?;
+    Some(TestGpu { gpu, _lock: lock })
+}
+
 /// Copies `size` pixels of an RGBA8 `texture` at `origin` into a tightly
 /// packed buffer (blocks until the GPU is done).
 pub fn read_rgba8(
@@ -344,16 +387,11 @@ mod tests {
 
     #[test]
     fn image_has_the_output_size_and_a_transparent_background() {
-        let Some(Headless {
-            device,
-            queue,
-            info,
-            ..
-        }) = headless_device()
-        else {
+        let Some(gpu) = test_device() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
+        let (device, queue, info) = (&gpu.device, &gpu.queue, &gpu.info);
         eprintln!("adapter: {} ({:?})", info.name, info.backend);
         let mut doc = block_doc();
         let mut s = doc.data.render.clone();
@@ -361,8 +399,8 @@ mod tests {
         doc.set_render(s, false);
         let frame = crate::viewport::output_frame(&doc, &camera(), [64, 48], true);
         assert!(frame.look.transparent);
-        let mut raster = OffscreenRaster::new(&device);
-        let img = raster.render(&device, &queue, &frame, [64, 48]);
+        let mut raster = OffscreenRaster::new(device);
+        let img = raster.render(device, queue, &frame, [64, 48]);
         assert_eq!((img.width, img.height), (64, 48));
         assert_eq!(img.pixels.len(), 64 * 48 * 4);
         assert_eq!(img.pixel(0, 0)[3], 0, "background is transparent");
@@ -373,18 +411,18 @@ mod tests {
         s.output.transparent = false;
         doc.set_render(s, false);
         let frame = crate::viewport::output_frame(&doc, &camera(), [64, 48], true);
-        let img = raster.render(&device, &queue, &frame, [64, 48]);
+        let img = raster.render(device, queue, &frame, [64, 48]);
         assert_eq!(img.pixel(0, 0)[3], 255);
         // Tiled renders stitch to the same picture.
         let tiled = {
-            let mut r = OffscreenRaster::new(&device);
+            let mut r = OffscreenRaster::new(device);
             let mut out = img.clone();
             out.pixels.fill(0);
             for t in tiles([64, 48], 20) {
                 let mut f = frame.clone();
                 f.view_proj = crop_view_proj(frame.view_proj, [64, 48], t);
                 f.screen_y = tile_screen_y(frame.screen_y, [64, 48], t);
-                let part = r.render(&device, &queue, &f, [t[2] - t[0], t[3] - t[1]]);
+                let part = r.render(device, queue, &f, [t[2] - t[0], t[3] - t[1]]);
                 for y in t[1]..t[3] {
                     for x in t[0]..t[2] {
                         let i = ((y * 64 + x) * 4) as usize;
@@ -505,13 +543,14 @@ mod tests {
 
     #[test]
     fn plane_sheet_shows_voxel_cells_with_the_voxel_grid() {
-        let Some(Headless { device, queue, .. }) = headless_device() else {
+        let Some(gpu) = test_device() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
-        let mut raster = OffscreenRaster::new(&device);
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mut raster = OffscreenRaster::new(device);
         let mut render =
-            |grid, width| raster.render(&device, &queue, &plane_frame(grid, width), [80, 80]);
+            |grid, width| raster.render(device, queue, &plane_frame(grid, width), [80, 80]);
         let red = |img: &RgbaImage, x: u32| img.pixel(x, 30)[0];
         // Cell center x = 1.5 (pixel 30), boundary x = 1 (pixel 20).
         let thin = render(true, 1.0);

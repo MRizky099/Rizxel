@@ -5,7 +5,8 @@ apply when you press **OK** and at every start.
 
 ## General
 
-UI scale, theme (Dark; a light theme is planned), start screen, autosave interval, undo
+UI scale, theme (*Dark*, *Light* or *Follow system*; the viewport keeps its mid-grey
+ground in every theme, so a model looks the same in both), start screen, autosave interval, undo
 steps per document, default export folder, *Associate .rzxl Files* (so
 double-clicking a project opens Rizxel), and *Clicking a layer selects its voxels* (on by
 default; see [Layers](panels/layers.md#select-on-click)).

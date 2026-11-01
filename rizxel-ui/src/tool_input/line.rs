@@ -364,7 +364,7 @@ impl ToolInput {
             .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
         if let Some((_, cells)) = &s.ghost {
             let color = match s.op {
-                VoxelOp::Subtract => theme::DANGER.gamma_multiply(0.45),
+                VoxelOp::Subtract => theme::p().danger.gamma_multiply(0.45),
                 _ => {
                     let c = doc.selected_rgba();
                     Color32::from_rgb(c.r, c.g, c.b).gamma_multiply(0.55)

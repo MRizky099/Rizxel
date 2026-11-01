@@ -9,6 +9,18 @@ Layers stack from bottom to top; where visible layers overlap, the upper one win
 - Double-click renames; drag to reorder or into and out of a group; right-click for
   more (Duplicate, Merge Down, Show Only This, Delete…).
 
+## Empty layers
+
+While the active voxel layer is empty, the panel says so under the list, with a
+**Use Brush** button that picks the Brush tool: new voxels land on the active layer.
+
+## Toolbar
+
+**+ Layer**, *New group*, *Delete*, *Move up* and *Move down*, then the **⋮** menu:
+*Duplicate*, *Merge down*, *Merge visible*, *Lock / Unlock all layers* and, in red,
+*Delete N hidden layers…*, which asks first. Every one of them is a single undo step
+(`Ctrl+Z`).
+
 ## Selecting several layers
 
 - **Click** selects one layer and makes it active.

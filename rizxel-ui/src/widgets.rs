@@ -20,9 +20,9 @@ impl IconStyle {
         Self {
             size: Vec2::splat(32.0),
             icon_size: 15.0,
-            color: theme::TEXT,
-            hover_color: theme::TEXT_STRONG,
-            hover_fill: theme::HOVER,
+            color: theme::p().text,
+            hover_color: theme::p().text_strong,
+            hover_fill: theme::p().hover,
         }
     }
 
@@ -31,7 +31,7 @@ impl IconStyle {
         Self {
             size: Vec2::splat(40.0),
             icon_size: 17.0,
-            color: theme::TEXT_DIM,
+            color: theme::p().text_dim,
             ..Self::bar()
         }
     }
@@ -41,8 +41,8 @@ impl IconStyle {
         Self {
             size: Vec2::splat(18.0),
             icon_size: 13.0,
-            color: theme::TEXT_DIM,
-            hover_color: theme::TEXT_STRONG,
+            color: theme::p().text_dim,
+            hover_color: theme::p().text_strong,
             hover_fill: Color32::TRANSPARENT,
         }
     }
@@ -94,6 +94,109 @@ pub fn icon_button(ui: &mut Ui, icon: &str, style: IconStyle, enabled: bool) -> 
     response
 }
 
+/// Checkbox in the redesign's style: a 14 px box, filled with the accent
+/// under a light tick when on, a recessed well when off. Same use as
+/// [`Ui::checkbox`].
+pub fn check_box(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
+    const BOX: f32 = 14.0;
+    const GAP: f32 = 6.0;
+    let galley = egui::WidgetText::from(label).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+    let height = ui.spacing().interact_size.y.max(galley.size().y);
+    let width = BOX
+        + if label.is_empty() {
+            0.0
+        } else {
+            GAP + galley.size().x
+        };
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+    if response.clicked() {
+        *checked = !*checked;
+        response.mark_changed();
+    }
+    let on = *checked;
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, label)
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let enabled = ui.is_enabled();
+    let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.45) };
+    let box_rect = Rect::from_center_size(
+        egui::pos2(rect.left() + BOX / 2.0, rect.center().y),
+        Vec2::splat(BOX),
+    );
+    let painter = ui.painter();
+    let radius = 3.0;
+    if on {
+        painter.rect_filled(box_rect, radius, dim(theme::ACCENT));
+        let tick = [
+            box_rect.left_center() + egui::vec2(3.2, 0.2),
+            box_rect.center_bottom() + egui::vec2(-1.2, -3.6),
+            box_rect.right_top() + egui::vec2(-3.0, 3.6),
+        ];
+        painter.add(egui::Shape::line(
+            tick.to_vec(),
+            Stroke::new(1.8, dim(theme::ACCENT_INK)),
+        ));
+    } else {
+        let edge = if enabled && response.hovered() {
+            theme::p().text_dim
+        } else {
+            theme::p().separator
+        };
+        painter.rect_filled(box_rect, radius, theme::p().bg_app);
+        painter.rect_stroke(
+            box_rect,
+            radius,
+            Stroke::new(1.0, dim(edge)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if !label.is_empty() {
+        let text_color = if enabled && response.hovered() {
+            theme::p().text_strong
+        } else {
+            dim(theme::p().text)
+        };
+        let pos = egui::pos2(
+            box_rect.right() + GAP,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        painter.galley(pos, galley, text_color);
+    }
+    response
+}
+
+/// Drop-down in the redesign's style: the field shows a chevron, and in its
+/// list the current item sits on a grey highlight rather than the accent.
+/// Use in place of [`egui::ComboBox::from_id_salt`].
+pub fn dropdown(id_salt: impl std::hash::Hash + std::fmt::Debug) -> egui::ComboBox {
+    egui::ComboBox::from_id_salt(id_salt)
+        .icon(|ui, rect, visuals, _open| {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::CARET_DOWN,
+                theme::icon(12.0),
+                visuals.fg_stroke.color,
+            );
+        })
+        .popup_style(egui::style::StyleModifier::new(
+            |style: &mut egui::Style| {
+                let c = theme::p();
+                style.visuals.selection.bg_fill = c.bg_selected;
+                style.visuals.selection.stroke = Stroke::new(1.0, c.text_strong);
+                style.spacing.button_padding = egui::vec2(8.0, 4.0);
+            },
+        ))
+}
+
 /// Paints a centered icon glyph inside `rect`.
 /// `glyph` (in the icon font) followed by `label`, for buttons and menus.
 /// Uses the widget's own text color, so hover/disabled styling still applies.
@@ -127,7 +230,7 @@ pub fn vertical_divider(ui: &mut Ui, height: f32) {
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::p().separator),
     );
 }
 
@@ -137,7 +240,7 @@ pub fn horizontal_divider(ui: &mut Ui, width: f32) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::p().separator),
     );
 }
 

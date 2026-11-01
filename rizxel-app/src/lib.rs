@@ -68,7 +68,7 @@ pub use rizxel_io::shaped_export::{
 pub use rizxel_io::{decode_reference, GPL_EXTENSION, HEX_EXTENSION, RZXL_EXTENSION};
 pub use rizxel_io::{GltfColors, HeightmapOptions, ObjLayout, Pivot, SliceAxis, MAX_SLICE_SCALE};
 pub use selection::Selection;
-pub use settings::{CameraControls, Settings};
+pub use settings::{CameraControls, Settings, Theme};
 pub use shaped::{ShapedExport, SHAPED_EXTENSIONS};
 pub use transform_session::{pivot_point, TransformSession};
 
@@ -535,6 +535,8 @@ pub struct ViewOptions {
     pub model_bounds: bool,
     /// Layers other than the active one drawn at [`GHOST_ALPHA`].
     pub ghosts: bool,
+    /// The planes the drawing tools' Mirror axes flip across.
+    pub mirror_planes: bool,
     /// Ambient occlusion in Model mode (off by default: flat colors read
     /// better while editing).
     pub ao_model: bool,
@@ -568,6 +570,7 @@ impl Default for ViewOptions {
             voxel_grid: false,
             model_bounds: true,
             ghosts: false,
+            mirror_planes: true,
             ao_model: false,
             ao_render: true,
         }
@@ -1783,9 +1786,7 @@ mod tests {
         let s = AppState::default();
         assert_eq!(s.documents.len(), 1);
         assert_eq!(s.doc().unwrap().title(), "untitled_1.rzxl");
-        assert!(s
-            .hint()
-            .starts_with("Plane Tool: Click a face to place the work plane"));
+        assert!(s.hint().starts_with("Cursor Tool:"));
     }
 
     #[test]

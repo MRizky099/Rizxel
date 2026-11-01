@@ -140,7 +140,7 @@ impl NamesMode {
 
 /// Mirror axes shared by the drawing tools (Goxel `tool_gui_symmetry`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct Symmetry {
+pub struct Mirror {
     pub x: bool,
     pub y: bool,
     pub z: bool,
@@ -189,7 +189,8 @@ pub struct BrushOptions {
     pub surface_paint: bool,
     /// Edge softness: 0 = hard edges.
     pub antialiasing: u32,
-    pub symmetry: Symmetry,
+    #[serde(alias = "symmetry")]
+    pub mirror: Mirror,
     /// Line connectivity: for Line tool paths, and for freehand strokes
     /// when the size is 1.
     pub connect: Connectivity,
@@ -213,7 +214,7 @@ impl Default for BrushOptions {
             size: [1; 3],
             surface_paint: false,
             antialiasing: 0,
-            symmetry: Symmetry::default(),
+            mirror: Mirror::default(),
             connect: Connectivity::default(),
         }
     }
@@ -257,7 +258,8 @@ pub struct ShapeOptions {
     /// Keep the shape on the plane where the drag started.
     pub planar: bool,
     pub antialiasing: u32,
-    pub symmetry: Symmetry,
+    #[serde(alias = "symmetry")]
+    pub mirror: Mirror,
 }
 
 /// Which half of the model survives a Slice.

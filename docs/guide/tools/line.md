@@ -14,4 +14,4 @@ Draws straight lines, polylines and curves with the brush tip.
 |---|---|
 | **Connectivity** | *Diagonal*, *Pixel perfect* or *Solid* steps. |
 | **Brush** shape and size | The tip drawn along the line (shared with the Brush). |
-| **Symmetry** | Mirror the line. |
+| **Mirror** | Mirror the line. |

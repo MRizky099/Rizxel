@@ -1691,6 +1691,7 @@ impl PtInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::offscreen::{test_device, TestGpu};
     use glam::IVec3;
     use rizxel_math::BoundSize;
 
@@ -1800,11 +1801,11 @@ mod tests {
 
     // ------------------------------------------------------------- GPU
 
-    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-        match super::super::offscreen::headless_device() {
+    fn gpu() -> Option<TestGpu> {
+        match test_device() {
             Some(h) if h.path_tracing => {
                 eprintln!("adapter: {} ({:?})", h.info.name, h.info.backend);
-                Some((h.device, h.queue))
+                Some(h)
             }
             Some(h) => {
                 eprintln!("{} can't run the path tracer: skipped", h.info.name);
@@ -1877,15 +1878,16 @@ mod tests {
 
     #[test]
     fn gpu_traversal_matches_raycast_grid() {
-        let Some((device, queue)) = gpu() else { return };
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.device, &gpu.queue);
         let (volume, rays) = random_scene();
         let scene = Arc::new(PtScene::build([20, 20, 20], [(&volume, 0)], None));
-        let mut pt = PathTracer::new(&device);
-        pt.set_scene(&device, &queue, &scene);
-        pt.set_tables(&queue, &PtTables::new(&Document::new("t")));
+        let mut pt = PathTracer::new(device);
+        pt.set_scene(device, queue, &scene);
+        pt.set_tables(queue, &PtTables::new(&Document::new("t")));
         let s = shape_settings(rizxel_math::VoxelShape::Cube);
         let params = params_for(&s, [20, 20, 20], Vec3::ZERO, test_camera(), [1, 1]);
-        let hits = pt.raycast(&device, &queue, &params, &rays);
+        let hits = pt.raycast(device, queue, &params, &rays);
         assert_eq!(hits.len(), rays.len());
         let area = VoxelBox::from_bounds(BoundSize::new(20, 20, 20));
         let mut compared = 0;
@@ -1913,12 +1915,13 @@ mod tests {
 
     #[test]
     fn missing_rays_stop_early() {
-        let Some((device, queue)) = gpu() else { return };
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.device, &gpu.queue);
         let (volume, _) = random_scene();
         let scene = Arc::new(PtScene::build([20, 20, 20], [(&volume, 0)], None));
-        let mut pt = PathTracer::new(&device);
-        pt.set_scene(&device, &queue, &scene);
-        pt.set_tables(&queue, &PtTables::new(&Document::new("t")));
+        let mut pt = PathTracer::new(device);
+        pt.set_scene(device, queue, &scene);
+        pt.set_tables(queue, &PtTables::new(&Document::new("t")));
         let s = shape_settings(rizxel_math::VoxelShape::Cube);
         let params = params_for(&s, [20, 20, 20], Vec3::ZERO, test_camera(), [1, 1]);
         // Rays from inside and around the grid in many directions.
@@ -1931,7 +1934,7 @@ mod tests {
             let d = Vec3::new(f(4) - 0.5, f(5) - 0.5, f(6) - 0.5).normalize_or(Vec3::X);
             rays.push((o, d));
         }
-        let hits = pt.raycast(&device, &queue, &params, &rays);
+        let hits = pt.raycast(device, queue, &params, &rays);
         let worst = hits.iter().map(|(_, n)| n[2] as i32).max().unwrap_or(0);
         let misses: Vec<i32> = hits
             .iter()
@@ -1953,13 +1956,14 @@ mod tests {
 
     #[test]
     fn gpu_studs_sit_where_shape_mesh_puts_them() {
-        let Some((device, queue)) = gpu() else { return };
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.device, &gpu.queue);
         let mut v = VoxelVolume::new(BoundSize::new(4, 4, 4));
         v.set(IVec3::new(1, 0, 1), 5);
         let scene = Arc::new(PtScene::build([4, 4, 4], [(&v, 0)], None));
-        let mut pt = PathTracer::new(&device);
-        pt.set_scene(&device, &queue, &scene);
-        pt.set_tables(&queue, &PtTables::new(&Document::new("t")));
+        let mut pt = PathTracer::new(device);
+        pt.set_scene(device, queue, &scene);
+        pt.set_tables(queue, &PtTables::new(&Document::new("t")));
         let s = shape_settings(rizxel_math::VoxelShape::Brick);
         let params = params_for(&s, [4, 4, 4], Vec3::ZERO, test_camera(), [1, 1]);
         // The CPU stud: shape_mesh's cylinder above the brick.
@@ -1983,7 +1987,7 @@ mod tests {
             // Sideways at stud height: the stud's side.
             (Vec3::new(0.01, 1.1, 1.5), Vec3::X),
         ];
-        let hits = pt.raycast(&device, &queue, &params, &rays);
+        let hits = pt.raycast(device, queue, &params, &rays);
         let y = |i: usize| rays[i].0.y - hits[i].0[3];
         assert!(
             (y(0) - stud_top).abs() < 1e-3,
@@ -2049,9 +2053,10 @@ mod tests {
 
     #[test]
     fn white_voxel_is_brighter_on_top_than_below() {
-        let Some((device, queue)) = gpu() else { return };
-        let top = white_voxel_brightness(&device, &queue, 60.0);
-        let bottom = white_voxel_brightness(&device, &queue, -60.0);
+        let Some(gpu) = gpu() else { return };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let top = white_voxel_brightness(device, queue, 60.0);
+        let bottom = white_voxel_brightness(device, queue, -60.0);
         eprintln!("top {top:.3}, bottom {bottom:.3}");
         assert!(top > 0.3, "the lit top is bright ({top})");
         assert!(top > bottom + 0.1, "top {top} vs bottom {bottom}");

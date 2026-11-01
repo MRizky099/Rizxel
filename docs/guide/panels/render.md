@@ -1,8 +1,12 @@
 # Render
 
-The Render panel holds Render mode's settings, saved with the project. Its tabs:
+The Render panel holds Render mode's settings, saved with the project, in six groups.
+Click a group's header to expand or collapse it; several can be open at once. Each header shows the
+group's current value (*Sun, Gradient sky*, *256 samples*, *1920 × 1080 Image*...). The
+**Render** button stays at the foot of the panel, next to the size and samples it
+will use.
 
-| Tab | Settings |
+| Group | Settings |
 |---|---|
 | **Light** | Sun (azimuth, elevation, size, intensity, color), sky (*Uniform*, *Gradient* or an *Image* `.hdr` with rotation), fog, studio lights. |
 | **Material** | The selected layer's material: tint, metallic, roughness, specular, transmission (glass) and IOR, clear coat, emission and its strength. Preset buttons (*Diffuse*, *Plastic*, *Metal*, *Glass*, *Emit*, *Matte*) set them in one click. *Make unique* gives the layer its own copy. `Alt` + click the model picks a layer. |
@@ -11,9 +15,9 @@ The Render panel holds Render mode's settings, saved with the project. Its tabs:
 | **Sample** | Samples, diffuse / specular / transmission bounces, Russian roulette, clamp, pixel filter, pixelated, denoise. |
 | **Output** | *Image*, *Photo-realistic* or *Turntable*; size, transparency, folder and name, time limit, 16-bit PNG; turntable frames and angle, PNG sequence, GIF, sprite sheet. |
 
-The preset menu has the built-in presets (*Studio White*, *Outdoor Sun*, *Night
-Emissive*, *Flat Pixel*, *Voxel Icon*); **Presets** also store the settings (without
-the output) under a name. **Export shape…**
+The **Preset** picker has the built-in presets (*Studio White*, *Outdoor Sun*, *Night
+Emissive*, *Flat Pixel*, *Voxel Icon*) and your own; at its foot, type a name and
+**Save preset** to store the settings (without the output). **Export shape…**
 exports the model with the chosen voxel shape as OBJ, STL or GLB.
 
 See [Render mode](../render-mode.md) for the workflow.

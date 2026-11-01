@@ -1243,3 +1243,90 @@ fn drops_on_a_scrolled_strip_insert_at_the_visible_position() {
     let at = panels.iter().position(|p| *p == 99).unwrap();
     assert!(at < panels.len() - 1, "landed among the visible tabs, not after every hidden one: {panels:?}");
 }
+
+/// Renders `layout` with panel 1 compact on `side`; returns each panel body's rect.
+fn compact_frame(ctx: &Context, layout: &Layout<u32>, events: Vec<Event>, side: GripSide) -> (DockOutput<u32>, Vec<(u32, Rect)>) {
+    let mut output = DockOutput::default();
+    let mut bodies = Vec::new();
+    let input = RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))), events, focused: true, ..Default::default() };
+    ctx.run_ui(input, |ui| {
+        let style = DockStyle::from_ui(ui);
+        output = DockArea::new(Id::new("test-area")).compact(1, side).show(
+            ui,
+            layout,
+            &style,
+            |p| format!("Panel {p}"),
+            |_| Permissions::default(),
+            |ui, p| bodies.push((*p, ui.max_rect())),
+        );
+    })
+    .textures_delta
+    .clear();
+    (output, bodies)
+}
+
+fn compact_sample() -> Layout<u32> {
+    Layout {
+        root: Some(Node::Split {
+            axis: SplitAxis::Vertical,
+            size: SplitSize::FixedFirst(48.0),
+            first: Box::new(tabs(&[1], 0)),
+            second: Box::new(tabs(&[2, 3], 0)),
+        }),
+        floating: Vec::new(),
+    }
+}
+
+#[test]
+fn compact_group_trades_its_strip_for_a_grip() {
+    let ctx = Context::default();
+    let layout = compact_sample();
+    let (out, bodies) = compact_frame(&ctx, &layout, Vec::new(), GripSide::Left);
+    assert!(out.error.is_none());
+    let grip = ctx.read_response(Id::new("test-area").with(("tab", &1u32))).unwrap().rect;
+    let body = bodies.iter().find(|(p, _)| *p == 1).unwrap().1;
+    assert_eq!(grip.left(), 0.0);
+    assert!((grip.width() - 10.0).abs() < 1e-3, "{grip:?}");
+    assert_eq!(body.left(), grip.right(), "the body starts at the grip");
+    assert_eq!(body.top(), grip.top(), "no strip above the body");
+    // The other group keeps its captioned strip.
+    let strip_tab = ctx.read_response(Id::new("test-area").with(("tab", &2u32))).unwrap().rect;
+    assert!(strip_tab.width() > 10.0 && strip_tab.height() < 40.0, "{strip_tab:?}");
+
+    compact_frame(&ctx, &layout, Vec::new(), GripSide::Top);
+    let (_, bodies) = compact_frame(&ctx, &layout, Vec::new(), GripSide::Top);
+    let grip = ctx.read_response(Id::new("test-area").with(("tab", &1u32))).unwrap().rect;
+    let body = bodies.iter().find(|(p, _)| *p == 1).unwrap().1;
+    assert!((grip.height() - 10.0).abs() < 1e-3, "{grip:?}");
+    assert_eq!(body.top(), grip.bottom());
+}
+
+#[test]
+fn compact_grip_drags_its_panel_and_a_shared_group_gets_a_strip() {
+    let ctx = Context::default();
+    let mut layout = compact_sample();
+    let run = |ctx: &Context, layout: &mut Layout<u32>, events: Vec<Event>| {
+        let (out, _) = compact_frame(ctx, layout, events, GripSide::Left);
+        assert!(out.error.is_none());
+        for action in &out.actions {
+            layout.apply(action.clone()).unwrap();
+        }
+        out.actions
+    };
+    run(&ctx, &mut layout, Vec::new());
+    run(&ctx, &mut layout, Vec::new());
+    let source = ctx.read_response(Id::new("test-area").with(("tab", &1u32))).unwrap().rect.center();
+    let target = ctx.read_response(Id::new("test-area").with(("tab", &3u32))).unwrap().rect.center();
+    run(&ctx, &mut layout, vec![Event::PointerMoved(source), pointer_button(source, true)]);
+    run(&ctx, &mut layout, vec![Event::PointerMoved(source + vec2(0.0, 8.0))]);
+    run(&ctx, &mut layout, vec![Event::PointerMoved(target)]);
+    let actions = run(&ctx, &mut layout, vec![pointer_button(target, false)]);
+    assert!(actions.iter().any(|a| matches!(a, Action::Move { panel: 1, .. })), "{actions:?}");
+    let Some(Node::Tabs { panels, .. }) = layout.root.as_ref() else { panic!("{layout:?}") };
+    assert!(panels.contains(&1) && panels.len() == 3, "{panels:?}");
+    // Sharing a group, panel 1 is an ordinary tab again.
+    run(&ctx, &mut layout, Vec::new());
+    run(&ctx, &mut layout, Vec::new());
+    let tab = ctx.read_response(Id::new("test-area").with(("tab", &1u32))).unwrap().rect;
+    assert!(tab.width() > 10.0, "{tab:?}");
+}

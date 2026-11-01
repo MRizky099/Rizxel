@@ -1,7 +1,7 @@
 # craft-ui (vendored)
 
 A copy of the `craft-ui` crate from [storytold/craft-libs](https://github.com/storytold/craft-libs)
-with one Rizxel change on top. Rizxel uses its docking layer (`rizxel-ui/src/dock.rs`).
+with two Rizxel changes on top. Rizxel uses its docking layer (`rizxel-ui/src/dock.rs`).
 The crate's own description is in [UPSTREAM_README.md](UPSTREAM_README.md).
 
 | | |
@@ -13,8 +13,9 @@ The crate's own description is in [UPSTREAM_README.md](UPSTREAM_README.md).
 
 ## Changes from upstream
 
-One commit, kept as a patch for upstreaming:
-[`patches/0001-docking-opt-in-Fill-tab-widths-and-scrolling-tab-str.patch`](patches/0001-docking-opt-in-Fill-tab-widths-and-scrolling-tab-str.patch).
+Two commits, kept as patches for upstreaming:
+[`patches/0001-docking-opt-in-Fill-tab-widths-and-scrolling-tab-str.patch`](patches/0001-docking-opt-in-Fill-tab-widths-and-scrolling-tab-str.patch)
+and [`patches/0002-docking-compact-groups-with-a-grip.patch`](patches/0002-docking-compact-groups-with-a-grip.patch).
 
 - `DockStyle::tab_sizing: TabSizing::{Natural, Fill}`: Fill stretches a group's tabs to share its
   strip evenly; a wider label keeps its width.
@@ -26,6 +27,12 @@ One commit, kept as a patch for upstreaming:
 - Unit tests in `src/tabs/tests.rs` and `src/docking/tests.rs`.
 
 The defaults stay `Natural` and `Menu`, so other users of craft-ui see no change.
+
+- `DockArea::compact(panel, GripSide::{Left, Top})` (patch 0002): while that panel is alone
+  in a docked group, a 10 px grip on that edge replaces the captioned tab strip. The grip is
+  the tab (drag, drop target, panel menu, accessible name) and shows the label as a tooltip;
+  floating or sharing a group, the panel gets an ordinary strip. Nothing is compact unless an
+  application asks. Tests: `compact_*` in `src/docking/tests.rs`.
 
 Packaging differences (not code changes):
 

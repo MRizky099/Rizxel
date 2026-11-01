@@ -34,9 +34,13 @@ pub enum RenderTab {
 }
 
 impl RenderTab {
-    const ROWS: [[RenderTab; 3]; 2] = [
-        [RenderTab::Light, RenderTab::Sample, RenderTab::Display],
-        [RenderTab::Material, RenderTab::Camera, RenderTab::Output],
+    const ALL: [RenderTab; 6] = [
+        RenderTab::Light,
+        RenderTab::Sample,
+        RenderTab::Display,
+        RenderTab::Material,
+        RenderTab::Camera,
+        RenderTab::Output,
     ];
 
     fn label(self) -> &'static str {
@@ -48,6 +52,27 @@ impl RenderTab {
             RenderTab::Camera => "Camera",
             RenderTab::Output => "Output",
         }
+    }
+}
+
+/// Which settings groups are expanded (Light at first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenGroups([bool; RenderTab::ALL.len()]);
+
+impl Default for OpenGroups {
+    fn default() -> Self {
+        Self(RenderTab::ALL.map(|t| t == RenderTab::Light))
+    }
+}
+
+impl OpenGroups {
+    pub fn is_open(&self, tab: RenderTab) -> bool {
+        self.0[tab as usize]
+    }
+
+    /// Expands a collapsed group or collapses an expanded one.
+    pub fn toggle(&mut self, tab: RenderTab) {
+        self.0[tab as usize] = !self.0[tab as usize];
     }
 }
 
@@ -63,7 +88,7 @@ pub struct JobStatus {
 /// Render panel state (UI only).
 #[derive(Debug, Default)]
 pub struct RenderUi {
-    pub tab: RenderTab,
+    pub open: OpenGroups,
     /// Name typed for *Save preset*.
     preset_name: String,
     /// The Render button was pressed this frame.
@@ -105,16 +130,26 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     presets(ui, state, &mut ui_state.render);
                     ui.add_space(4.0);
-                    tabs(ui, &mut ui_state.render.tab);
-                    ui.add_space(4.0);
-                    body(ui, state, &mut ui_state.render);
+                    // Each group expands and collapses on its own, its
+                    // settings under its header.
+                    for tab in RenderTab::ALL {
+                        let value = summary(state, tab);
+                        let open = ui_state.render.open.is_open(tab);
+                        if group_header(ui, tab, &value, open).clicked() {
+                            ui_state.render.open.toggle(tab);
+                        }
+                        if ui_state.render.open.is_open(tab) {
+                            body(ui, state, tab, &mut ui_state.render);
+                            ui.add_space(6.0);
+                        }
+                    }
                 });
             });
     });
     ui.painter().hline(
         footer_rect.x_range(),
         footer_rect.top(),
-        (1.0, theme::BORDER),
+        (1.0, theme::p().border),
     );
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(footer_rect.shrink(8.0)),
@@ -126,18 +161,22 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
 
 // ------------------------------------------------------------ presets
 
+/// One picker: the built-in presets, the user's, and *Save preset* at the
+/// foot of its menu.
 fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
     ui.horizontal(|ui| {
         ui.label(label("Preset"));
-        egui::ComboBox::from_id_salt("render_preset")
+        crate::widgets::dropdown("render_preset")
             .selected_text("Apply…")
-            .width(150.0)
+            .width(ui.available_width())
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
                 for preset in RenderPreset::ALL {
                     if ui.selectable_label(false, preset.label()).clicked() {
                         if let Some(doc) = state.doc_mut() {
                             doc.apply_render_preset(preset);
                         }
+                        ui.close();
                     }
                 }
                 let names: Vec<String> = state
@@ -153,6 +192,7 @@ fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
                     ui.horizontal(|ui| {
                         if ui.selectable_label(false, &name).clicked() {
                             state.apply_user_render_preset(&name);
+                            ui.close();
                         }
                         if ui
                             .small_button(icon::TRASH)
@@ -163,51 +203,162 @@ fn presets(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
                         }
                     });
                 }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let edit = egui::TextEdit::singleline(&mut render.preset_name)
+                        .hint_text("Preset name")
+                        .desired_width(120.0);
+                    let enter =
+                        ui.add(edit).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let can_save = !render.preset_name.trim().is_empty();
+                    let save = ui
+                        .add_enabled(can_save, egui::Button::new("Save preset"))
+                        .on_hover_text("Keep these settings (without the output) as a preset")
+                        .clicked();
+                    if (save || (enter && can_save))
+                        && state.save_render_preset(&render.preset_name)
+                    {
+                        render.preset_name.clear();
+                        ui.close();
+                    }
+                });
             });
-    });
-    ui.horizontal(|ui| {
-        let edit = egui::TextEdit::singleline(&mut render.preset_name)
-            .hint_text("Preset name")
-            .desired_width(150.0);
-        ui.add(edit);
-        let can_save = !render.preset_name.trim().is_empty();
-        if ui
-            .add_enabled(can_save, egui::Button::new("Save preset"))
-            .on_hover_text("Keep these settings (without the output) as a preset")
-            .clicked()
-            && state.save_render_preset(&render.preset_name)
-        {
-            render.preset_name.clear();
-        }
     });
 }
 
-fn tabs(ui: &mut Ui, tab: &mut RenderTab) {
-    for (i, row) in RenderTab::ROWS.iter().enumerate() {
-        let items: Vec<(RenderTab, &str)> = row.iter().map(|t| (*t, t.label())).collect();
-        ui.horizontal(|ui| {
-            ui.push_id(i, |ui| {
-                super::options::segmented_fill(ui, "render_tabs", tab, &items)
-            });
-        });
+/// The current value of a settings group, shown on its header.
+fn summary(state: &AppState, tab: RenderTab) -> String {
+    let Some(doc) = state.doc() else {
+        return String::new();
+    };
+    let r = &doc.data.render;
+    match tab {
+        RenderTab::Light => {
+            let sky = format!("{} sky", r.light.sky.label());
+            if r.light.sun {
+                format!("Sun, {sky}")
+            } else {
+                sky
+            }
+        }
+        RenderTab::Sample => format!("{} samples", r.sample.samples),
+        RenderTab::Display => {
+            let background = r.display.background.label();
+            if r.display.ground {
+                format!("{background}, ground")
+            } else {
+                background.to_owned()
+            }
+        }
+        RenderTab::Material => {
+            let layer = doc.data.layers.get(doc.active_layer);
+            match layer {
+                Some(l) if l.kind().is_group() => "Group".to_owned(),
+                Some(l) => l
+                    .props
+                    .material
+                    .and_then(|m| doc.data.materials.get(m as usize))
+                    .map_or_else(|| "Default".to_owned(), |m| m.name.clone()),
+                None => String::new(),
+            }
+        }
+        RenderTab::Camera => match state.camera.projection {
+            Projection::Perspective => format!("Perspective, {:.0}°", r.camera.fov),
+            Projection::Orthographic => "Orthographic".to_owned(),
+        },
+        RenderTab::Output => format!(
+            "{} × {} {}",
+            r.output.width,
+            r.output.height,
+            r.output.kind.label()
+        ),
     }
+}
+
+/// Full-width header of a settings group: a caret, the name, and a hairline
+/// above it. Clicking expands or collapses the group.
+fn group_header(ui: &mut Ui, tab: RenderTab, value: &str, open: bool) -> egui::Response {
+    let height = 30.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, open, tab.label())
+    });
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, theme::RADIUS, theme::p().hover);
+    }
+    painter.hline(rect.x_range(), rect.top(), (1.0, theme::p().border));
+    let caret = if open {
+        icon::CARET_DOWN
+    } else {
+        icon::CARET_RIGHT
+    };
+    painter.text(
+        rect.left_center() + egui::vec2(8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        caret,
+        theme::icon(12.0),
+        theme::p().text_dim,
+    );
+    painter.text(
+        rect.left_center() + egui::vec2(26.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        tab.label(),
+        theme::semibold(13.0),
+        if open {
+            theme::p().text_strong
+        } else {
+            theme::p().text
+        },
+    );
+    // The current value, cut short when the panel is narrow.
+    let name_width = painter
+        .layout_no_wrap(
+            tab.label().to_owned(),
+            theme::semibold(13.0),
+            Color32::WHITE,
+        )
+        .size()
+        .x;
+    let room = rect.right() - 8.0 - (rect.left() + 34.0 + name_width);
+    if room > 24.0 && !value.is_empty() {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            value.to_owned(),
+            theme::regular(11.0),
+            theme::p().text_muted,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let galley = painter.layout_job(job);
+        painter.galley(
+            egui::pos2(
+                rect.right() - 8.0 - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            theme::p().text_muted,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 // ------------------------------------------------------------ body
 
-fn body(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
-    if render.tab == RenderTab::Camera {
+fn body(ui: &mut Ui, state: &mut AppState, tab: RenderTab, render: &mut RenderUi) {
+    if tab == RenderTab::Camera {
         camera_projection(ui, state);
     }
     let Some(doc) = state.doc_mut() else {
         return;
     };
-    if render.tab == RenderTab::Material {
+    if tab == RenderTab::Material {
         material_tab(ui, doc);
         return;
     }
     let mut s = doc.data.render.clone();
-    match render.tab {
+    match tab {
         RenderTab::Light => light_tab(ui, &mut s),
         RenderTab::Sample => sample_tab(ui, &mut s),
         RenderTab::Display => display_tab(ui, &mut s, render),
@@ -216,7 +367,7 @@ fn body(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
         RenderTab::Material => {}
     }
     let changed = s != doc.data.render;
-    let merge = continues_drag(ui, "render_settings", changed);
+    let merge = continues_drag(ui, tab.label(), changed);
     if changed {
         doc.set_render(s, merge);
     }
@@ -241,11 +392,11 @@ fn continues_drag(ui: &Ui, key: &str, changed: bool) -> bool {
 }
 
 fn label(text: &str) -> RichText {
-    RichText::new(text).size(12.0).color(theme::TEXT)
+    RichText::new(text).size(12.0).color(theme::p().text)
 }
 
 fn note(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(theme::TEXT_MUTED));
+    ui.label(RichText::new(text).size(11.0).color(theme::p().text_muted));
 }
 
 /// Collapsible section with a two-column grid.
@@ -307,7 +458,7 @@ fn combo<T: PartialEq + Copy>(
     text: impl Fn(T) -> &'static str,
 ) {
     ui.label(label(name));
-    egui::ComboBox::from_id_salt(("render_combo", name))
+    crate::widgets::dropdown(("render_combo", name))
         .selected_text(text(*value))
         .show_ui(ui, |ui| {
             for item in items {
@@ -343,7 +494,7 @@ fn light_tab(ui: &mut Ui, s: &mut RenderSettings) {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "None".to_owned());
-                    ui.label(RichText::new(name).size(11.0).color(theme::TEXT_DIM))
+                    ui.label(RichText::new(name).size(11.0).color(theme::p().text_dim))
                         .on_hover_text(&l.sky_image);
                     if ui.small_button("Browse…").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
@@ -630,7 +781,7 @@ fn output_tab(ui: &mut Ui, s: &mut RenderSettings) {
             ui.add(egui::DragValue::new(&mut o.width).range(1..=MAX_OUTPUT_SIDE));
             ui.label("×");
             ui.add(egui::DragValue::new(&mut o.height).range(1..=MAX_OUTPUT_SIDE));
-            egui::ComboBox::from_id_salt("output_size")
+            crate::widgets::dropdown("output_size")
                 .selected_text("")
                 .width(24.0)
                 .show_ui(ui, |ui| {
@@ -653,7 +804,7 @@ fn output_tab(ui: &mut Ui, s: &mut RenderSettings) {
             } else {
                 o.folder.clone()
             };
-            ui.label(RichText::new(shown).size(11.0).color(theme::TEXT_DIM));
+            ui.label(RichText::new(shown).size(11.0).color(theme::p().text_dim));
             if ui.small_button("…").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     o.folder = dir.to_string_lossy().into_owned();
@@ -721,7 +872,7 @@ fn material_tab(ui: &mut Ui, doc: &mut Document) {
     ui.label(
         RichText::new(format!("Layer \"{layer_name}\""))
             .size(12.0)
-            .color(theme::TEXT_STRONG),
+            .color(theme::p().text_strong),
     );
     note(ui, "Alt+click the model to pick a layer.");
 
@@ -734,7 +885,7 @@ fn material_tab(ui: &mut Ui, doc: &mut Document) {
     let mut unique = false;
     ui.horizontal(|ui| {
         ui.label(label("Material"));
-        egui::ComboBox::from_id_salt(("render_material", index))
+        crate::widgets::dropdown(("render_material", index))
             .selected_text(name(doc, picked))
             .width(130.0)
             .show_ui(ui, |ui| {
@@ -865,7 +1016,7 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
         } else {
             let text = RichText::new(format!("{}  Render", icon::CAMERA))
                 .size(13.0)
-                .color(Color32::WHITE);
+                .color(theme::ACCENT_INK);
             let button = egui::Button::new(text)
                 .fill(theme::ACCENT)
                 .min_size([96.0, 28.0].into());
@@ -891,9 +1042,18 @@ fn footer(ui: &mut Ui, state: &AppState, render: &mut RenderUi) {
                 );
             }
             None => {
-                let text = render.last_result.as_deref().unwrap_or("");
+                // What Render makes, until a job has finished.
+                let text = render.last_result.clone().unwrap_or_else(|| {
+                    state.doc().map_or(String::new(), |d| {
+                        format!(
+                            "{}, {} samples",
+                            output_size(state),
+                            d.data.render.sample.samples
+                        )
+                    })
+                });
                 ui.add(
-                    egui::Label::new(RichText::new(text).size(11.0).color(theme::TEXT_DIM))
+                    egui::Label::new(RichText::new(text).size(11.0).color(theme::p().text_dim))
                         .truncate(),
                 );
             }
@@ -961,7 +1121,7 @@ pub fn shaped_dialog(ctx: &egui::Context, state: &mut AppState, render: &mut Ren
                     ui.end_row();
                     combo(ui, "Pivot", &mut e.pivot, &Pivot::ALL, Pivot::label);
                     ui.label(label("Format"));
-                    egui::ComboBox::from_id_salt("shaped_format")
+                    crate::widgets::dropdown("shaped_format")
                         .selected_text(SHAPED_EXTENSIONS[dialog.format].to_uppercase())
                         .show_ui(ui, |ui| {
                             for (i, ext) in SHAPED_EXTENSIONS.iter().enumerate() {
@@ -982,11 +1142,11 @@ pub fn shaped_dialog(ctx: &egui::Context, state: &mut AppState, render: &mut Ren
             };
             let too_many = triangles > MAX_SHAPED_TRIANGLES;
             let color = if too_many {
-                theme::DANGER
+                theme::p().danger
             } else if triangles > WARN_SHAPED_TRIANGLES {
                 theme::BOUND
             } else {
-                theme::TEXT_DIM
+                theme::p().text_dim
             };
             ui.label(
                 RichText::new(format!("{triangles} triangles"))

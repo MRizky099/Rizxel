@@ -10,7 +10,7 @@ shape out instead; `Esc` cancels the drag.
 | **Shape** | Cube, Sphere, Cylinder, Pyramid or Cone. |
 | **Planar** | Keep the shape on the plane where the drag started. |
 | **Antialias** | Smooth the shape's edges. |
-| **Symmetry** | Mirror the shape. |
+| **Mirror** | Mirror the shape. |
 
 For a shape you can still resize later, use a *shape layer* instead (see
 [Layers](../panels/layers.md#layer-kinds)).

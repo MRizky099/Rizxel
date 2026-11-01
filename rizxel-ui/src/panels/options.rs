@@ -8,34 +8,74 @@
 use egui::{Color32, Sense, Stroke, StrokeKind, Ui};
 use rizxel_app::{AppState, ViewMode};
 use rizxel_engine::{
-    BrushShape, Connectivity, DragMode, ExtrudeOptions, FillMode, LineMode, MaskMode, NamesMode,
-    SelectionMode, Symmetry, Tool, VoxelOp, WorkPlane,
+    BrushShape, Connectivity, DragMode, ExtrudeOptions, FillMode, LineMode, MaskMode, Mirror,
+    NamesMode, SelectionMode, Tool, VoxelOp, WorkPlane,
 };
 
 use crate::icons::{self, Icon, Icons};
 use crate::theme;
-use crate::widgets::{hscroll_strip, vertical_divider};
+use crate::widgets::{check_box, hscroll_strip, icon_button, vertical_divider, IconStyle};
 
 const BUTTON_SIZE: f32 = 32.0;
 const ICON_SIZE: f32 = 20.0;
 const DIVIDER_HEIGHT: f32 = 20.0;
 
+/// Value fields, buttons and drop-downs of the bar sit in recessed wells,
+/// and numbers read in Geist Mono.
+fn field_style(ui: &mut Ui) {
+    let style = ui.style_mut();
+    style.drag_value_text_style = egui::TextStyle::Monospace;
+    style
+        .text_styles
+        .insert(egui::TextStyle::Monospace, theme::mono(12.0));
+    style.visuals.widgets.inactive.weak_bg_fill = theme::p().bg_app;
+    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, theme::p().border);
+}
+
+/// Width kept at the right end of the bar for its `?` button.
+const HELP_WIDTH: f32 = 36.0;
+
 pub fn show(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
-    let height = ui.max_rect().height();
+    let rect = ui.max_rect();
+    let height = rect.height();
+    let (strip_rect, help_rect) = rect.split_left_right_at_x(rect.right() - HELP_WIDTH);
+
+    // `?` at the far right, outside the strip, so it stays put whatever the
+    // tool shows.
+    let mut help_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(help_rect)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    help_ui.add_space(8.0);
+    if state.view_mode == ViewMode::Render {
+        help_button(&mut help_ui, crate::help::RENDER_PAGE, "Render mode");
+    } else {
+        let tool = state.tool;
+        help_button(
+            &mut help_ui,
+            &crate::help::tool_page(tool),
+            &format!("The {} tool", tool.label()),
+        );
+    }
+
     // The strip's arrows sit beside it only in a horizontal layout: in the
     // panel's vertical one an overflowing bar pushed its content below the
     // left arrow, out of view.
-    ui.horizontal(|ui| {
-        hscroll_strip(ui, "option_bar", height, 0.0, theme::HOVER, |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if state.view_mode == ViewMode::Render {
-                render_bar(ui, state, icons);
-            } else {
-                common_controls(ui, state, icons);
-                vertical_divider(ui, DIVIDER_HEIGHT);
-                tool_parameters(ui, state);
-            }
-            ui.add_space(8.0);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(strip_rect), |ui| {
+        ui.horizontal(|ui| {
+            hscroll_strip(ui, "option_bar", height, 0.0, theme::p().hover, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                field_style(ui);
+                if state.view_mode == ViewMode::Render {
+                    render_bar(ui, state, icons);
+                } else {
+                    common_controls(ui, state, icons);
+                    vertical_divider(ui, DIVIDER_HEIGHT);
+                    tool_parameters(ui, state);
+                }
+                ui.add_space(8.0);
+            });
         });
     });
 }
@@ -85,7 +125,7 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         s if s >= 0.5 => "1/2",
         _ => "1/4",
     };
-    egui::ComboBox::from_id_salt("preview_scale")
+    crate::widgets::dropdown("preview_scale")
         .selected_text(scale_text(view.scale))
         .width(56.0)
         .show_ui(ui, |ui| {
@@ -109,12 +149,20 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     } else {
         1.0
     };
-    ui.add(
-        egui::ProgressBar::new(fraction)
-            .text(egui::RichText::new(text).size(11.0))
-            .desired_width(120.0),
-    )
-    .on_hover_text("Samples per pixel of the preview");
+    // The count runs across the filled and the empty part: on a light well
+    // the bar is a pale accent under dark text, on dark the solid accent.
+    let mut bar = egui::ProgressBar::new(fraction).desired_width(120.0);
+    bar = if theme::is_light() {
+        bar.fill(theme::ACCENT.gamma_multiply(0.3)).text(
+            egui::RichText::new(text)
+                .size(11.0)
+                .color(theme::p().text_strong),
+        )
+    } else {
+        bar.text(egui::RichText::new(text).size(11.0))
+    };
+    ui.add(bar)
+        .on_hover_text("Samples per pixel of the preview");
 
     vertical_divider(ui, DIVIDER_HEIGHT);
     if let Some(doc) = state.doc_mut() {
@@ -122,7 +170,7 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
         ui.label(
             egui::RichText::new("Output")
                 .size(12.0)
-                .color(theme::TEXT_DIM),
+                .color(theme::p().text_dim),
         );
         let max = rizxel_math::render::MAX_OUTPUT_SIDE;
         ui.add(egui::DragValue::new(&mut s.output.width).range(1..=max));
@@ -136,7 +184,6 @@ fn render_bar(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 
     vertical_divider(ui, DIVIDER_HEIGHT);
     super::render::projection_buttons(ui, state);
-    help_button(ui, crate::help::RENDER_PAGE, "Render mode");
 }
 
 /// `?` button opening a guide page.
@@ -144,7 +191,7 @@ fn help_button(ui: &mut Ui, page: &str, topic: &str) {
     let button = egui::Button::new(
         egui::RichText::new(egui_phosphor::regular::QUESTION)
             .font(theme::icon(14.0))
-            .color(theme::TEXT_DIM),
+            .color(theme::p().text_dim),
     )
     .frame(false);
     if ui
@@ -158,13 +205,13 @@ fn help_button(ui: &mut Ui, page: &str, topic: &str) {
 
 fn undo_redo(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let (can_undo, can_redo) = (state.can_undo(), state.can_redo());
-    if icon_texture_button(ui, icons.get(Icon::Undo), false, can_undo, None)
+    if icon_texture_button(ui, icons.get(Icon::Undo), can_undo)
         .on_hover_text("Undo (Ctrl+Z)")
         .clicked()
     {
         state.undo();
     }
-    if icon_texture_button(ui, icons.get(Icon::Redo), false, can_redo, None)
+    if icon_texture_button(ui, icons.get(Icon::Redo), can_redo)
         .on_hover_text("Redo (Ctrl+Y)")
         .clicked()
     {
@@ -185,13 +232,36 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 
     // Operations only affect the drawing tools; others show them dimmed.
     let ops_enabled = state.tool.uses_voxel_op();
-    for op in [VoxelOp::Add, VoxelOp::Subtract, VoxelOp::Join] {
-        op_button(ui, state, icons, op, ops_enabled, theme::ACCENT);
-    }
+    ops_group(ui, |ui| {
+        for op in [
+            VoxelOp::Add,
+            VoxelOp::Subtract,
+            VoxelOp::Join,
+            VoxelOp::Paint,
+        ] {
+            op_button(ui, state, icons, op, ops_enabled);
+        }
+    });
+}
 
-    vertical_divider(ui, DIVIDER_HEIGHT);
-
-    op_button(ui, state, icons, VoxelOp::Paint, ops_enabled, theme::PAINT);
+/// Add, Subtract, Join and Paint side by side in a well, the active one
+/// filled with the accent.
+fn ops_group(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    // The bar's row spans its whole height: the well only hugs its buttons
+    // (28 px and a 2 px margin).
+    let size = egui::vec2(ui.available_width(), 32.0);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        egui::Frame::NONE
+            .fill(theme::p().bg_app)
+            .stroke(Stroke::new(1.0, theme::p().border))
+            .corner_radius(theme::RADIUS)
+            .inner_margin(2)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                add_contents(ui);
+            });
+    });
 }
 
 /// Extrude's own Add/Subtract (its `carve` option, not the drawing tools'
@@ -199,55 +269,28 @@ fn common_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
 fn extrude_op_controls(ui: &mut Ui, state: &mut AppState, icons: &Icons) {
     let shift = ui.input(|i| i.modifiers.shift);
     let carves = state.options.extrude.carves(shift);
-    for (op, carve) in [(VoxelOp::Add, false), (VoxelOp::Subtract, true)] {
-        let response = icon_texture_button(
-            ui,
-            icons.get(op),
-            carves == carve,
-            true,
-            Some(theme::ACCENT),
-        );
-        let tip = if carve {
-            "Subtract: carve the face region inward (hold Shift to switch)"
-        } else {
-            "Add: build the face region outward (hold Shift to switch)"
-        };
-        if response.on_hover_text(tip).clicked() {
-            state.options.extrude.carve = carve;
+    ops_group(ui, |ui| {
+        for (op, carve) in [(VoxelOp::Add, false), (VoxelOp::Subtract, true)] {
+            let response = op_icon_button(ui, icons.get(op), carves == carve, true);
+            let tip = if carve {
+                "Subtract: carve the face region inward (hold Shift to switch)"
+            } else {
+                "Add: build the face region outward (hold Shift to switch)"
+            };
+            if response.on_hover_text(tip).clicked() {
+                state.options.extrude.carve = carve;
+            }
         }
-    }
-    let unused = |op: VoxelOp| format!("{} (not used by the Extrude tool)", op.label());
-    icon_texture_button(
-        ui,
-        icons.get(VoxelOp::Join),
-        false,
-        false,
-        Some(theme::ACCENT),
-    )
-    .on_hover_text(unused(VoxelOp::Join));
-
-    vertical_divider(ui, DIVIDER_HEIGHT);
-
-    icon_texture_button(
-        ui,
-        icons.get(VoxelOp::Paint),
-        false,
-        false,
-        Some(theme::PAINT),
-    )
-    .on_hover_text(unused(VoxelOp::Paint));
+        let unused = |op: VoxelOp| format!("{} (not used by the Extrude tool)", op.label());
+        for op in [VoxelOp::Join, VoxelOp::Paint] {
+            op_icon_button(ui, icons.get(op), false, false).on_hover_text(unused(op));
+        }
+    });
 }
 
-fn op_button(
-    ui: &mut Ui,
-    state: &mut AppState,
-    icons: &Icons,
-    op: VoxelOp,
-    enabled: bool,
-    accent: Color32,
-) {
+fn op_button(ui: &mut Ui, state: &mut AppState, icons: &Icons, op: VoxelOp, enabled: bool) {
     let active = state.op == op;
-    let response = icon_texture_button(ui, icons.get(op), active, enabled, Some(accent));
+    let response = op_icon_button(ui, icons.get(op), active, enabled);
     let tip = if enabled {
         op.label().to_owned()
     } else {
@@ -262,14 +305,11 @@ fn op_button(
     }
 }
 
-/// 32x32 option-bar button with a pixel-art icon. `active` draws an accent
-/// border (Paint uses yellow, the others blue).
+/// 32x32 option-bar button with a pixel-art icon (Undo and Redo).
 fn icon_texture_button(
     ui: &mut Ui,
     texture: &egui::TextureHandle,
-    active: bool,
     enabled: bool,
-    accent: Option<Color32>,
 ) -> egui::Response {
     let sense = if enabled {
         Sense::click()
@@ -280,27 +320,49 @@ fn icon_texture_button(
     if !ui.is_rect_visible(rect) {
         return response;
     }
-    let painter = ui.painter();
     let hovered = enabled && response.hovered();
-
-    if active {
-        painter.rect_filled(rect, theme::RADIUS, theme::BG_BUTTON);
-        let stroke = accent.unwrap_or(theme::ACCENT);
-        let stroke = if enabled {
-            stroke
-        } else {
-            stroke.gamma_multiply(0.4)
-        };
-        painter.rect_stroke(
-            rect,
-            theme::RADIUS,
-            Stroke::new(1.0, stroke),
-            StrokeKind::Inside,
-        );
-    } else if hovered {
-        painter.rect_filled(rect, theme::RADIUS, theme::HOVER);
+    if hovered {
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::p().hover);
     }
+    let tint = match (enabled, hovered) {
+        (false, _) => Color32::from_white_alpha(70),
+        (true, true) => Color32::WHITE,
+        (true, false) => Color32::from_gray(185),
+    };
+    icons::paint(ui, rect, texture, ICON_SIZE, tint);
+    response
+}
 
+/// 30x28 button inside the [`ops_group`]: the active one is filled with the
+/// accent (faded when the tool does not use operations).
+fn op_icon_button(
+    ui: &mut Ui,
+    texture: &egui::TextureHandle,
+    active: bool,
+    enabled: bool,
+) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 28.0), sense);
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let hovered = enabled && response.hovered();
+    if active {
+        let fill = if enabled {
+            theme::ACCENT
+        } else {
+            theme::ACCENT.gamma_multiply(0.4)
+        };
+        ui.painter().rect_filled(rect, theme::RADIUS, fill);
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS, theme::p().hover);
+    }
     let tint = match (enabled, active || hovered) {
         (false, _) => Color32::from_white_alpha(70),
         (true, true) => Color32::WHITE,
@@ -315,15 +377,8 @@ fn icon_texture_button(
 fn tool_parameters(ui: &mut Ui, state: &mut AppState) {
     ui.label(
         egui::RichText::new(state.tool.label())
-            .size(12.0)
-            .strong()
-            .color(theme::TEXT_STRONG),
-    );
-    let tool = state.tool;
-    help_button(
-        ui,
-        &crate::help::tool_page(tool),
-        &format!("The {} tool", tool.label()),
+            .font(theme::semibold(13.0))
+            .color(theme::p().text_strong),
     );
     ui.add_space(6.0);
     tool_rows(ui, state);
@@ -346,12 +401,17 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 labeled_drag(ui, axis, value, 1..=rizxel_engine::BrushOptions::MAX_SIZE);
             }
             gap(ui);
-            ui.checkbox(&mut b.surface_paint, "Surface paint")
+            check_box(ui, &mut b.surface_paint, "Surface paint")
                 .on_hover_text("Only paint voxels on the surface under the cursor");
             gap(ui);
             antialiasing(ui, &mut b.antialiasing);
             gap(ui);
-            symmetry(ui, "brush_sym", &mut b.symmetry);
+            mirror_axes(
+                ui,
+                "brush_sym",
+                &mut b.mirror,
+                &mut state.view.mirror_planes,
+            );
             gap(ui);
             ui.add_enabled_ui(b.single_voxel(), |ui| {
                 connectivity(ui, "brush_connect", &mut b.connect)
@@ -371,18 +431,23 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 labeled_drag(ui, axis, value, 1..=rizxel_engine::BrushOptions::MAX_SIZE);
             }
             gap(ui);
-            symmetry(ui, "line_sym", &mut b.symmetry);
+            mirror_axes(ui, "line_sym", &mut b.mirror, &mut state.view.mirror_planes);
         }
         Tool::Shape => {
             let s = &mut opts.shape;
             shape_combo(ui, "shape_shape", &mut s.shape);
             gap(ui);
-            ui.checkbox(&mut s.planar, "Planar")
+            check_box(ui, &mut s.planar, "Planar")
                 .on_hover_text("Stay on the plane where the drag started");
             gap(ui);
             antialiasing(ui, &mut s.antialiasing);
             gap(ui);
-            symmetry(ui, "shape_sym", &mut s.symmetry);
+            mirror_axes(
+                ui,
+                "shape_sym",
+                &mut s.mirror,
+                &mut state.view.mirror_planes,
+            );
         }
         Tool::Plane => plane_rows(ui, state),
         Tool::Move => {
@@ -392,7 +457,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             segmented(ui, "move_drag", &mut m.drag_mode, &modes);
             gap(ui);
             ui.add_enabled_ui(m.drag_mode == DragMode::Move, |ui| {
-                ui.checkbox(&mut m.overwrite, "Overwrite").on_hover_text(
+                check_box(ui, &mut m.overwrite, "Overwrite").on_hover_text(
                     "A moved selection replaces the voxels it lands on; \
                          otherwise the move stops before them",
                 );
@@ -400,7 +465,8 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::Transform => transform_rows(ui, state),
         Tool::ColorPicker => {
-            ui.checkbox(
+            check_box(
+                ui,
                 &mut opts.color_picker.sample_all_layers,
                 "Sample all layers",
             )
@@ -413,7 +479,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             gap(ui);
             mask_mode(ui, "sel_mask", &mut s.mask);
             gap(ui);
-            ui.checkbox(&mut s.all_layers, "All layers")
+            check_box(ui, &mut s.all_layers, "All layers")
                 .on_hover_text("Select the voxels of every visible layer inside the box");
             let all_layers = s.all_layers;
             if s.mode == SelectionMode::Box {
@@ -423,14 +489,13 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
         }
         Tool::FuzzySelect => {
             let f = &mut opts.fuzzy_select;
-            ui.checkbox(&mut f.entire_layer, "Entire layer")
-                .on_hover_text(
-                    "Select matching voxels anywhere in the layer, not only connected ones",
-                );
+            check_box(ui, &mut f.entire_layer, "Entire layer").on_hover_text(
+                "Select matching voxels anywhere in the layer, not only connected ones",
+            );
             gap(ui);
             color_threshold(ui, &mut f.use_color, &mut f.threshold);
             gap(ui);
-            ui.checkbox(&mut f.all_layers, "All layers")
+            check_box(ui, &mut f.all_layers, "All layers")
                 .on_hover_text("Flood through the voxels of every visible layer");
             gap(ui);
             mask_mode(ui, "fuzzy_mask", &mut f.mask);
@@ -446,7 +511,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             )
             .on_hover_text("Depth of a click; dragging adds to it");
             gap(ui);
-            ui.checkbox(&mut e.confine_to_layer, "Confine to layer")
+            check_box(ui, &mut e.confine_to_layer, "Confine to layer")
                 .on_hover_text("Find the face region in the active layer only");
             gap(ui);
             color_threshold(ui, &mut e.use_color, &mut e.threshold);
@@ -458,12 +523,12 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             gap(ui);
             let recolor = f.mode == FillMode::Recolor;
             ui.add_enabled_ui(recolor, |ui| {
-                ui.checkbox(&mut f.connected, "Connected").on_hover_text(
+                check_box(ui, &mut f.connected, "Connected").on_hover_text(
                     "Only voxels connected to the clicked one (off: the whole layer)",
                 );
             });
             gap(ui);
-            ui.checkbox(&mut f.current_layer_only, "Current layer only")
+            check_box(ui, &mut f.current_layer_only, "Current layer only")
                 .on_hover_text("Find the region in the active layer only");
             gap(ui);
             ui.add_enabled_ui(recolor, |ui| {
@@ -482,7 +547,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 ui.painter().rect_stroke(
                     rect,
                     theme::RADIUS,
-                    Stroke::new(1.0, theme::BORDER),
+                    Stroke::new(1.0, theme::p().border),
                     StrokeKind::Inside,
                 );
                 response.on_hover_text(format!(
@@ -562,7 +627,7 @@ fn transform_rows(ui: &mut Ui, state: &mut AppState) {
     gap(ui);
     caption(ui, "Pivot");
     let old_pivot = (opts.pivot, opts.pivot_cell);
-    egui::ComboBox::from_id_salt("transform_pivot")
+    crate::widgets::dropdown("transform_pivot")
         .width(90.0)
         .selected_text(opts.pivot.label())
         .show_ui(ui, |ui| {
@@ -579,7 +644,7 @@ fn transform_rows(ui: &mut Ui, state: &mut AppState) {
         }
     }
     gap(ui);
-    ui.checkbox(&mut opts.clip_to_bounds, "Clip to bounds")
+    check_box(ui, &mut opts.clip_to_bounds, "Clip to bounds")
         .on_hover_text("Drop the voxels that end up outside the bounds instead of refusing Apply");
     let pivot_changed = (opts.pivot, opts.pivot_cell) != old_pivot;
     vertical_divider(ui, DIVIDER_HEIGHT);
@@ -622,7 +687,7 @@ fn caption_small(ui: &mut Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(11.0)
-            .color(theme::TEXT_MUTED),
+            .color(theme::p().text_muted),
     );
 }
 
@@ -698,7 +763,7 @@ fn axis_drag(ui: &mut Ui, label: &str, value: &mut i32, range: std::ops::RangeIn
     ui.label(
         egui::RichText::new(label)
             .size(11.0)
-            .color(theme::TEXT_MUTED),
+            .color(theme::p().text_muted),
     );
     ui.add(egui::DragValue::new(value).speed(0.1).range(range));
 }
@@ -766,8 +831,7 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
         let bounds = doc.data.bounds;
         let mut p = doc.plane.clamped(bounds);
         let mut visible = p.visible;
-        if ui
-            .checkbox(&mut visible, "Visible")
+        if check_box(ui, &mut visible, "Visible")
             .on_hover_text(
                 "Show the plane (/); drawing tools snap onto it. Hiding it ends Slice Mode                  until it is shown again",
             )
@@ -777,8 +841,11 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
         }
         gap(ui);
         caption(ui, "Axis");
-        let axes = [(0usize, "X"), (1, "Y"), (2, "Z")];
-        segmented(ui, "plane_axis", &mut p.axis, &axes);
+        let labels = ["X", "Y", "Z"];
+        let active: Vec<bool> = (0..3).map(|a| a == p.axis).collect();
+        if let Some(i) = axis_segments(ui, "plane_axis", &labels, &active) {
+            p.axis = i;
+        }
         gap(ui);
         if p.slice {
             // Qubicle's slice counter (1-based): the only editable layer.
@@ -811,8 +878,7 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
         }
         vertical_divider(ui, DIVIDER_HEIGHT);
         let mut slicing = p.slice;
-        if ui
-            .checkbox(&mut slicing, "Slice")
+        if check_box(ui, &mut slicing, "Slice")
             .on_hover_text(
                 "Slice Mode (Space): edit one layer; the camera's side is hidden (view only)",
             )
@@ -855,7 +921,7 @@ fn plane_rows(ui: &mut Ui, state: &mut AppState) {
                     m
                 });
             }
-            ui.checkbox(&mut cap_value, "Cap")
+            check_box(ui, &mut cap_value, "Cap")
                 .on_hover_text("Close the cut with the current color");
         });
         if ui
@@ -882,20 +948,24 @@ fn gap(ui: &mut Ui) {
 }
 
 fn caption(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(12.0).color(theme::TEXT_DIM));
+    ui.label(
+        egui::RichText::new(text)
+            .size(12.0)
+            .color(theme::p().text_dim),
+    );
 }
 
 fn labeled_drag(ui: &mut Ui, label: &str, value: &mut u32, range: std::ops::RangeInclusive<u32>) {
     ui.label(
         egui::RichText::new(label)
             .size(11.0)
-            .color(theme::TEXT_MUTED),
+            .color(theme::p().text_muted),
     );
     ui.add(egui::DragValue::new(value).speed(0.1).range(range));
 }
 
 fn shape_combo(ui: &mut Ui, id: &str, shape: &mut BrushShape) {
-    egui::ComboBox::from_id_salt(id)
+    crate::widgets::dropdown(id)
         .width(80.0)
         .selected_text(shape.label())
         .show_ui(ui, |ui| {
@@ -906,7 +976,7 @@ fn shape_combo(ui: &mut Ui, id: &str, shape: &mut BrushShape) {
 }
 
 fn connectivity(ui: &mut Ui, id: &str, value: &mut Connectivity) -> egui::Response {
-    egui::ComboBox::from_id_salt(id)
+    crate::widgets::dropdown(id)
         .width(96.0)
         .selected_text(value.label())
         .show_ui(ui, |ui| {
@@ -930,12 +1000,36 @@ fn antialiasing(ui: &mut Ui, value: &mut u32) {
     .on_hover_text("0 = hard edges, 1 = soft edge (~1 voxel), 2+ = wider blur");
 }
 
-fn symmetry(ui: &mut Ui, id: &str, sym: &mut Symmetry) {
-    caption(ui, "Symmetry");
+/// Mirror axes, and the eye that shows or hides their planes in the
+/// viewport (also *View ▸ Show ▸ Mirror Planes*).
+fn mirror_axes(ui: &mut Ui, id: &str, sym: &mut Mirror, planes: &mut bool) {
+    caption(ui, "Mirror");
     let labels = ["X", "Y", "Z"];
     let mut axes = [sym.x, sym.y, sym.z];
-    toggle_group(ui, id, &labels, &mut axes);
+    if let Some(i) = axis_segments(ui, id, &labels, &axes) {
+        axes[i] = !axes[i];
+    }
     [sym.x, sym.y, sym.z] = axes;
+    let (glyph, tip) = if *planes {
+        (
+            egui_phosphor::regular::EYE,
+            "Hide the mirror planes in the viewport",
+        )
+    } else {
+        (
+            egui_phosphor::regular::EYE_SLASH,
+            "Show the mirror planes in the viewport",
+        )
+    };
+    let style = IconStyle::small()
+        .size(egui::vec2(22.0, 22.0))
+        .hover_fill(theme::p().hover);
+    if icon_button(ui, glyph, style, true)
+        .on_hover_text(tip)
+        .clicked()
+    {
+        *planes = !*planes;
+    }
 }
 
 fn mask_mode(ui: &mut Ui, id: &str, mode: &mut MaskMode) {
@@ -945,8 +1039,7 @@ fn mask_mode(ui: &mut Ui, id: &str, mode: &mut MaskMode) {
 }
 
 fn color_threshold(ui: &mut Ui, use_color: &mut bool, threshold: &mut u8) {
-    ui.checkbox(use_color, "Use color")
-        .on_hover_text("Stop at voxels of a different color");
+    check_box(ui, use_color, "Use color").on_hover_text("Stop at voxels of a different color");
     ui.add_enabled_ui(*use_color, |ui| {
         caption(ui, "Threshold");
         ui.add(egui::DragValue::new(threshold).range(0..=254))
@@ -969,7 +1062,7 @@ fn segment_widths<T>(ui: &Ui, items: &[(T, &str)]) -> (Vec<f32>, f32) {
         .map(|(_, label)| {
             let size = ui
                 .painter()
-                .layout_no_wrap((*label).to_owned(), seg_font(), theme::TEXT)
+                .layout_no_wrap((*label).to_owned(), seg_font(), theme::p().text)
                 .size();
             height = height.max(size.y);
             size.x + SEG_PAD.x * 2.0
@@ -997,13 +1090,6 @@ pub(crate) fn segmented<T: PartialEq + Copy>(
     }
 }
 
-/// Like [`segmented`] but every segment toggles independently (multi-select).
-fn toggle_group(ui: &mut Ui, id: &str, labels: &[&str], values: &mut [bool]) {
-    if let Some(i) = segments(ui, id, labels, values) {
-        values[i] = !values[i];
-    }
-}
-
 /// [`segmented`] whose segments share the available width (Render panel tabs).
 pub(crate) fn segmented_fill<T: PartialEq + Copy>(
     ui: &mut Ui,
@@ -1014,14 +1100,20 @@ pub(crate) fn segmented_fill<T: PartialEq + Copy>(
     let labels: Vec<&str> = items.iter().map(|(_, l)| *l).collect();
     let active: Vec<bool> = items.iter().map(|(item, _)| item == value).collect();
     let width = ui.available_width() / items.len().max(1) as f32;
-    if let Some(i) = segments_sized(ui, id, &labels, &active, Some(width)) {
+    if let Some(i) = segments_sized(ui, id, &labels, &active, Some(width), None) {
         *value = items[i].0;
     }
 }
 
 /// Paints a row of joined segments and returns the clicked index.
 fn segments(ui: &mut Ui, id: &str, labels: &[&str], active: &[bool]) -> Option<usize> {
-    segments_sized(ui, id, labels, active, None)
+    segments_sized(ui, id, labels, active, None, None)
+}
+
+/// X, Y and Z segments: an active axis is underlined in its colour.
+fn axis_segments(ui: &mut Ui, id: &str, labels: &[&str], active: &[bool]) -> Option<usize> {
+    let colors = [theme::AXIS_X, theme::AXIS_Y, theme::AXIS_Z];
+    segments_sized(ui, id, labels, active, None, Some(&colors))
 }
 
 /// [`segments`] with every segment `width` wide (`None`: sized to its label).
@@ -1031,6 +1123,7 @@ fn segments_sized(
     labels: &[&str],
     active: &[bool],
     width: Option<f32>,
+    underline: Option<&[Color32]>,
 ) -> Option<usize> {
     let items: Vec<((), &str)> = labels.iter().map(|l| ((), *l)).collect();
     let (mut widths, height) = segment_widths(ui, &items);
@@ -1040,7 +1133,7 @@ fn segments_sized(
     let (outer, _) =
         ui.allocate_exact_size(egui::vec2(widths.iter().sum(), height), Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(outer, theme::RADIUS, theme::BG_APP);
+    painter.rect_filled(outer, theme::RADIUS, theme::p().bg_app);
 
     let radius = theme::RADIUS.nw;
     let last = labels.len() - 1;
@@ -1054,9 +1147,9 @@ fn segments_sized(
         let response = ui.interact(rect, ui.id().with((id, i)), Sense::click());
         let active = active[i];
         let fill = if active {
-            theme::HOVER
+            theme::p().hover
         } else if response.hovered() {
-            theme::BG_BUTTON
+            theme::p().bg_button
         } else {
             Color32::TRANSPARENT
         };
@@ -1069,9 +1162,9 @@ fn segments_sized(
         };
         painter.rect_filled(rect, corners, fill);
         let color = if active || response.hovered() {
-            theme::TEXT_STRONG
+            theme::p().text_strong
         } else {
-            theme::TEXT_DIM
+            theme::p().text_dim
         };
         painter.text(
             rect.center(),
@@ -1080,6 +1173,13 @@ fn segments_sized(
             seg_font(),
             color,
         );
+        if let Some(line) = underline.and_then(|u| u.get(i)).filter(|_| active) {
+            painter.hline(
+                rect.shrink2(egui::vec2(6.0, 0.0)).x_range(),
+                rect.bottom() - 2.0,
+                Stroke::new(2.0, *line),
+            );
+        }
 
         if response.clicked() {
             clicked = Some(i);
@@ -1088,7 +1188,7 @@ fn segments_sized(
     painter.rect_stroke(
         outer,
         theme::RADIUS,
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::p().border),
         StrokeKind::Inside,
     );
     clicked

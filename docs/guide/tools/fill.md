@@ -6,7 +6,7 @@ Click to flood-fill with the selected color. With a selection, the fill stays in
 
 | Option | Effect |
 |---|---|
-| **Mode** | *Recolor* repaints voxels of a similar color; *Fill empty* fills the empty region you click. |
+| **Mode** | *Recolor* repaints voxels of a similar color; *Fill empty* fills the empty region you click (only on the clicked side of a shown work plane). |
 | **Connected** | Recolor: only voxels connected to the clicked one (off: the whole layer). |
 | **Current layer only** | Find the region in the active layer only. |
 | **Threshold** | Recolor: how close colors must be to be filled. |

@@ -138,8 +138,9 @@ impl WorkPlane {
 
     /// Slice Mode toggle (Qubicle's `2D` button and `Space`). Turning it on
     /// over a voxel (`hover`) slices at that voxel ([`WorkPlane::slice_at`]);
-    /// otherwise the last slice comes back (Y layer 0 the first time).
-    /// Turning it off remembers the slice. Returns the new state.
+    /// otherwise a shown plane slices where it is, and a hidden one brings
+    /// the last slice back (Y layer 0 the first time). Turning it off
+    /// remembers the slice and leaves the plane on it. Returns the new state.
     pub fn toggle_slice(&mut self, hover: Option<&RayHit>, bounds: BoundSize) -> bool {
         if self.slice {
             self.last_slice = Some((self.axis, self.slice_layer(bounds)));
@@ -150,6 +151,7 @@ impl WorkPlane {
         self.resume_slice = false;
         match hover {
             Some(hit) => self.slice_at(hit, bounds),
+            None if self.visible => *self = self.clamped(bounds),
             None => {
                 let (axis, layer) = self.last_slice.unwrap_or((1, 0));
                 self.axis = axis.min(2);
@@ -163,10 +165,11 @@ impl WorkPlane {
     /// off as well, and showing it again brings that slice back.
     pub fn set_visible(&mut self, visible: bool, bounds: BoundSize) {
         if visible {
-            self.visible = true;
+            // Resumed while still hidden, so the remembered slice wins.
             if std::mem::take(&mut self.resume_slice) && !self.slice {
                 self.toggle_slice(None, bounds);
             }
+            self.visible = true;
         } else {
             self.visible = false;
             if self.slice {
@@ -262,6 +265,22 @@ impl WorkPlane {
         let mut b = VoxelBox::from_bounds(bounds);
         b.min[p.axis] = layer;
         b.max[p.axis] = layer + 1;
+        Some(b)
+    }
+
+    /// Half of the bounds on the side of the shown plane that holds `cell`
+    /// (not while slicing): the plane is the ground of a *Fill empty*.
+    pub fn side_box(&self, cell: IVec3, bounds: BoundSize) -> Option<VoxelBox> {
+        if !self.visible || self.slice {
+            return None;
+        }
+        let p = self.clamped(bounds);
+        let mut b = VoxelBox::from_bounds(bounds);
+        if cell[p.axis] >= p.coord {
+            b.min[p.axis] = p.coord;
+        } else {
+            b.max[p.axis] = p.coord;
+        }
         Some(b)
     }
 
@@ -491,6 +510,42 @@ mod tests {
         p.axis = 1;
         p.toggle_slice(None, b());
         assert_eq!((p.axis, p.slice_layer(b())), (0, 2));
+    }
+
+    #[test]
+    fn a_shown_plane_is_where_the_slice_starts() {
+        let mut p = WorkPlane {
+            axis: 2,
+            coord: 5,
+            visible: true,
+            last_slice: Some((1, 0)),
+            ..WorkPlane::default()
+        };
+        // Moved with the Plane tool, then Slice: the slice is at the plane.
+        assert!(p.toggle_slice(None, b()));
+        assert_eq!((p.axis, p.coord, p.slice_layer(b())), (2, 5, 4));
+        assert!(!p.toggle_slice(None, b()));
+        assert_eq!((p.axis, p.coord), (2, 5), "the plane stays on the slice");
+        p.coord = 2;
+        p.toggle_slice(None, b());
+        assert_eq!((p.axis, p.coord), (2, 2));
+    }
+
+    #[test]
+    fn the_side_box_is_the_clicked_side_of_a_shown_plane() {
+        let mut p = WorkPlane {
+            axis: 1,
+            coord: 3,
+            ..WorkPlane::default()
+        };
+        assert_eq!(p.side_box(IVec3::new(1, 4, 1), b()), None, "hidden");
+        p.visible = true;
+        let up = p.side_box(IVec3::new(1, 4, 1), b()).unwrap();
+        assert_eq!((up.min.y, up.max.y), (3, 8));
+        let down = p.side_box(IVec3::new(1, 2, 1), b()).unwrap();
+        assert_eq!((down.min.y, down.max.y), (0, 3));
+        p.slice = true;
+        assert_eq!(p.side_box(IVec3::new(1, 4, 1), b()), None, "slicing");
     }
 
     #[test]

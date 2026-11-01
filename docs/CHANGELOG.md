@@ -5,6 +5,96 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-11-01
+
+### Added
+- **Mirror planes**: with Mirror on in the Brush, Line or Shape options, the viewport shows
+  the plane each axis flips across, in that axis's colour, through the bounds' centre.
+  The eye beside the Mirror axes, or *View ▸ Show ▸ Mirror Planes*, hides them.
+- **Move the work plane with any tool**: while the plane is shown, drag its edge to move
+  it, as in Slice Mode. Placing it on a face still takes the Plane tool.
+- **Light theme** (redesign phase 4). *Settings ▸ General ▸ Theme* offers *Dark* (the
+  default), *Light* and *Follow system*, and switches at once. Both themes share the hue
+  and the ultramarine accent; every text colour stays at 4.5:1 contrast or better on
+  panels and headers in both, checked by a test. The viewport keeps a mid-grey ground in
+  either theme, so colours are judged the same way. Palette marks (favourite numbers,
+  the selected swatch outline) pick light or dark ink by the colour under them.
+
+### Changed
+- **New interface colours and type** (redesign phase 1, see `docs/rizxel_ui_redesign.html`).
+  The greys are tinted slightly toward the slate of the Rizxel icon, the accent is the
+  icon's ultramarine (a fill for active controls, a lighter line for outlines and the
+  active tool), and muted text now meets 4.5:1 contrast on every panel. The interface
+  font is Geist, with Geist Mono for monospaced values (SIL Open Font License, embedded
+  in place of Inter).
+- **Readable small text and calmer hints** (redesign phase 2). No interface text is
+  smaller than 11 px (menu notes, layer counts, favourite numbers, reference badges,
+  the axis gizmo). The status bar hint is neutral instead of amber, which stays for the
+  model bounds, and its key names (`Ctrl`, `Shift`, `Alt`, `F5`...) sit on key caps.
+- **Unsaved changes are marked once**: a filled dot on the document tab, which turns
+  into the close button on hover. The `*` in the tab name and the bullet in the title
+  bar are gone; screen readers hear "unsaved changes" on the tab.
+- **More room for the viewport** (redesign phase 3). The document tabs moved into the
+  title bar (now 36 px), in place of the document name; in a narrow window the menus
+  fold into ☰ before the tabs go. The option bar and the tools rail lost their
+  captions ("Tool Options", "Tools"): docked alone, each has a slim dotted grip that
+  drags, floats and closes it like a tab. The viewport gains about 58 px of height.
+- **Layers toolbar**: a labelled *+ Layer* button, larger icon targets, and a **⋮** menu
+  holding *Duplicate*, *Merge down*, *Merge visible*, *Lock / Unlock all layers* and a red
+  *Delete N hidden layers* (all undoable). The three full-width buttons and the
+  "Active: …" line under the list are gone.
+- **Render panel**: the six tabs in a 3 by 2 grid became a column of group headers (Light,
+  Sample, Display, Material, Camera, Output), each expanding and collapsing on its own,
+  its settings under its header.
+- **Tools rail**: the *2D* text button, its dash and the shield are now two labelled
+  toggles, *Slice* (showing `Y 3/12` while slicing) and *Mask*.
+- craft-ui (vendored): `DockArea::compact` for grip-only groups, patch 0002.
+- **Measured values in Geist Mono** (redesign phase 5): the status bar's position,
+  selected and visible voxel counts and bounds (labels stay in the body face), the
+  palette's hex and RGB, and the layer voxel counts.
+- **Palette**: the swatches sit in a recessed well under their count ("64 colors", or
+  "12 of 64 colors used" with *Used only*).
+- **Empty layers** say so under the layer list, with a *Use Brush* button.
+- **Render panel, finished** (final check against the mock): each group header shows
+  its current value, the preset row is one picker with *Save preset* at the foot of its
+  menu, and the Render button has the output size and samples beside it.
+- *Delete N hidden layers…* asks first; the layer toolbar's targets are 30 px.
+
+- **Title bar and option bar like the mock**: the app icon at the far left, roomier
+  menus, document tabs without the small logo, *Add*, *Subtract*, *Join* and *Paint* in
+  one group with the active one filled in blue, and the option bar's `?` at its far
+  right.
+
+- **Color Palette panel like the mock**: the selected color with its hex and RGB and a
+  **⋯** palette menu, a "Palette, 56 colors" head with a *Used only* box, the swatches in
+  a well that scrolls on its own, and the favorite slots pinned to the foot of the panel
+  (dashed when empty).
+- **Color picker** in a popup from the Color Palette panel's color chip: a saturation /
+  value square with a hue bar, an eyedropper that switches to the Color Picker tool, RGB
+  and HSV sliders with values, and a hex field with a copy button. A drag is one undo
+  step.
+- **Tool options**: checkboxes are filled with the accent when on, the active X / Y / Z is
+  underlined in its axis colour, and value fields sit in wells with Geist Mono numbers.
+- **Drop-downs** show a chevron, are outlined in the accent while open, and mark the
+  current item in grey.
+- **Symmetry is now Mirror** in the Brush, Line and Shape options (older saved options
+  still load).
+- **Fill empty stands on the work plane**: while the plane is shown, the flood stays on
+  the side of it you click, so filling inside an open shape stops at the plane instead
+  of flooding below it.
+- **The app starts on the Cursor tool** instead of the Plane tool.
+
+### Fixed
+- **Favorite colors**: clicking an empty slot stores the selected color. Before, only
+  right-click or `Ctrl+Shift+digit` did, and a click just reported the slot as empty.
+- The tools rail no longer cuts off *Slice*, *Mask* and Settings in a 768 px window: it
+  packs closer and scrolls with the wheel.
+- Light theme: slider rails (layer opacity, render settings) were nearly invisible.
+- **Slice Mode follows the work plane**: turned on while the plane is shown, the slice
+  starts where the plane is, and turned off, the plane stays on the slice. Before, the
+  first toggle after moving the plane jumped to the last slice (Y layer 0 the first
+  time), and only a third toggle caught up with the plane.
+
 ## [0.11.0] — 2026-10-31
 
 Milestone M7b, the third beta: Phases 12b (fix for the model missing after opening),

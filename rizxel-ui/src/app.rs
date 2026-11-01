@@ -339,7 +339,7 @@ impl RizxelApp {
 
 impl eframe::App for RizxelApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        egui::Rgba::from(theme::BG_APP).to_array()
+        egui::Rgba::from(theme::p().bg_app).to_array()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -347,6 +347,13 @@ impl eframe::App for RizxelApp {
         let scale = self.state.settings.general.ui_scale;
         if (ctx.zoom_factor() - scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(scale);
+        }
+        let system_light = ctx.system_theme().map(|t| t == egui::Theme::Light);
+        if theme::set_light(
+            &ctx,
+            self.state.settings.general.theme.is_light(system_light),
+        ) {
+            ctx.request_repaint();
         }
         panels::settings::capture_keys(&ctx, self.ui.settings.as_mut());
         self.handle_close(&ctx);
@@ -375,19 +382,20 @@ impl eframe::App for RizxelApp {
         // Panel order matters: outermost first, central panel last.
         Panel::top("title_bar")
             .exact_size(theme::TITLE_BAR_HEIGHT)
-            .frame(flat(theme::BG_HEADER))
+            .frame(flat(theme::p().bg_header))
             .show_separator_line(false)
             .resizable(false)
             .show(ui, |ui| panels::top_bar::show(ui, state, ui_state, dock));
 
         Panel::bottom("status_bar")
             .exact_size(theme::STATUS_BAR_HEIGHT)
-            .frame(flat(theme::BG_APP).inner_margin(egui::Margin::symmetric(12, 0)))
+            .frame(flat(theme::p().bg_app).inner_margin(egui::Margin::symmetric(12, 0)))
             .show_separator_line(false)
             .resizable(false)
             .show(ui, |ui| panels::status::show(ui, state));
 
-        // Zen mode: only the viewport (with its document tabs) and status bar.
+        // Zen mode: only the title bar (with the document tabs), the viewport
+        // and the status bar.
         egui::CentralPanel::no_frame().show(ui, |ui| {
             if ui_state.zen_mode {
                 viewport_panel(ui, state, target_format, meshes, tools);
@@ -403,9 +411,7 @@ impl eframe::App for RizxelApp {
                         .inner_margin(egui::Margin::symmetric(8, 0))
                         .show(ui, |ui| panels::options::show(ui, state, icons));
                 }),
-                dock::Panel::Palette => scroll_panel(ui, panel, |ui| {
-                    panels::sidebar::palette(ui, state, ui_state)
-                }),
+                dock::Panel::Palette => panels::sidebar::palette(ui, state, ui_state),
                 dock::Panel::Layers => {
                     scroll_panel(ui, panel, |ui| panels::sidebar::layers(ui, state, ui_state))
                 }
@@ -496,7 +502,7 @@ fn scroll_panel(ui: &mut egui::Ui, panel: &dock::Panel, add: impl FnOnce(&mut eg
         .show(ui, add);
 }
 
-/// Viewport panel: document tabs above the 3D view, so they move with it.
+/// Viewport panel: the 3D view. The document tabs are in the title bar.
 fn viewport_panel(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -504,13 +510,5 @@ fn viewport_panel(
     meshes: &mut viewport::MeshCache,
     tools: &mut ToolInput,
 ) {
-    let rect = ui.max_rect();
-    let (tabs_rect, view_rect) = rect.split_top_bottom_at_y(rect.top() + theme::TAB_BAR_HEIGHT);
-    ui.painter().rect_filled(tabs_rect, 0.0, theme::BG_APP);
-    ui.scope_builder(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
-        panels::tabs::show(ui, state);
-    });
-    ui.scope_builder(egui::UiBuilder::new().max_rect(view_rect), |ui| {
-        viewport::show(ui, state, target_format, meshes, tools);
-    });
+    viewport::show(ui, state, target_format, meshes, tools);
 }
