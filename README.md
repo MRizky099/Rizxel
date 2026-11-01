@@ -11,7 +11,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#requirements)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](Cargo.toml)
 
-![Rizxel's Render mode with the path tracer and the Brick voxel shape](docs/images/readme/render_mode.png)
+![Rizxel's Render mode: the path tracer with the Brick voxel shape, and the Render panel's Display group open](docs/images/readme/render_mode.png)
 
 </div>
 
@@ -46,10 +46,11 @@ it reads and writes their file formats.
 
 | Model mode | Photo-realistic render |
 |---|---|
-| ![Model mode: tools, viewport, palette and layer tree](docs/images/readme/model_mode.png) | ![Path-traced 1920×1080 render with the Studio White preset and the Brick shape](docs/images/readme/photo_render.png) |
-| Editing tools on the left, the viewport with the view cube in the middle, and the palette, layer tree and history on the right. | A 1920×1080 *Photo-realistic* render of the same model with the **Studio White** preset and the **Brick** voxel shape. |
+| ![Model mode: the Brush tool with Mirror X and its plane, the tools rail, the viewport, the color palette and the layer tree](docs/images/readme/model_mode.png) | ![Path-traced 1920×1080 render with the Studio White preset and the Brick shape](docs/images/readme/photo_render.png) |
+| Editing tools on the left, the viewport with the view cube in the middle (here the Brush with Mirror X, its mirror plane in red), and the color palette and layer tree on the right. | A 1920×1080 *Photo-realistic* render of the same model with the **Studio White** preset and the **Brick** voxel shape. |
 
-The demo model comes from `cargo run -p rizxel-app --example sample_model`.
+The demo model is `assets/samples/demo.rzxl`, written by
+`cargo run -p rizxel-app --example sample_model`.
 
 <img src="docs/images/readme/voxel_icon.png" alt="The rizxel_r sample rendered with the Voxel Icon preset: a blue voxel R outlined cell by cell on a dark floor with a glowing grid" width="480">
 
