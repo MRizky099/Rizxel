@@ -479,9 +479,10 @@ fn show_menu(ui: &mut Ui, state: &mut AppState) {
         for ((on, label), shortcut) in [
             (&mut view.voxel_grid, "Voxel Grid"),
             (&mut view.model_bounds, "Model Bounds"),
+            (&mut view.mirror_planes, "Mirror Planes"),
         ]
         .into_iter()
-        .zip(&keys[1..])
+        .zip(keys[1..].iter().chain([&String::new()]))
         {
             if menu_item(ui, check_glyph(*on), label, shortcut, true) {
                 *on = !*on;

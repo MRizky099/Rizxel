@@ -1,7 +1,7 @@
 # Render
 
 The Render panel holds Render mode's settings, saved with the project, in six groups.
-One is open at a time: click a group's header to open it. Each header shows the
+Click a group's header to expand or collapse it; several can be open at once. Each header shows the
 group's current value (*Sun, Gradient sky*, *256 samples*, *1920 × 1080 Image*...). The
 **Render** button stays at the foot of the panel, next to the size and samples it
 will use.

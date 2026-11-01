@@ -14,7 +14,7 @@ use rizxel_engine::{
 
 use crate::icons::{self, Icon, Icons};
 use crate::theme;
-use crate::widgets::{check_box, hscroll_strip, vertical_divider};
+use crate::widgets::{check_box, hscroll_strip, icon_button, vertical_divider, IconStyle};
 
 const BUTTON_SIZE: f32 = 32.0;
 const ICON_SIZE: f32 = 20.0;
@@ -406,7 +406,12 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             gap(ui);
             antialiasing(ui, &mut b.antialiasing);
             gap(ui);
-            mirror_axes(ui, "brush_sym", &mut b.mirror);
+            mirror_axes(
+                ui,
+                "brush_sym",
+                &mut b.mirror,
+                &mut state.view.mirror_planes,
+            );
             gap(ui);
             ui.add_enabled_ui(b.single_voxel(), |ui| {
                 connectivity(ui, "brush_connect", &mut b.connect)
@@ -426,7 +431,7 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
                 labeled_drag(ui, axis, value, 1..=rizxel_engine::BrushOptions::MAX_SIZE);
             }
             gap(ui);
-            mirror_axes(ui, "line_sym", &mut b.mirror);
+            mirror_axes(ui, "line_sym", &mut b.mirror, &mut state.view.mirror_planes);
         }
         Tool::Shape => {
             let s = &mut opts.shape;
@@ -437,7 +442,12 @@ fn tool_rows(ui: &mut Ui, state: &mut AppState) {
             gap(ui);
             antialiasing(ui, &mut s.antialiasing);
             gap(ui);
-            mirror_axes(ui, "shape_sym", &mut s.mirror);
+            mirror_axes(
+                ui,
+                "shape_sym",
+                &mut s.mirror,
+                &mut state.view.mirror_planes,
+            );
         }
         Tool::Plane => plane_rows(ui, state),
         Tool::Move => {
@@ -990,7 +1000,9 @@ fn antialiasing(ui: &mut Ui, value: &mut u32) {
     .on_hover_text("0 = hard edges, 1 = soft edge (~1 voxel), 2+ = wider blur");
 }
 
-fn mirror_axes(ui: &mut Ui, id: &str, sym: &mut Mirror) {
+/// Mirror axes, and the eye that shows or hides their planes in the
+/// viewport (also *View ▸ Show ▸ Mirror Planes*).
+fn mirror_axes(ui: &mut Ui, id: &str, sym: &mut Mirror, planes: &mut bool) {
     caption(ui, "Mirror");
     let labels = ["X", "Y", "Z"];
     let mut axes = [sym.x, sym.y, sym.z];
@@ -998,6 +1010,26 @@ fn mirror_axes(ui: &mut Ui, id: &str, sym: &mut Mirror) {
         axes[i] = !axes[i];
     }
     [sym.x, sym.y, sym.z] = axes;
+    let (glyph, tip) = if *planes {
+        (
+            egui_phosphor::regular::EYE,
+            "Hide the mirror planes in the viewport",
+        )
+    } else {
+        (
+            egui_phosphor::regular::EYE_SLASH,
+            "Show the mirror planes in the viewport",
+        )
+    };
+    let style = IconStyle::small()
+        .size(egui::vec2(22.0, 22.0))
+        .hover_fill(theme::p().hover);
+    if icon_button(ui, glyph, style, true)
+        .on_hover_text(tip)
+        .clicked()
+    {
+        *planes = !*planes;
+    }
 }
 
 fn mask_mode(ui: &mut Ui, id: &str, mode: &mut MaskMode) {

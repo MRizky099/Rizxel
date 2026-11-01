@@ -478,12 +478,10 @@ impl ToolInput {
             }
             _ => None,
         };
-        // Plane edge or (while slicing, any tool) bounds frame under the
-        // cursor: grab handle for moving the plane.
+        // Edge of the shown plane or (while slicing) bounds frame under the
+        // cursor: grab handle for moving the plane, with any tool.
         let edge = match (&self.drag, hover, state.doc()) {
-            (None, Some(p), Some(doc))
-                if box_grab.is_none() && (tool == Tool::Plane || doc.plane.slice) =>
-            {
+            (None, Some(p), Some(doc)) if box_grab.is_none() && doc.plane.active() => {
                 plane_edge_at(f, doc, p)
             }
             _ => None,
@@ -610,6 +608,9 @@ impl ToolInput {
         };
         if let Some(doc) = state.doc() {
             work_plane_overlay(f, doc, arrow_at, &mut preview);
+            if !mods.alt && state.view.mirror_planes {
+                mirror_overlay(f, doc, mirror_axes(state), &mut preview);
+            }
         }
         self.selection_overlay(f, state, &mut preview);
         if let Some(doc) = state.doc().filter(|_| box_select::box_mode(state)) {
@@ -1637,10 +1638,16 @@ fn fill_click(state: &mut AppState, hit: Option<RayHit>) {
         return;
     }
     let Some(hit) = hit else { return };
-    // While slicing the flood stays on the slice layer.
-    let limit = doc
+    // While slicing the flood stays on the slice layer; a shown plane is
+    // the ground a Fill empty stays on.
+    let mut limit = doc
         .edit_clip()
         .unwrap_or(VoxelBox::from_bounds(doc.data.bounds));
+    if opts.mode == FillMode::Empty {
+        if let Some(side) = doc.plane.side_box(hit.adjacent(), doc.data.bounds) {
+            limit = limit.intersect(&side);
+        }
+    }
     let allowed = doc.region_selection().map(|s| s.cells().clone());
     let merged;
     let source = if opts.current_layer_only {
@@ -1677,11 +1684,7 @@ fn write(
     make: impl FnOnce(&ToolContext) -> Vec<VoxelChange>,
 ) {
     let options = state.options;
-    let axes = match state.tool {
-        Tool::Brush | Tool::Line => options.brush.mirror,
-        Tool::Shape => options.shape.mirror,
-        _ => Mirror::default(),
-    };
+    let axes = mirror_axes(state);
     let Some(doc) = state.doc_mut() else { return };
     let Some(volume) = doc.data.layers.get(layer).map(|l| &l.volume) else {
         return;
@@ -1702,6 +1705,15 @@ fn write(
         changes.retain(|c| slab.contains(c.pos) || mirrored.is_some_and(|m| m.contains(c.pos)));
     }
     doc.edit_voxels(layer, &changes);
+}
+
+/// Mirror axes of the current tool (none for tools without Mirror).
+fn mirror_axes(state: &AppState) -> Mirror {
+    match state.tool {
+        Tool::Brush | Tool::Line => state.options.brush.mirror,
+        Tool::Shape => state.options.shape.mirror,
+        _ => Mirror::default(),
+    }
 }
 
 /// Mirror image of the slice slab when `axes` mirrors along the slice
@@ -1956,9 +1968,9 @@ pub fn axis_color(axis: usize) -> Color32 {
 }
 
 /// Corners of the work plane rectangle (voxel space), at its coordinate.
-fn plane_corners(p: &WorkPlane, bounds: BoundSize, at: f32) -> [Vec3; 4] {
+fn plane_corners(axis: usize, bounds: BoundSize, at: f32) -> [Vec3; 4] {
     let size = bounds.0.as_vec3();
-    let axis = p.axis.min(2);
+    let axis = axis.min(2);
     let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
     let corner = |b: f32, c: f32| {
         let mut q = Vec3::ZERO;
@@ -1984,7 +1996,7 @@ fn plane_edge_at(f: &Frame, doc: &Document, pos: Pos2) -> Option<Vec3> {
     if !p.active() {
         return None;
     }
-    let q = plane_corners(&p, bounds, p.sheet_coord(bounds) as f32);
+    let q = plane_corners(p.axis, bounds, p.sheet_coord(bounds) as f32);
     let mut edges: Vec<(Vec3, Vec3)> = (0..4).map(|i| (q[i], q[(i + 1) % 4])).collect();
     if p.slice {
         let size = bounds.0.as_vec3();
@@ -2040,7 +2052,7 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
         0.0
     };
     let sheet = p.sheet_coord(bounds) as f32;
-    let q = plane_corners(&p, bounds, sheet + lift).map(|c| c + f.bmin);
+    let q = plane_corners(p.axis, bounds, sheet + lift).map(|c| c + f.bmin);
     let (fill, line, width) = if p.slice {
         (
             Color32::from_rgba_unmultiplied(170, 170, 170, 70),
@@ -2078,10 +2090,41 @@ fn work_plane_overlay(f: &Frame, doc: &Document, arrow_at: Option<Vec3>, out: &m
     }
 }
 
+/// Mirror planes of the enabled `axes`: a sheet across the bounds' center
+/// in the axis color, so Mirror X shows the plane that X flips across.
+fn mirror_overlay(f: &Frame, doc: &Document, axes: Mirror, out: &mut Preview) {
+    let bounds = doc.data.bounds;
+    let ppp = f.pixels_per_point;
+    for (axis, on) in [axes.x, axes.y, axes.z].into_iter().enumerate() {
+        if !on {
+            continue;
+        }
+        let color = axis_color(axis);
+        let at = bounds.0[axis] as f32 * 0.5;
+        let q = plane_corners(axis, bounds, at).map(|c| c + f.bmin);
+        out.planes.extend(PlaneVertex::quad(
+            q,
+            axis,
+            color.gamma_multiply(0.08),
+            Color32::TRANSPARENT,
+        ));
+        for i in 0..4 {
+            out.lines.push(LineInstance::new(
+                q[i],
+                q[(i + 1) % 4],
+                color.gamma_multiply(0.7),
+                MIRROR_WIDTH * ppp,
+            ));
+        }
+    }
+}
+
 /// Hover distance (logical points) at which the plane edge can be grabbed.
 const EDGE_GRAB: f32 = 10.0;
 /// Outline width of the visible work plane, in logical points.
 const PLANE_WIDTH: f32 = 1.5;
+/// Outline width of a mirror plane, in logical points.
+const MIRROR_WIDTH: f32 = 1.0;
 /// Outline width of the slice plane, in logical points.
 const PLANE_SLICE_WIDTH: f32 = 3.0;
 /// Cell lines on the slice sheet: its neutral grey, brightened.

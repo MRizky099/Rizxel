@@ -55,6 +55,27 @@ impl RenderTab {
     }
 }
 
+/// Which settings groups are expanded (Light at first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenGroups([bool; RenderTab::ALL.len()]);
+
+impl Default for OpenGroups {
+    fn default() -> Self {
+        Self(RenderTab::ALL.map(|t| t == RenderTab::Light))
+    }
+}
+
+impl OpenGroups {
+    pub fn is_open(&self, tab: RenderTab) -> bool {
+        self.0[tab as usize]
+    }
+
+    /// Expands a collapsed group or collapses an expanded one.
+    pub fn toggle(&mut self, tab: RenderTab) {
+        self.0[tab as usize] = !self.0[tab as usize];
+    }
+}
+
 /// Progress of a running output job, shown in the footer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobStatus {
@@ -67,7 +88,7 @@ pub struct JobStatus {
 /// Render panel state (UI only).
 #[derive(Debug, Default)]
 pub struct RenderUi {
-    pub tab: RenderTab,
+    pub open: OpenGroups,
     /// Name typed for *Save preset*.
     preset_name: String,
     /// The Render button was pressed this frame.
@@ -109,15 +130,16 @@ pub fn show(ui: &mut Ui, state: &mut AppState, ui_state: &mut UiState) {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     presets(ui, state, &mut ui_state.render);
                     ui.add_space(4.0);
-                    // One group open at a time, its settings under its header.
+                    // Each group expands and collapses on its own, its
+                    // settings under its header.
                     for tab in RenderTab::ALL {
-                        let open = ui_state.render.tab == tab;
                         let value = summary(state, tab);
+                        let open = ui_state.render.open.is_open(tab);
                         if group_header(ui, tab, &value, open).clicked() {
-                            ui_state.render.tab = tab;
+                            ui_state.render.open.toggle(tab);
                         }
-                        if open {
-                            body(ui, state, &mut ui_state.render);
+                        if ui_state.render.open.is_open(tab) {
+                            body(ui, state, tab, &mut ui_state.render);
                             ui.add_space(6.0);
                         }
                     }
@@ -254,7 +276,7 @@ fn summary(state: &AppState, tab: RenderTab) -> String {
 }
 
 /// Full-width header of a settings group: a caret, the name, and a hairline
-/// above it. Clicking opens the group (and closes the open one).
+/// above it. Clicking expands or collapses the group.
 fn group_header(ui: &mut Ui, tab: RenderTab, value: &str, open: bool) -> egui::Response {
     let height = 30.0;
     let (rect, response) = ui.allocate_exact_size(
@@ -324,19 +346,19 @@ fn group_header(ui: &mut Ui, tab: RenderTab, value: &str, open: bool) -> egui::R
 
 // ------------------------------------------------------------ body
 
-fn body(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
-    if render.tab == RenderTab::Camera {
+fn body(ui: &mut Ui, state: &mut AppState, tab: RenderTab, render: &mut RenderUi) {
+    if tab == RenderTab::Camera {
         camera_projection(ui, state);
     }
     let Some(doc) = state.doc_mut() else {
         return;
     };
-    if render.tab == RenderTab::Material {
+    if tab == RenderTab::Material {
         material_tab(ui, doc);
         return;
     }
     let mut s = doc.data.render.clone();
-    match render.tab {
+    match tab {
         RenderTab::Light => light_tab(ui, &mut s),
         RenderTab::Sample => sample_tab(ui, &mut s),
         RenderTab::Display => display_tab(ui, &mut s, render),
@@ -345,7 +367,7 @@ fn body(ui: &mut Ui, state: &mut AppState, render: &mut RenderUi) {
         RenderTab::Material => {}
     }
     let changed = s != doc.data.render;
-    let merge = continues_drag(ui, "render_settings", changed);
+    let merge = continues_drag(ui, tab.label(), changed);
     if changed {
         doc.set_render(s, merge);
     }

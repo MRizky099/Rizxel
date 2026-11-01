@@ -86,11 +86,11 @@ pub struct ToolContext<'a> {
 /// Editing tools shown in the left toolbar, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Tool {
+    #[default]
     Cursor,
     Brush,
     Line,
     Shape,
-    #[default]
     Plane,
     Move,
     Transform,
@@ -294,8 +294,8 @@ mod tests {
     }
 
     #[test]
-    fn plane_is_default_with_prototype_hint() {
-        assert_eq!(Tool::default(), Tool::Plane);
+    fn cursor_is_default_and_plane_has_a_slice_hint() {
+        assert_eq!(Tool::default(), Tool::Cursor);
         assert_eq!(Tool::Plane.hint_with(false), Tool::Plane.hint());
         assert_eq!(Tool::Plane.hint_with(true), Tool::PLANE_SLICE_HINT);
         assert_eq!(Tool::Brush.hint_with(true), Tool::Brush.hint());
