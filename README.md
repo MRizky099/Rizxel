@@ -21,7 +21,7 @@ model in layers, and then render it with a progressive GPU path tracer, all in o
 lightweight app. Its voxel model and tools draw on Goxel, MagicaVoxel and Qubicle, and
 it reads and writes their file formats.
 
-> **Status: beta (`0.12.0`).** Rizxel is under active development. The `.rzxl`
+> **Status: beta (`0.12.5`).** Rizxel is under active development. The `.rzxl`
 > format has a [candidate compatibility promise](docs/rzxl_format.md#compatibility-promise-candidate)
 > that becomes binding at 1.0. The [user guide](https://mrizky099.github.io/Rizxel/)
 > covers every tool, panel and format. See the
@@ -224,9 +224,9 @@ Then run the platform's script from the repository root:
 
 | Platform | Script | Needs |
 |---|---|---|
-| Windows | `pwsh packaging/wix/build.ps1 -Version 0.12.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
-| Linux | `sh packaging/appimage/build.sh 0.12.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
-| macOS | `sh packaging/macos/build.sh 0.12.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
+| Windows | `pwsh packaging/wix/build.ps1 -Version 0.12.5` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
+| Linux | `sh packaging/appimage/build.sh 0.12.5 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
+| macOS | `sh packaging/macos/build.sh 0.12.5` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
 
 ## Controls
 

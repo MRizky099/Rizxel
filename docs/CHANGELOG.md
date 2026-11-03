@@ -5,6 +5,10 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.12.5] — 2026-11-04
+
+A patch release that replaces the 0.12.0 pre-release.
+
 ### Changed
 - **macOS 10.13+**: the macOS package now opens on Intel Macs from macOS 10.13 High Sierra
   (it asked for macOS 11 before). Apple silicon Macs, which start at macOS 11, are unchanged.
