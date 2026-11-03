@@ -10,7 +10,7 @@ Download the package for your system from the
 | Windows 10/11 | `Rizxel-<version>-windows-x64.msi` | Run it. It installs for your user only (no admin rights), to `%LocalAppData%\Programs\Rizxel` unless you pick another folder you can write to, and opens `.rzxl` files with Rizxel. No other file type is claimed. |
 | Windows 10/11 | `Rizxel-<version>-windows-x64.zip` | Unzip anywhere and run `rizxel.exe`. *Settings ▸ General ▸ Associate .rzxl Files* adds the file association. |
 | Linux x86-64 | `Rizxel-<version>-x86_64.AppImage` | `chmod +x` the file and run it. |
-| macOS 11+ | `Rizxel-<version>-macos-universal.dmg` | Open it and drag Rizxel to *Applications* (Apple silicon and Intel). |
+| macOS 10.13+ | `Rizxel-<version>-macos-universal.dmg` | Open it and drag Rizxel to *Applications* (Apple silicon and Intel). |
 
 ### The beta builds are not signed
 

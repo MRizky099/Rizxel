@@ -5,7 +5,13 @@ All notable changes to Rizxel are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- **macOS 10.13+**: the macOS package now opens on Intel Macs from macOS 10.13 High Sierra
+  (it asked for macOS 11 before). Apple silicon Macs, which start at macOS 11, are unchanged.
+
 ### Fixed
+- **Turntable**: a panned view swung the model across the frame. The turntable now turns
+  around the vertical axis through the model's center.
 - **Document tabs**: after closing tabs until the rest fit again, the tab strip kept its
   scroll arrows (and a scrolled-away first tab). It now returns to a plain row as soon as
   the tabs fit; the option bar's strip had the same fault.

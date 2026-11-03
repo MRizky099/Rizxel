@@ -109,7 +109,7 @@ grid and matte materials, path traced at 1024×1024.
 
 | | |
 |---|---|
-| **OS** | Windows 10/11, Linux (X11 or Wayland) or macOS 11+. All three are built and tested in CI. |
+| **OS** | Windows 10/11, Linux (X11 or Wayland) or macOS 10.13+ (Apple silicon: macOS 11+). All three are built and tested in CI. |
 | **GPU** | Any GPU with Vulkan, Direct3D 12 or Metal for the viewport. The path tracer runs on **Vulkan or Metal** (Windows GPUs normally ship Vulkan drivers); on other backends Render mode keeps the raster preview and the *Image* output. |
 | **To build** | Rust 1.85 or newer (pinned through `rust-toolchain.toml`). On Linux, the X11/Wayland and GTK development packages listed in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
 
@@ -125,7 +125,7 @@ Packages are attached to every release on the
 | Windows 10/11 | `Rizxel-<version>-windows-x64.msi` | Installs per user (no admin rights) and opens `.rzxl` files with Rizxel. |
 | Windows 10/11 | `Rizxel-<version>-windows-x64.zip` | Portable: unzip and run `rizxel.exe`. *Settings ▸ General ▸ Associate .rzxl Files* adds the file association. |
 | Linux (x86-64) | `Rizxel-<version>-x86_64.AppImage` | `chmod +x` and run. *Settings ▸ General* registers `.rzxl` files, or let AppImageLauncher integrate it. |
-| macOS 11+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel. Drag Rizxel to *Applications*. |
+| macOS 10.13+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel (Intel Macs from macOS 10.13 High Sierra). Drag Rizxel to *Applications*. |
 
 Each release also has `Rizxel-<version>-samples.zip` with the
 [sample models](assets/samples/README.md) (CC0), made with Rizxel.
