@@ -31,7 +31,7 @@ describe() {
         *.msi) echo "Windows 10/11 installer (per user, no admin rights, opens \`.rzxl\` files)" ;;
         *windows*.zip) echo "Windows 10/11 portable: unzip and run \`rizxel.exe\`" ;;
         *.AppImage) echo "Linux x86-64: \`chmod +x\` and run" ;;
-        *.dmg) echo "macOS 11+ universal (Apple silicon and Intel): drag Rizxel to *Applications*" ;;
+        *.dmg) echo "macOS 10.13+ universal (Apple silicon and Intel): drag Rizxel to *Applications*" ;;
         *samples.zip) echo "Sample models made with Rizxel (\`.rzxl\`, CC0)" ;;
         *) echo "" ;;
     esac

@@ -120,6 +120,8 @@ jobs:
         with:
           name: third-party-licenses
       - run: cargo build --release --locked -p rizxel-ui --target x86_64-apple-darwin
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.13"
       - run: cargo build --release --locked -p rizxel-ui --target aarch64-apple-darwin
       - name: Package
         run: sh packaging/macos/build.sh "${TAG#v}"

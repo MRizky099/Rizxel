@@ -298,7 +298,9 @@ impl PtPreview {
             self.samples = 0;
         }
         let target = doc.data.render.sample.samples;
-        let count = if view.paused || self.samples >= target {
+        // Paused (by hand, or while an output job has the GPU), a view that
+        // changed still gets its first sample: without one it shows black.
+        let count = if self.samples >= target || view.paused && self.samples > 0 {
             0
         } else {
             1

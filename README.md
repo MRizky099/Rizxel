@@ -11,7 +11,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#requirements)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](Cargo.toml)
 
-![Rizxel's Render mode with the path tracer and the Brick voxel shape](docs/images/readme/render_mode.png)
+![Rizxel's Render mode: the path tracer with the Brick voxel shape, and the Render panel's Display group open](docs/images/readme/render_mode.png)
 
 </div>
 
@@ -21,7 +21,7 @@ model in layers, and then render it with a progressive GPU path tracer, all in o
 lightweight app. Its voxel model and tools draw on Goxel, MagicaVoxel and Qubicle, and
 it reads and writes their file formats.
 
-> **Status: beta (`0.12.0`).** Rizxel is under active development. The `.rzxl`
+> **Status: beta (`0.12.5`).** Rizxel is under active development. The `.rzxl`
 > format has a [candidate compatibility promise](docs/rzxl_format.md#compatibility-promise-candidate)
 > that becomes binding at 1.0. The [user guide](https://mrizky099.github.io/Rizxel/)
 > covers every tool, panel and format. See the
@@ -46,10 +46,11 @@ it reads and writes their file formats.
 
 | Model mode | Photo-realistic render |
 |---|---|
-| ![Model mode: tools, viewport, palette and layer tree](docs/images/readme/model_mode.png) | ![Path-traced 1920×1080 render with the Studio White preset and the Brick shape](docs/images/readme/photo_render.png) |
-| Editing tools on the left, the viewport with the view cube in the middle, and the palette, layer tree and history on the right. | A 1920×1080 *Photo-realistic* render of the same model with the **Studio White** preset and the **Brick** voxel shape. |
+| ![Model mode: the Brush tool with Mirror X and its plane, the tools rail, the viewport, the color palette and the layer tree](docs/images/readme/model_mode.png) | ![Path-traced 1920×1080 render with the Studio White preset and the Brick shape](docs/images/readme/photo_render.png) |
+| Editing tools on the left, the viewport with the view cube in the middle (here the Brush with Mirror X, its mirror plane in red), and the color palette and layer tree on the right. | A 1920×1080 *Photo-realistic* render of the same model with the **Studio White** preset and the **Brick** voxel shape. |
 
-The demo model comes from `cargo run -p rizxel-app --example sample_model`.
+The demo model is `assets/samples/demo.rzxl`, written by
+`cargo run -p rizxel-app --example sample_model`.
 
 <img src="docs/images/readme/voxel_icon.png" alt="The rizxel_r sample rendered with the Voxel Icon preset: a blue voxel R outlined cell by cell on a dark floor with a glowing grid" width="480">
 
@@ -108,7 +109,7 @@ grid and matte materials, path traced at 1024×1024.
 
 | | |
 |---|---|
-| **OS** | Windows 10/11, Linux (X11 or Wayland) or macOS 11+. All three are built and tested in CI. |
+| **OS** | Windows 10/11, Linux (X11 or Wayland) or macOS 10.13+ (Apple silicon: macOS 11+). All three are built and tested in CI. |
 | **GPU** | Any GPU with Vulkan, Direct3D 12 or Metal for the viewport. The path tracer runs on **Vulkan or Metal** (Windows GPUs normally ship Vulkan drivers); on other backends Render mode keeps the raster preview and the *Image* output. |
 | **To build** | Rust 1.85 or newer (pinned through `rust-toolchain.toml`). On Linux, the X11/Wayland and GTK development packages listed in [`.github/workflows/ci.yml`](.github/workflows/ci.yml). |
 
@@ -124,7 +125,7 @@ Packages are attached to every release on the
 | Windows 10/11 | `Rizxel-<version>-windows-x64.msi` | Installs per user (no admin rights) and opens `.rzxl` files with Rizxel. |
 | Windows 10/11 | `Rizxel-<version>-windows-x64.zip` | Portable: unzip and run `rizxel.exe`. *Settings ▸ General ▸ Associate .rzxl Files* adds the file association. |
 | Linux (x86-64) | `Rizxel-<version>-x86_64.AppImage` | `chmod +x` and run. *Settings ▸ General* registers `.rzxl` files, or let AppImageLauncher integrate it. |
-| macOS 11+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel. Drag Rizxel to *Applications*. |
+| macOS 10.13+ | `Rizxel-<version>-macos-universal.dmg` | Apple silicon and Intel (Intel Macs from macOS 10.13 High Sierra). Drag Rizxel to *Applications*. |
 
 Each release also has `Rizxel-<version>-samples.zip` with the
 [sample models](assets/samples/README.md) (CC0), made with Rizxel.
@@ -223,9 +224,9 @@ Then run the platform's script from the repository root:
 
 | Platform | Script | Needs |
 |---|---|---|
-| Windows | `pwsh packaging/wix/build.ps1 -Version 0.12.0` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
-| Linux | `sh packaging/appimage/build.sh 0.12.0 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
-| macOS | `sh packaging/macos/build.sh 0.12.0` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
+| Windows | `pwsh packaging/wix/build.ps1 -Version 0.12.5` (`-NoMsi` for the zip only) | [WiX Toolset 5](https://wixtoolset.org/) (`dotnet tool install --global wix`) and its UI extension |
+| Linux | `sh packaging/appimage/build.sh 0.12.5 path/to/appimagetool` | [appimagetool](https://github.com/AppImage/appimagetool) |
+| macOS | `sh packaging/macos/build.sh 0.12.5` after release builds for `x86_64-apple-darwin` and `aarch64-apple-darwin` | Xcode command line tools |
 
 ## Controls
 

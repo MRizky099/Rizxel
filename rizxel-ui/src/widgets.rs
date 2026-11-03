@@ -250,6 +250,8 @@ pub fn horizontal_divider(ui: &mut Ui, width: f32) {
 struct StripMemo {
     offset: f32,
     max_offset: f32,
+    /// Width of the content last frame.
+    content_width: f32,
     /// Offset requested by a chevron click, applied on the next frame.
     pending: Option<f32>,
 }
@@ -272,7 +274,10 @@ pub fn hscroll_strip<R>(
 ) -> R {
     let memo_id = ui.id().with(("hscroll_strip", id_salt));
     let mut memo: StripMemo = ui.data(|d| d.get_temp(memo_id)).unwrap_or_default();
-    let overflowing = memo.max_offset > 0.5;
+    // Measured against the whole width, not the one left beside the
+    // arrows: otherwise the arrows' own width keeps the strip overflowing
+    // after the content shrinks back (closed tabs).
+    let overflowing = memo.content_width > ui.available_width() - reserved_right + 0.5;
     let arrow_style = IconStyle::small()
         .size(egui::vec2(STRIP_ARROW_WIDTH, height))
         .hover_fill(arrow_fill);
@@ -304,8 +309,13 @@ pub fn hscroll_strip<R>(
                 .id_salt(id_salt)
                 .max_width(width)
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-            if let Some(offset) = memo.pending.take() {
-                area = area.horizontal_scroll_offset(offset);
+            match memo.pending.take() {
+                Some(offset) => area = area.horizontal_scroll_offset(offset),
+                // Everything fits again: back to the start.
+                None if !overflowing && memo.offset > 0.0 => {
+                    area = area.horizontal_scroll_offset(0.0);
+                }
+                None => {}
             }
             let output = area.show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = saved_spacing;
@@ -314,6 +324,7 @@ pub fn hscroll_strip<R>(
             });
             memo.offset = output.state.offset.x;
             memo.max_offset = (output.content_size.x - output.inner_rect.width()).max(0.0);
+            memo.content_width = output.content_size.x;
             output.inner
         })
         .inner;
