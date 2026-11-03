@@ -10,6 +10,9 @@ All notable changes to Rizxel are documented here. Format follows
   (it asked for macOS 11 before). Apple silicon Macs, which start at macOS 11, are unchanged.
 
 ### Fixed
+- **Render mode viewport**: panning, orbiting or snapping the view while an output was
+  rendering (or with the preview paused) turned the viewport black. It now shows a first
+  sample of the new view and refines it once the render ends or the preview resumes.
 - **Turntable**: a panned view swung the model across the frame. The turntable now turns
   around the vertical axis through the model's center.
 - **Document tabs**: after closing tabs until the rest fit again, the tab strip kept its
