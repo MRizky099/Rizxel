@@ -4,9 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
+use glam::{IVec3, Vec3};
 use rizxel_io::png_io::{encode_rgba, encode_rgba16, RgbaImage};
 use rizxel_io::RzxlError;
 use rizxel_math::render::OutputSettings;
+use rizxel_math::BoundSize;
 
 /// Characters Windows, macOS and Linux refuse (or treat specially) in file
 /// names.
@@ -127,6 +129,17 @@ pub fn turntable_yaws(start: f32, frames: u32, angle: f32) -> Vec<f32> {
         .collect()
 }
 
+/// Pan of the turntable camera: the orbit target moves onto the vertical
+/// axis through the center of `cells` (the visible voxels, `(min, max
+/// exclusive)`, or the whole bounds without them), keeping its height, so
+/// a panned view still turns the model in place.
+pub fn turntable_pan(pan: Vec3, bounds: BoundSize, cells: Option<(IVec3, IVec3)>) -> Vec3 {
+    let (lo, hi) = cells.unwrap_or((IVec3::ZERO, bounds.0.as_ivec3()));
+    let (bmin, _) = crate::world_bounds(bounds);
+    let center = bmin + (lo + hi).as_vec3() * 0.5 - crate::orbit_base(bounds);
+    Vec3::new(center.x, pan.y, center.z)
+}
+
 /// Largest sprite sheet side in pixels.
 pub const MAX_SHEET_SIDE: u32 = 16_384;
 
@@ -240,6 +253,20 @@ pub fn save_gif(path: &Path, frames: &[RgbaImage], fps: u32) -> std::io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turntable_orbits_the_model_center() {
+        let bounds = BoundSize(glam::UVec3::new(32, 16, 32));
+        let pan = Vec3::new(7.0, 3.0, -5.0);
+        // Model filling the bounds: centered on the origin in XZ.
+        assert_eq!(turntable_pan(pan, bounds, None), Vec3::new(0.0, 3.0, 0.0));
+        // Voxels in one corner: the axis goes through their center.
+        let cells = Some((IVec3::new(0, 0, 0), IVec3::new(8, 4, 4)));
+        assert_eq!(
+            turntable_pan(pan, bounds, cells),
+            Vec3::new(-12.0, 3.0, -14.0)
+        );
+    }
 
     #[test]
     fn turntable_frames_turn_evenly() {

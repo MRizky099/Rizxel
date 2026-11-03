@@ -210,10 +210,16 @@ impl Outputs {
                     o.turntable_frames,
                     o.turntable_angle,
                 );
+                let pan = render_job::turntable_pan(
+                    state.camera.pan,
+                    doc.data.bounds,
+                    doc.occupied_bounds(),
+                );
                 let cameras = yaws
                     .iter()
                     .map(|&yaw| OrbitCamera {
                         yaw,
+                        pan,
                         auto_ortho: false,
                         ..state.camera
                     })
